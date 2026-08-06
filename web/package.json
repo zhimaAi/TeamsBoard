@@ -1,0 +1,40 @@
+{
+  "name": "goteams-client-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n SERVER,WEB -c blue,green \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:web": "vite",
+    "dev:server": "cd .. && go run ./cmd/client",
+    "dev1": "concurrently -k -n SERVER,WEB -c blue,green \"npm:dev1:server\" \"npm:dev1:web\"",
+    "dev1:web": "vite --mode dev1",
+    "dev1:server": "cd .. && set APP_ENV=dev1&& go run ./cmd/client",
+    "dev2": "concurrently -k -n SERVER,WEB -c blue,green \"npm:dev2:server\" \"npm:dev2:web\"",
+    "dev2:web": "vite --mode dev2",
+    "dev2:server": "cd .. && set APP_ENV=dev2&& go run ./cmd/client",
+    "devprod": "concurrently -k -n SERVER,WEB -c blue,green \"npm:devprod:server\" \"npm:devprod:web\"",
+    "devprod:web": "vite --mode production",
+    "devprod:server": "cd .. && set APP_ENV=prod&& go run ./cmd/client",
+    "build": "vue-tsc --noEmit && vite build",
+    "build:prod": "vue-tsc --noEmit && vite build --mode production",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "ant-design-vue": "^4.2.6",
+    "markdown-it": "^14.3.0",
+    "pinia": "^2.3.0",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^22.10.5",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.2",
+    "unplugin-vue-components": "^0.28.0",
+    "vite": "^6.0.7",
+    "vue-tsc": "^2.2.0"
+  }
+}

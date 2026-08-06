@@ -1,0 +1,6 @@
+*test.go
+*.exe
+dist/
+/.idea/.gitignore
+/.idea/teams_desck_github.iml
+/.idea/vcs.xml
