@@ -2,51 +2,35 @@ package bootstrap
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
-	"time"
 
 	"goteams-client/internal/applog"
-	"goteams-client/internal/capability"
 	"goteams-client/internal/cloud"
-	"goteams-client/internal/executor"
-	"goteams-client/internal/executor/claude"
-	"goteams-client/internal/executor/codebuddy"
-	"goteams-client/internal/executor/codex"
-	"goteams-client/internal/executor/opencode"
 	"goteams-client/internal/identity"
 	"goteams-client/internal/localauth"
 	"goteams-client/internal/localserver"
 	"goteams-client/internal/secrets"
-	"goteams-client/internal/storage"
-	"goteams-client/internal/storage/log"
-	"goteams-client/internal/workflow"
-	"goteams-client/internal/workitem"
 )
 
-// AccountSession A complete session of a login account (including independent SQLite database)
+// AccountSession contains only the optional cloud-login lifetime state.
 type AccountSession struct {
-	AdminID      string
-	UserID       string
-	UserName     string
-	DataDir      string
-	DB           *sql.DB
-	EventStore   *log.EventStore
-	Orchestrator *workflow.Orchestrator
-	WSHub        *localserver.WSHub
-	WorkitemSvc  *workitem.Service
-	DeviceMgr    *identity.DeviceManager
-	WSClient     *cloud.WSClient
-	JWTMgr       *localauth.JWTManager
+	AdminID   string
+	UserID    string
+	UserName  string
+	DeviceMgr *identity.DeviceManager
+	JWTMgr    *localauth.JWTManager
 	// CloudClient The actual cloud client used in this session: the official login is the default client,
 	// Custom address login is an independent client built based on domain name.
 	// The HTTP proxy layer (task/work item, etc.) must use it to avoid sending the JWT of the custom cloud to the official cloud.
 	CloudClient *cloud.Client
-	cancelFunc  context.CancelFunc
+	// ServerURL 登录目标云端地址（normalized），随登录索引写入。官方登录按域名
+	// 隔离恢复；custom 登录地址由用户主动选择，不受当前配置约束。
+	ServerURL string
+	// ServerType 登录类型（official/custom），随会话保存，登出时用于决定是否清理 custom 登录索引。
+	ServerType string
+	cancelFunc context.CancelFunc
 }
 
 // AccountManager manages the life cycle of account sessions
@@ -56,11 +40,21 @@ type AccountManager struct {
 	cloudClient     *cloud.Client
 	secretStore     *secrets.DelegatingStore
 	bootstrapStore  secrets.Store // Boot storage (configDir), only carries account index last_login
-	baseDataDir     string
 	configDir       string
-	runtimeDir      string
 	localAPIBaseURL string
-	capabilities    *capability.Registry
+	localRuntime    *LocalRuntime
+	// officialServerURL 当前配置的官方云端地址（normalized）。写入索引时按"最后
+	// 登录"语义互斥清理：官方登录清除 custom 固定索引，custom 登录清除官方
+	// per-address 索引，避免切换登录方式后重启恢复错误会话。
+	officialServerURL string
+}
+
+// SetOfficialServerURL sets the normalized official cloud address of the current
+// configuration, used by the last-login index rules in writeLastLogin/Logout.
+func (m *AccountManager) SetOfficialServerURL(normalized string) {
+	m.mu.Lock()
+	m.officialServerURL = normalized
+	m.mu.Unlock()
 }
 
 // accountLastLogin persists to the last login account index in the boot store (field is compatible with localserver.lastLoginInfo)
@@ -80,17 +74,15 @@ func NewAccountManager(
 	cloudClient *cloud.Client,
 	secretStore *secrets.DelegatingStore,
 	bootstrapStore secrets.Store,
-	baseDataDir, configDir, runtimeDir string,
-	capabilities *capability.Registry,
+	configDir string,
+	localRuntime *LocalRuntime,
 ) *AccountManager {
 	return &AccountManager{
 		cloudClient:    cloudClient,
 		secretStore:    secretStore,
 		bootstrapStore: bootstrapStore,
-		baseDataDir:    baseDataDir,
 		configDir:      configDir,
-		runtimeDir:     runtimeDir,
-		capabilities:   capabilities,
+		localRuntime:   localRuntime,
 	}
 }
 
@@ -98,10 +90,6 @@ func NewAccountManager(
 func (m *AccountManager) SetLocalAPIBaseURL(baseURL string) {
 	m.mu.Lock()
 	m.localAPIBaseURL = baseURL
-	if m.current != nil {
-		m.current.Orchestrator.ConfigureSkillRuntime(baseURL, filepath.Join(filepath.Dir(m.baseDataDir), "skills"), m.capabilities)
-		m.current.WorkitemSvc.ConfigureSkillRuntime(baseURL, filepath.Join(filepath.Dir(m.baseDataDir), "skills"))
-	}
 	m.mu.Unlock()
 }
 
@@ -123,11 +111,7 @@ func (m *AccountManager) IsLoggedIn() bool {
 // Restore login state - at this time, the persisted JWT is read from the current Profile key storage and renewed to the cloud.
 //
 // opts supports custom cloud address login: use an independent CloudClient to request the address.
-// The account data directory (cloud session library) is placed under the account container specified
-// by opts.DataDir (always data/accounts_<key>, key is derived from the normalized server URL; official
-// and custom logins share the same rule, so the same address maps to the same directory). The local
-// Profile repository (base.db) is switched by the caller through switchProfile and stays in the base
-// data directory, shared by all accounts.
+// Local databases and task execution are application-scoped and never change here.
 func (m *AccountManager) Login(ctx context.Context, adminID, userID, userName, token string, opts localserver.LoginOptions) (*AccountSession, error) {
 	// Always rebuild the account session when logging in explicitly or resuming login, ensuring the latest JWT and device credentials are used.
 	m.mu.RLock()
@@ -137,73 +121,15 @@ func (m *AccountManager) Login(ctx context.Context, adminID, userID, userName, t
 		m.Logout()
 	}
 
-	//Select the cloud client and account container directories.
-	// Note: The semantics of opts.DataDir here is "account container directory" (the layer directly containing the <userID> subdirectory),
-	// Instead of the "data root directory" in earlier versions. The .goteams root directory (the layer where skills/runtime is located) is always represented by
-	// Stable baseDataDir parent directory derivation to avoid skill path misalignment caused by custom login directory drift.
+	// Select the cloud client. Local task storage is application-scoped and is
+	// never selected, created, or migrated as part of login.
 	cloudClient := m.cloudClient
 	if opts.CloudClient != nil {
 		cloudClient = opts.CloudClient
 	}
 
-	// Account container directory: always specified by the caller (opts.DataDir), derived from
-	// the server address as data/accounts_<key>. Official and custom logins follow the same rule,
-	// so the same server address always maps to the same directory.
-	if opts.DataDir == "" {
-		return nil, fmt.Errorf("账号数据目录未指定（opts.DataDir 为空）")
-	}
-	accountsContainer := opts.DataDir
-
-	//Create account data directory: isolate by account ID (userID), not adminID.
-	// Different sub-accounts under the same organization often share the adminID. If isolated by adminID, it will cause trouble when switching accounts.
-	// The sqlite database, knowledge base, interface, etc. all fall into the same directory without actually switching.
-	accountDataDir := filepath.Join(accountsContainer, userID)
-
-	switch _, statErr := os.Stat(accountDataDir); {
-	case statErr == nil:
-		// The target directory already exists, no need to process
-	case os.IsNotExist(statErr):
-		// Compatible with older versions:
-		// 1) If the account data directory by adminID already exists in the old version, it will be migrated to the directory by account ID to avoid the loss of historical data.
-		// 2) The old version puts official account data in <root>/data/accounts/<userID>, and custom login
-		// data in <root>/data_cus/accounts/<userID>; both are migrated into the unified <root>/data/accounts_<key>/<userID>.
-		legacyDirs := []string{
-			filepath.Join(accountsContainer, adminID),
-			filepath.Join(m.baseDataDir, "accounts", userID),
-			filepath.Join(m.baseDataDir, "..", "data_cus", "accounts", userID),
-		}
-		migrated := false
-		for _, legacyDir := range legacyDirs {
-			if legacyDir == accountDataDir {
-				continue
-			}
-			if _, lerr := os.Stat(legacyDir); lerr == nil {
-				if merr := os.Rename(legacyDir, accountDataDir); merr == nil {
-					migrated = true
-					break
-				}
-			}
-		}
-		if !migrated {
-			if mkErr := os.MkdirAll(accountDataDir, 0700); mkErr != nil {
-				return nil, fmt.Errorf("创建账号数据目录失败: %w", mkErr)
-			}
-		}
-		// Remove the legacy empty data/accounts container after its contents have been moved out.
-		_ = os.Remove(filepath.Join(m.baseDataDir, "accounts"))
-	default:
-		return nil, fmt.Errorf("检查账号数据目录失败: %w", statErr)
-	}
-
-	// Initialize account-level logs (output to accountDataDir/logs/ on a daily basis)
-	if err := applog.InitAccountLogger(accountDataDir); err != nil {
-		fmt.Printf("Failed to init account logger (does not affect main flow): %v\n", err)
-	}
-
-	// Open/create account database (cloud session data such as tasks/workflows)
-	dbManager, err := storage.NewManager(accountDataDir)
-	if err != nil {
-		return nil, fmt.Errorf("打开账号数据库失败: %w", err)
+	if m.localRuntime == nil || m.localRuntime.DB == nil {
+		return nil, fmt.Errorf("本地任务运行时未初始化")
 	}
 
 	// Parse and persist the JWT.
@@ -214,7 +140,6 @@ func (m *AccountManager) Login(ctx context.Context, adminID, userID, userName, t
 	if token == "" {
 		persisted, getErr := m.secretStore.Get(secrets.KeyJWT)
 		if getErr != nil || persisted == "" {
-			dbManager.Close()
 			return nil, fmt.Errorf("无可用登录凭证（JWT 缺失且未提供）")
 		}
 		refreshed, rErr := cloudClient.RefreshToken(ctx, persisted)
@@ -223,29 +148,23 @@ func (m *AccountManager) Login(ctx context.Context, adminID, userID, userName, t
 			if dErr := m.secretStore.Delete(secrets.KeyJWT); dErr != nil {
 				applog.Warn("[Account] 清除 JWT 失败", "error", dErr)
 			}
-			if dErr := m.bootstrapStore.Delete(secrets.KeyLastLogin); dErr != nil {
+			if dErr := m.bootstrapStore.Delete(localserver.LastLoginKey(opts.ServerURL)); dErr != nil {
 				applog.Warn("[Account] 清除上次登录信息失败", "error", dErr)
 			}
-			dbManager.Close()
+			if opts.ServerType == "custom" {
+				if dErr := m.bootstrapStore.Delete(secrets.KeyLastLoginCustom); dErr != nil {
+					applog.Warn("[Account] 清除自定义登录索引失败", "error", dErr)
+				}
+			}
 			return nil, fmt.Errorf("云端登录态已失效，请重新登录")
 		}
 		token = refreshed.Token
 	}
 	if err := m.secretStore.Set(secrets.KeyJWT, token); err != nil {
-		dbManager.Close()
 		return nil, fmt.Errorf("保存 JWT 失败: %w", err)
 	}
 
-	//Execute migration
-	if err := dbManager.Migrate(ctx); err != nil {
-		dbManager.Close()
-		return nil, fmt.Errorf("数据库迁移失败: %w", err)
-	}
-
-	db := dbManager.DB()
-
-	// Initialize event storage (table structure created by main library migration)
-	eventStore := log.NewEventStore(db)
+	db := m.localRuntime.DB
 
 	//Initialize JWT manager
 	jwtMgr := localauth.NewJWTManager(m.secretStore)
@@ -253,76 +172,20 @@ func (m *AccountManager) Login(ctx context.Context, adminID, userID, userName, t
 	//Initialize device manager
 	deviceMgr := identity.NewDeviceManager(m.configDir, db, m.secretStore)
 
-	// Initialize the WebSocket client (connect to the custom cloud address during custom login)
-	wsClient := cloud.NewWSClient(cloudClient, db, m.secretStore)
-
-	//Inject adapter factory
-	workflow.SetCodexAdapterFactory(func() executor.Adapter { return codex.NewAdapter() })
-	workflow.SetClaudeAdapterFactory(func() executor.Adapter { return claude.NewAdapter() })
-	workflow.SetCodeBuddyAdapterFactory(func() executor.Adapter { return codebuddy.NewAdapter() })
-	workflow.SetOpenCodeAdapterFactory(func() executor.Adapter { return opencode.NewAdapter() })
-
-	//Initialize the orchestrator
-	orchestrator := workflow.NewOrchestrator(db, db, eventStore, wsClient, cloudClient)
-	// The .goteams root directory (the layer where skills/runtime is located) is always deduced from the baseDataDir parent directory, regardless of the login type.
-	rootDir := filepath.Dir(m.baseDataDir)
-	skillsRoot := filepath.Join(rootDir, "skills")
-	orchestrator.ConfigureSkillRuntime(m.localAPIBaseURL, skillsRoot, m.capabilities)
-
-	//Initialize WSHub
-	wsHub := localserver.NewWSHub(db)
-
-	//Set broadcast callback
-	orchestrator.SetEventBroadcaster(func(sessionUUID string, sequence int, event executor.ExecutorEvent) {
-		wsHub.BroadcastEvent(sessionUUID, sequence, event)
-	})
-	orchestrator.SetStateBroadcaster(func(taskUUID, stepKey, sessionUUID, status string) {
-		wsHub.BroadcastStateChanged(taskUUID, stepKey, sessionUUID, status)
-	})
-
-	// Register for general cycle push (cli-count, etc.)
-	wsHub.RegisterPushFunc(func() (string, interface{}) {
-		count, err := orchestrator.GlobalRunningSessionCount()
-		if err != nil {
-			return "", nil
-		}
-		return "app.cli_count", map[string]interface{}{"count": count}
-	})
-	wsHub.StartPushLoop(5 * time.Second)
-
-	// When the cloud WebSocket connection status changes, push it to the front-end status bar ("Online/Offline" at the bottom).
-	// In this way, the status bar reflects the real connection of WS instead of just the login status.
-	wsClient.OnConnectionChange(func(connected bool) {
-		status := "offline"
-		if connected {
-			status = "online"
-		}
-		wsHub.BroadcastToAll("cloud.status", map[string]interface{}{"status": status})
-	})
-
-	//Initialize work item service
-	workitemSvc := workitem.NewService(cloudClient, db, accountDataDir, rootDir)
-	workitemSvc.ConfigureSkillRuntime(m.localAPIBaseURL, skillsRoot)
-
 	//The account session must be independent of this HTTP login request.
 	// Gin will cancel the request context after the request returns; long-term tasks are only explicitly canceled by Logout/application exit.
 	sessionCtx, cancel := context.WithCancel(context.Background())
 
 	session := &AccountSession{
-		AdminID:      adminID,
-		UserID:       userID,
-		UserName:     userName,
-		DataDir:      accountDataDir,
-		DB:           db,
-		EventStore:   eventStore,
-		Orchestrator: orchestrator,
-		WSHub:        wsHub,
-		WorkitemSvc:  workitemSvc,
-		DeviceMgr:    deviceMgr,
-		WSClient:     wsClient,
-		JWTMgr:       jwtMgr,
-		CloudClient:  cloudClient,
-		cancelFunc:   cancel,
+		AdminID:     adminID,
+		UserID:      userID,
+		UserName:    userName,
+		DeviceMgr:   deviceMgr,
+		JWTMgr:      jwtMgr,
+		CloudClient: cloudClient,
+		ServerURL:   opts.ServerURL,
+		ServerType:  opts.ServerType,
+		cancelFunc:  cancel,
 	}
 
 	//Re-register the same device UUID every time a cloud account session is created.
@@ -332,11 +195,11 @@ func (m *AccountManager) Login(ctx context.Context, adminID, userID, userName, t
 	} else if deviceCred, registerErr := cloudClient.RegisterDevice(
 		sessionCtx, deviceUUID, "",
 	); registerErr != nil {
-		applog.Warn("设备注册失败，WebSocket 将继续重试", "error", registerErr)
+		applog.Warn("设备注册失败，后续请求可能无法通过设备认证", "error", registerErr)
 	} else if saveErr := deviceMgr.SaveRegistration(
 		adminID, deviceUUID, deviceCred.Credential,
 	); saveErr != nil {
-		applog.Warn("保存设备凭据失败，WebSocket 将继续重试", "error", saveErr)
+		applog.Warn("保存设备凭据失败，后续请求可能无法通过设备认证", "error", saveErr)
 	}
 
 	// The cloud token is a standard JWT, which is automatically refreshed before expiration driven by exp.
@@ -344,25 +207,11 @@ func (m *AccountManager) Login(ctx context.Context, adminID, userID, userName, t
 		if claims, claimsErr := localauth.ParseClaims(token); claimsErr == nil && claims.Exp > 0 {
 			if saveErr := jwtMgr.SaveToken(token, "", claims.Exp); saveErr == nil {
 				jwtMgr.StartRefreshLoop(sessionCtx, cloudClient, func() {
-					wsClient.Stop()
 					applog.Warn("云端登录态已过期，请重新登录")
 				})
 			}
 		}
 	}
-
-	// Start crash recovery
-	go func() {
-		if err := orchestrator.HandleCrashRecovery(); err != nil {
-			applog.Error("崩溃恢复失败", "error", err)
-		}
-		if err := orchestrator.ReconcileExecutionStates(); err != nil {
-			applog.Error("执行状态修复失败", "error", err)
-		}
-	}()
-
-	// Start the cloud WebSocket after the device credentials are prepared to avoid handshake races during the login phase.
-	wsClient.Start(sessionCtx)
 
 	// Persist the last login account index (written to boot storage, independent of the Profile key) for session restoration after restart.
 	// Both official and custom logins are persistent: when the custom login is restored, rebuild the client according to the ServerURL and renew it to the cloud.
@@ -390,18 +239,14 @@ func (m *AccountManager) LoginAndCreateSession(ctx context.Context, adminID, use
 		return nil, err
 	}
 	return &localserver.SessionInfo{
-		DB:           session.DB,
-		Orchestrator: session.Orchestrator,
-		WSHub:        session.WSHub,
-		WorkitemSvc:  session.WorkitemSvc,
-		DeviceMgr:    session.DeviceMgr,
-		JWTMgr:       session.JWTMgr,
-		WSClient:     session.WSClient,
-		CloudClient:  session.CloudClient,
-		AdminID:      session.AdminID,
-		UserID:       session.UserID,
-		UserName:     session.UserName,
-		DataDir:      session.DataDir,
+		DeviceMgr:   session.DeviceMgr,
+		JWTMgr:      session.JWTMgr,
+		CloudClient: session.CloudClient,
+		AdminID:     session.AdminID,
+		UserID:      session.UserID,
+		UserName:    session.UserName,
+		ServerURL:   session.ServerURL,
+		ServerType:  opts.ServerType,
 	}, nil
 }
 
@@ -418,14 +263,6 @@ func (m *AccountManager) Close() {
 		return
 	}
 
-	// Stop WebSocket
-	if session.WSClient != nil {
-		session.WSClient.Stop()
-	}
-	if session.WSHub != nil {
-		session.WSHub.Close()
-	}
-
 	// Stop JWT refresh
 	if session.JWTMgr != nil {
 		session.JWTMgr.Stop()
@@ -436,14 +273,8 @@ func (m *AccountManager) Close() {
 		session.cancelFunc()
 	}
 
-	//Close database
-	if session.DB != nil {
-		session.DB.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
-		session.DB.Close()
-	}
-
-	//Close account-level log files
-	applog.CloseAccountLogger()
+	// The DB, Orchestrator, WSHub and task services are application-owned and
+	// intentionally continue running after cloud logout.
 }
 
 // Logout actively logs out the current account session.
@@ -451,24 +282,69 @@ func (m *AccountManager) Close() {
 // storage to avoid automatic recovery on the next startup.
 // Only call it when the user actively logs out or switches accounts.
 func (m *AccountManager) Logout() {
+	m.mu.RLock()
+	serverURL := ""
+	serverType := ""
+	officialURL := m.officialServerURL
+	if m.current != nil {
+		serverURL = m.current.ServerURL
+		serverType = m.current.ServerType
+	}
+	m.mu.RUnlock()
+
 	m.Close()
 
 	// Actively log out/switch accounts: clear the account index in the boot storage to avoid automatic recovery by mistake at next startup.
+	// 清除当前会话索引、custom 固定索引与官方索引，登出后重启不恢复任何会话；
+	// 共享目录下其他配置实例的索引不受影响。
 	if m.bootstrapStore != nil {
-		if err := m.bootstrapStore.Delete(secrets.KeyLastLogin); err != nil {
+		if err := m.bootstrapStore.Delete(localserver.LastLoginKey(serverURL)); err != nil {
 			applog.Warn("[Account] 清除上次登录信息失败", "error", err)
+		}
+		if serverType == "custom" {
+			if err := m.bootstrapStore.Delete(secrets.KeyLastLoginCustom); err != nil {
+				applog.Warn("[Account] 清除自定义登录索引失败", "error", err)
+			}
+		}
+		if officialURL != "" {
+			if err := m.bootstrapStore.Delete(localserver.LastLoginKey(officialURL)); err != nil {
+				applog.Warn("[Account] 清除官方登录索引失败", "error", err)
+			}
 		}
 	}
 }
 
 // writeLastLogin writes the last login account index into the boot storage (configDir), isolated from the account key.
+// The index key is derived from the normalized cloud address (LastLoginKey), so different remote
+// domains keep independent indexes and never overwrite each other's login state.
 func (m *AccountManager) writeLastLogin(ll accountLastLogin) {
 	data, err := json.Marshal(ll)
 	if err != nil {
 		applog.Warn("[Account] 序列化上次登录信息失败", "error", err)
 		return
 	}
-	if err := m.bootstrapStore.Set(secrets.KeyLastLogin, string(data)); err != nil {
+	if err := m.bootstrapStore.Set(localserver.LastLoginKey(ll.ServerURL), string(data)); err != nil {
 		applog.Warn("[Account] 写入上次登录信息失败", "error", err)
+		return
+	}
+	m.mu.RLock()
+	officialURL := m.officialServerURL
+	m.mu.RUnlock()
+	if ll.ServerType == "custom" {
+		// custom 登录的地址由用户主动选择，额外写固定索引供恢复定位；
+		// 同时清除官方索引，保证重启恢复的是最后一次登录的会话。
+		if err := m.bootstrapStore.Set(secrets.KeyLastLoginCustom, string(data)); err != nil {
+			applog.Warn("[Account] 写入自定义登录索引失败", "error", err)
+		}
+		if officialURL != "" {
+			if err := m.bootstrapStore.Delete(localserver.LastLoginKey(officialURL)); err != nil {
+				applog.Warn("[Account] 清除官方登录索引失败", "error", err)
+			}
+		}
+	} else if officialURL != "" {
+		// 官方登录后，最后一次登录不再是 custom，清除其固定索引。
+		if err := m.bootstrapStore.Delete(secrets.KeyLastLoginCustom); err != nil {
+			applog.Warn("[Account] 清除自定义登录索引失败", "error", err)
+		}
 	}
 }

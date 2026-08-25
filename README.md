@@ -1,142 +1,98 @@
-![image.png](/assets/imgs/head_image_zh.png)
- 简体中文 | [更新日志](./UpdateLog.md) | [帮助文档](https://goteams.dev/docs)
+# GoTeams Client
 
+GoTeams Client 是面向研发团队的桌面 Agent 客户端，使用 Electron 提供桌面窗口与原生能力，Vue 负责界面，Go sidecar 负责本地数据、工作流、CLI Agent、云端通信和 HTTP/WebSocket API。
 
-## 🎯 产品定位
+## 技术栈
 
+- 桌面：Electron 43、electron-builder
+- 前端：Vue 3、TypeScript、Vite、Ant Design Vue、Pinia
+- 后端：Go、Gin、SQLite、WebSocket
+- 构建：go-task、npm、`tools/build`
 
-Teams Desk Agent是新一代 AI 智能化研发管理平台，让 agent 成为你的团队成员。深度融合 AI 智能体，内置 agent 员工，让 Agent 成为你的团队成员。让每个团队都能轻松驾驭从需求到交付的全流程。
+详细的进程边界、目录职责、安全规范和扩展流程见 [总体架构与开发规范](./docs/架构设计/20260810_客户端架构与开发规范.md)。
 
-**
-Teams Desk Agent客户端**是面向开发者与团队的开源桌面端，将官网的全部能力本地化运行：连接你的私有化部署服务器或官方云服务（`goteams.cn`），在本地客户端中管理我的任务、调试 Agent、构建知识库、编排工作流、对接 Git 与 API，获得更流畅的离线优先体验。
-![image.png](/assets/imgs/ui_zh_1.png)
+## 环境要求
 
-## ✨ 核心功能
+- Go 1.26+
+- Node.js 24+
+- npm 11+
+- go-task 3.49+
 
-### 🤖 AI Agent 协作
-
-- **Agent 员工作为团队成员**：智能体出现在指派下拉菜单中，像分配任务给同事一样分配给 agent。
-- **自主执行能力**：agent 主动领取任务、自主推进项目，完整的任务生命周期管理：入队、领取、启动、完成或失败。
-- **主动报告与推送**：agent 遇到阻塞主动通知，通过实时推送获取进度更新。
-- **统一活动时间线**：人类和 agent 的所有操作在统一时间线上可见，无缝协作。
-
-### 📋 我的任务（客户端核心）
-
-- **专属任务视图**：聚焦"我"的工作项，按状态、优先级、迭代筛选，一眼看清待办。
-- **本地登录态**：支持官方服务器（`goteams.cn`）与私有化部署两种连接方式，登录信息本地安全存储。
-- **需求详情速览与复制**：标题一键复制标题 / 链接 / 描述（支持"复制标题和链接""复制标题""复制链接""复制描述""复制标题链接描述"组合），便于对外同步。
-
-### 🌐 更多功能
-
-- **多种部署选项**：提供桌面客户端，支持连接官方云服务与私有化部署服务器，登录后可一键切换工作区。
-- **Git 集成**：在客户端内对接代码仓库，关联工作项与提交记录。
-- **项目配置**：集中管理项目字段、角色与流程，配置即生效。
-
-## 🛸 用户界面
-
-- 🌍 **免费体验网址**：[goteams.dev](https://goteams.dev/)
-- 🖼️ **系统截图**：
-  ![image.png](/assets/imgs/ui_zh_2.png)
-  ![image.png](/assets/imgs/ui_zh_3.png)
-  ![image.png](/assets/imgs/ui_zh_4.png)
-  ![image.png](/assets/imgs/ui_zh_5.png)
-
-
-## 🚀 快速开始
-
-### 环境要求
-
-- Go >= 1.26
-- Node.js >= 18（开发模式 / 前端构建需要）
-- npm >= 9
-- go-task（构建任务管理器）
-
-### 安装 go-task
-
-```bash
-go install github.com/go-task/task/v3/cmd/task@latest
-```
-
-安装完成后将 `$(go env GOPATH)/bin` 加入 `PATH`，执行 `task --version` 验证，`task` 可列出全部可用任务。
-
-### 安装前端依赖
+安装依赖：
 
 ```bash
 npm --prefix web install
+npm --prefix desktop install
 ```
 
-### 打包桌面客户端
+## 桌面开发
 
 ```bash
-# 完整发布：先构建前端（web/dist），再交叉编译全部目标平台
-task release
-
-# 仅构建单个平台
-task build:windows-amd64
+task dev       # 启动开发环境（Vite HMR + Electron + Go sidecar）
 ```
 
-- 启动后默认服务地址为：http://127.0.0.1:18900
-- 支持平台：Windows / macOS / Linux × amd64 / arm64
+Electron 是应用父进程，会启动和监管 Go sidecar；Vite 仅在开发模式提供 HMR。关闭桌面客户端时，Go sidecar 会一并退出。
 
-### 客户端登录
+只调试单层：
 
-启动客户端后进入登录页，选择 **官方** 或 **私有化部署**：
-  - **官方**：服务器地址固定为 `goteams.cn`，无需修改。
-  - **私有化部署**：填写你的服务器地址、账号与密码。
+```bash
+npm --prefix web run dev:web   # 只启动 Vue/Vite
+```
 
-## 💻 技术栈
+## 测试与检查
 
-**后端**
+```bash
+go test ./...              # Go 测试
+go vet ./...               # Go 静态检查
+npm --prefix web test      # Vue 类型检查与静态测试
+npm --prefix desktop test  # Electron 类型检查与 Node 测试
+```
 
-- **语言**：Go 1.26
-- **Web 框架**：Gin
-- **本地数据库**：SQLite（modernc.org/sqlite，纯 Go 实现，支持 `CGO_ENABLED=0` 交叉编译）
-- **实时通信**：gorilla/websocket（agent 进度实时推送）
+## 打包
 
-**前端**
+```bash
+task pkg-win-dev1     # dev1 配置，Windows x64/arm64 安装包
+task pkg-win-dev2     # dev2 配置，Windows x64/arm64 安装包
+task pkg-win-dev3     # dev3 配置，Windows x64/arm64 安装包
+task pkg-win-dev4     # dev4 配置，Windows x64/arm64 安装包
+task pkg-win-cn       # 中国区，Windows x64/arm64 安装包
+task pkg-win-global   # 全球版，Windows x64/arm64 安装包
+task pkg-mac-dev1     # dev1 配置，macOS x64/arm64 安装包
+task pkg-mac-dev2     # dev2 配置，macOS x64/arm64 安装包
+task pkg-mac-dev3     # dev3 配置，macOS x64/arm64 安装包
+task pkg-mac-dev4     # dev4 配置，macOS x64/arm64 安装包
+task pkg-mac-cn       # 中国区，macOS x64/arm64 安装包
+task pkg-mac-global   # 全球版，macOS x64/arm64 安装包
+task release-cn:windows-amd64       # 完整验证后打包中国区 Windows x64（config_cn）；强制代码签名
+task release-cn:windows-arm64       # 完整验证后打包中国区 Windows arm64（config_cn）；强制代码签名
+task release-global:windows-amd64   # 完整验证后打包全球版 Windows x64（config_global）；强制代码签名
+task release-global:windows-arm64   # 完整验证后打包全球版 Windows arm64（config_global）；强制代码签名
+```
 
-- **框架**：Vue 3 + TypeScript
-- **构建工具**：Vite 6
-- **UI 组件库**：Ant Design Vue 4
+Windows 与 macOS 打包相互独立：`task pkg-win-<name>` 只构建 Windows x64/arm64，`task pkg-mac-<name>` 只构建 macOS x64/arm64（macOS 上构建产出 dmg，Windows 上构建 macOS 产出 zip）。
 
-**构建与发布**
+安装包输出到 `dist/desktop/`。正式发布（签名、公证、原生安装器）仍应在对应操作系统执行对应平台任务：Windows 用上表命令，macOS 用 `task release-cn:darwin-<arch>` / `task release-global:darwin-<arch>`。
 
-- **任务编排**：go-task（Taskfile.yml）
-- **交叉编译**：tools/build（Windows / macOS / Linux × amd64 / arm64）
+Windows 发布签名使用 Certum Cloud SimplySign：
 
-## 🏡 社区交流 & 联系我们
+完整的软件安装、SimplySign Desktop 登录和获取指纹步骤、配置、命令、脚本说明、签名验证及排障见 [`docs/WINDOWS_SIGNING.md`](docs/WINDOWS_SIGNING.md)。
 
-欢迎联系我们获取帮助，或者提供建议帮助我们改善 GoTeams 客户端。您可以通过以下方式联系我们：
+1. 将 `signing.config.example.json` 复制为 `signing.config.json`，填写 Windows SDK 中微软 `signtool.exe` 的完整路径。本地配置已加入 `.gitignore`，不会提交或打进安装包。
+2. 在 SimplySign Desktop 中人工完成登录，打开证书详情并复制 40 位 SHA-1 指纹，然后执行对应平台任务（如 `task release-cn:windows-amd64`）。
+3. electron-builder 真正执行第一次代码签名时，release 会在终端等待粘贴证书指纹。按 Enter 后，对应用、Go sidecar 和 NSIS 安装包执行 `signtool sign /v /fd sha256 /sha1 <指纹> /tr http://timestamp.sectigo.com /td sha256 <文件>`；后续文件复用同一指纹。指纹格式错误、证书不可用或签名失败时发布会直接失败。
 
-- **邮箱**：发送邮件到 [contact@goteams.dev](mailto:contact@goteams.dev)
-- **GitHub Issues**：[提交 Issue](https://github.com/your-org/goteams/issues)
-- **官网**：[goteams.dev](https://goteams.dev/)
+`task pkg-win-dev1` / `task pkg-mac-dev1` 仍生成不强制签名的普通测试包，不读取发布签名配置。
 
-## 📖 更新日志
+如果只需要独立 Go 后端，可以执行：
 
-完整的更新日志请点击 👉️👉️ [CHANGELOG.md](./UpdateLog.md)
+```bash
+go run ./tools/build -goos=windows -goarch=amd64 -name=client -dist=dist -cmd=./cmd/client
+```
 
-### 2026/08/05
+## 原生能力
 
-1. 客户端「我的任务」登录页支持官方 / 私有化部署单选项切换，官方地址固定 `goteams.cn`
-2. 需求详情标题复制改为悬停下拉，支持复制标题 / 链接 / 描述多种组合，字号 12px
-3. 企业成员操作日志改为表格样式，新增按修改成员名称的搜索框
-4. 企业成员新增历史日志图标，记录成员新增 / 删除、启用 / 禁用（含操作人、时间、修改成员）
+工作目录支持 Electron 系统原生目录选择器，同时保留浏览器模式下的手工路径输入。新增文件选择、托盘、通知、剪贴板、深链接或自动更新能力时，必须遵循：
 
-### 2026/07/21
+`Electron Main → preload 限定 API → Vue composable → 页面`
 
-1. 项目详情增加批量修改迭代、批量删除（二次确认）
-2. 项目角色权限新增"列表数据查看范围"Tab（全部成员 / 部分成员 / 仅自己）
-3. 团队工作数据权限新增"仅自己"选项，普通成员默认仅自己
-4. 官网主页新增二级标题"让 agent 成为你的团队成员"
-
-### 2026/07/15
-
-1. 需求 / 缺陷模块支持批量导出、批量修改状态 / 优先级 / 处理人
-2. 工作项新增公司 / 产品线 / 应用 / 模块等维度的筛选字段
-3. 迭代管理支持创建、编辑、删除和筛选
-4. 新增自定义角色功能，支持功能权限配置
-
-## 协议
-
-本项目遵循 MIT 开源协议。
+不要在 Vue Renderer 中启用 Node.js，也不要用 Electron IPC 重复实现已有 Go 业务接口。

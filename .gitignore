@@ -1,6 +1,13 @@
-*test.go
 *.exe
+.workbuddy/
 dist/
-/.idea/.gitignore
-/.idea/teams_desck_github.iml
-/.idea/vcs.xml
+.agents/
+/.codegraph/.gitignore
+*test.cjs
+signing.config.json
+*test.go
+
+# JetBrains
+.idea
+/web/AGENTS.md
+/web/DESIGN.md

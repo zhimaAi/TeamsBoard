@@ -1429,9 +1429,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
   display: flex;
   align-items: stretch;
   gap: 32px;
-  min-height: 60px;
+  min-height: 44px;
   padding: 0 24px;
-  border-bottom: 1px solid #d9d9d9;
+  border-bottom: 1px solid #f0f0f0;
   overflow-x: auto;
 }
 
@@ -1493,7 +1493,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
   align-items: center;
   justify-content: center;
   max-width: 220px;
-  min-height: 60px;
+  min-height: 44px;
   padding: 0;
   border: 0;
   border-bottom: 2px solid transparent;

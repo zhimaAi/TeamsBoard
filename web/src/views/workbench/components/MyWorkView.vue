@@ -11,7 +11,7 @@ import {
 } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import apiClient, { ApiError } from '@/api/client'
-import CreateTaskModal from '@/components/CreateTaskModal.vue'
+import CreateLocalTaskModal from '@/components/CreateLocalTaskModal.vue'
 import { useDocumentTitle } from '@/composables/useDocumentTitle'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
@@ -239,14 +239,14 @@ function openAssignment(item: MyWorkItem) {
 
 function handleTaskCreated(uuid: string) {
   if (selectedWorkItem.value) selectedWorkItem.value.local_task_uuid = uuid
-  router.push(`/workflows/task/${uuid}`)
+  router.push(`/board/task/${uuid}`)
 }
 
 async function loadMyWork() {
   loading.value = true
   errorText.value = ''
   try {
-    const result = await apiClient.get<{ items: MyWorkItem[] }>('/tasks/my-work')
+    const result = await apiClient.get<{ items: MyWorkItem[] }>('/team/my-work')
     items.value = (result.items || []).map((item) => ({
       ...item,
       id: numberValue(item.id),
@@ -397,9 +397,9 @@ void loadMyWork()
                   class="assign-button"
                   @click="openAssignment(record)"
                 >
-                  分配 Agent
+                  导入任务
                 </button>
-                <span v-else class="assigned-text">已分配</span>
+                <span v-else class="assigned-text">已导入</span>
               </template>
 
               <template v-else-if="column.key === 'title'">
@@ -465,7 +465,7 @@ void loadMyWork()
       <a-empty v-else-if="!errorText" description="暂无工作项" class="empty-state" />
     </main>
 
-    <CreateTaskModal
+    <CreateLocalTaskModal
       v-model:open="assignModalOpen"
       :initial-work-item="selectedWorkItem"
       @created="handleTaskCreated"

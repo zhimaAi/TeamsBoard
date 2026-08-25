@@ -1,6 +1,7 @@
 // Package applog provides global structured logging capabilities.
-// By default, only the output is output to the console at startup; after the account is logged in, InitAccountLogger is called to add file output that rotates by day.
-// The log file is dropped to <accountDataDir>/logs/YYYY-MM-DD.log.
+// The application initializes it during bootstrap, before opening databases or
+// starting the HTTP server. Logs are written to ~/.goteams/logs/YYYY-MM-DD.log
+// as well as stderr so startup failures are not lost in desktop mode.
 package applog
 
 import (
@@ -92,11 +93,9 @@ func init() {
 	}))
 }
 
-// InitAccountLogger initializes the account-level file log.
-// After the call, the log is output to the console and the daily file under <accountDataDir>/logs/ at the same time.
-// Repeated calls will close the old file writer first.
-func InitAccountLogger(accountDataDir string) error {
-	logsDir := filepath.Join(accountDataDir, "logs")
+// InitLogger initializes the application log file. logsDir is the directory
+// containing the daily files. Repeated calls close the previous writer first.
+func InitLogger(logsDir string) error {
 	dw, err := newDailyWriter(logsDir)
 	if err != nil {
 		return err
@@ -119,8 +118,8 @@ func InitAccountLogger(accountDataDir string) error {
 	return nil
 }
 
-// CloseAccountLogger closes the account-level file log and returns to pure console output.
-func CloseAccountLogger() {
+// CloseLogger closes the application log file and returns to pure stderr output.
+func CloseLogger() {
 	globalMu.Lock()
 	defer globalMu.Unlock()
 
@@ -132,6 +131,15 @@ func CloseAccountLogger() {
 		Level: slog.LevelDebug,
 	}))
 }
+
+// InitAccountLogger is retained for compatibility with older callers. New code
+// should initialize a single application log with InitLogger.
+func InitAccountLogger(accountDataDir string) error {
+	return InitLogger(filepath.Join(accountDataDir, "logs"))
+}
+
+// CloseAccountLogger is retained for compatibility with older callers.
+func CloseAccountLogger() { CloseLogger() }
 
 // Logger returns the current global Logger
 func Logger() *slog.Logger {

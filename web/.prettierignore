@@ -1,0 +1,8 @@
+node_modules
+dist
+package-lock.json
+components.d.ts
+dev.err
+AGENTS.md
+DESIGN.md
+src/assets/**/*.svg

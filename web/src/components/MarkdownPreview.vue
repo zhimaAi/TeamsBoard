@@ -1,3 +1,10 @@
+<template>
+  <div class="markdown-preview-shell">
+    <a-empty v-if="!content.trim()" :description="emptyText" />
+    <article v-else class="markdown-preview" v-html="renderedContent"></article>
+  </div>
+</template>
+
 <script setup lang="ts">
 import { computed } from 'vue'
 import MarkdownIt from 'markdown-it'
@@ -15,15 +22,19 @@ const markdown = new MarkdownIt({
   linkify: true,
 })
 
-const renderedContent = computed(() => markdown.render(props.content || ''))
-</script>
+// 渲染前归一化：统一换行符、折叠连续空行、去行尾空格，避免脏换行产生多余间距
+function normalizeMarkdown(text: string) {
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim()
+}
 
-<template>
-  <div class="markdown-preview-shell">
-    <a-empty v-if="!content.trim()" :description="emptyText" />
-    <article v-else class="markdown-preview" v-html="renderedContent"></article>
-  </div>
-</template>
+const renderedContent = computed(() =>
+  markdown.render(normalizeMarkdown(props.content || '')),
+)
+</script>
 
 <style scoped>
 .markdown-preview-shell {
@@ -38,10 +49,13 @@ const renderedContent = computed(() => markdown.render(props.content || ''))
 }
 
 .markdown-preview {
+  /* 覆盖消息卡片继承的 pre-wrap：渲染 HTML 里的格式换行不再产生间距，
+     内容中的真实换行仍由 breaks: true 转成 <br> 保留 */
+  white-space: normal;
   overflow-wrap: anywhere;
   color: #2f3440;
   font-size: 14px;
-  line-height: 1.75;
+  line-height: 1.6;
 }
 
 .markdown-preview :deep(h1),
@@ -53,6 +67,7 @@ const renderedContent = computed(() => markdown.render(props.content || ''))
   color: #1f2430;
   font-weight: 650;
   line-height: 1.35;
+  margin: 1.2em 0 0.5em;
 }
 
 .markdown-preview :deep(h1) {
@@ -71,6 +86,18 @@ const renderedContent = computed(() => markdown.render(props.content || ''))
   font-size: 1.24em;
 }
 
+.markdown-preview :deep(h4) {
+  font-size: 1em;
+}
+
+.markdown-preview :deep(h5) {
+  font-size: 0.92em;
+}
+
+.markdown-preview :deep(h6) {
+  font-size: 0.85em;
+}
+
 .markdown-preview :deep(p),
 .markdown-preview :deep(ul),
 .markdown-preview :deep(ol),
@@ -78,6 +105,14 @@ const renderedContent = computed(() => markdown.render(props.content || ''))
 .markdown-preview :deep(pre),
 .markdown-preview :deep(table) {
   margin: 0.8em 0;
+}
+
+.markdown-preview :deep(> :first-child) {
+  margin-top: 0;
+}
+
+.markdown-preview :deep(> :last-child) {
+  margin-bottom: 0;
 }
 
 .markdown-preview :deep(a) {
@@ -103,6 +138,8 @@ const renderedContent = computed(() => markdown.render(props.content || ''))
   padding: 14px 16px;
   border-radius: 7px;
   background: #1f2430;
+  font-size: 0.92em;
+  line-height: 1.6;
 }
 
 .markdown-preview :deep(pre code) {

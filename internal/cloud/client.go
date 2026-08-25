@@ -170,7 +170,7 @@ func decodeAPIResponse(statusCode int, body []byte, result interface{}) error {
 		if codeRaw := string(bytes.TrimSpace(envelope.Code)); codeRaw != "null" {
 			var code interface{}
 			if err := json.Unmarshal(envelope.Code, &code); err != nil {
-				return fmt.Errorf("解析云端响应 code 失败: %w", err)
+				return fmt.Errorf("解析云端响应 code 失败: %w, body: %s", err, truncateBody(body))
 			}
 			codeText := fmt.Sprint(code)
 			if codeText != "0" && codeText != "200" {
@@ -178,6 +178,7 @@ func decodeAPIResponse(statusCode int, body []byte, result interface{}) error {
 					StatusCode: statusCode,
 					Code:       codeText,
 					Message:    envelope.Message,
+					Body:       truncateBody(body),
 				}
 			}
 		}
@@ -185,7 +186,7 @@ func decodeAPIResponse(statusCode int, body []byte, result interface{}) error {
 			return nil
 		}
 		if err := json.Unmarshal(envelope.Data, result); err != nil {
-			return fmt.Errorf("解析云端响应 data 失败: %w", err)
+			return fmt.Errorf("解析云端响应 data 失败: %w, body: %s", err, truncateBody(body))
 		}
 		return nil
 	}

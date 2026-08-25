@@ -1,14 +1,122 @@
-import { defineConfig, loadEnv } from 'vite'
+import { defineConfig, loadEnv, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import Components from 'unplugin-vue-components/vite'
 import { AntDesignVueResolver } from 'unplugin-vue-components/resolvers'
 import { fileURLToPath, URL } from 'node:url'
+import http from 'node:http'
+import net from 'node:net'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
+const RUNTIME_JSON_PATH = path.join(os.homedir(), '.goteams', 'runtime', 'runtime.json')
+
+// 后端地址发现：优先环境变量显式指定（调试用），否则读取后端写入的 runtime.json，
+// 按 mtime 缓存，后端重启换端口后自动刷新。
+function createBackendTargetResolver(envTarget?: string): () => string | null {
+  let cached: { mtimeMs: number; target: string } | null = null
+  return () => {
+    if (envTarget) return envTarget
+    try {
+      const stat = fs.statSync(RUNTIME_JSON_PATH)
+      if (cached && cached.mtimeMs === stat.mtimeMs) return cached.target
+      const raw = fs.readFileSync(RUNTIME_JSON_PATH, 'utf8')
+      const data = JSON.parse(raw) as { address?: unknown }
+      const address = typeof data.address === 'string' ? data.address.trim() : ''
+      if (address) {
+        cached = { mtimeMs: stat.mtimeMs, target: `http://${address}` }
+        return cached.target
+      }
+    } catch {
+      // runtime.json 尚未写入（后端未启动）或暂时不可读
+    }
+    return null
+  }
+}
+
+function writeProxyError(res: http.ServerResponse, target: string | null) {
+  const message = target
+    ? `本地后端转发失败 (${target})，请确认后端已启动`
+    : '本地后端未启动，请先运行 Go 后端（task dev1/dev2/cn/global）'
+  res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify({ error: message }))
+}
+
+function localBackendProxyPlugin(resolveTarget: () => string | null): Plugin {
+  return {
+    name: 'goteams-local-backend-proxy',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (!req.url || !req.url.startsWith('/api/local')) {
+          next()
+          return
+        }
+        const target = resolveTarget()
+        console.log('[proxy] 请求到达 ' + req.method + ' ' + req.url + ' target=' + target)
+        if (!target) return writeProxyError(res, null)
+        let targetUrl: URL
+        try {
+          targetUrl = new URL(req.url || '/', target)
+        } catch {
+          return writeProxyError(res, target)
+        }
+        const proxyReq = http.request(
+          {
+            hostname: targetUrl.hostname,
+            port: targetUrl.port,
+            path: targetUrl.pathname + targetUrl.search,
+            method: req.method,
+            headers: { ...req.headers, host: targetUrl.host },
+          },
+          (proxyRes) => {
+            res.writeHead(proxyRes.statusCode || 502, proxyRes.headers)
+            proxyRes.pipe(res)
+          },
+        )
+        proxyReq.on('error', () => {
+          if (res.headersSent) {
+            res.destroy()
+          } else {
+            writeProxyError(res, target)
+          }
+        })
+        req.pipe(proxyReq)
+      })
+
+      // /api/local/ws 的 WebSocket 升级转发（其余路径交给 Vite 内置 HMR 等处理）
+      server.httpServer?.on('upgrade', (req, socket, head) => {
+        if (!req.url || !req.url.startsWith('/api/local')) return
+        const target = resolveTarget()
+        if (!target) return socket.destroy()
+        let targetUrl: URL
+        try {
+          targetUrl = new URL(req.url, target)
+        } catch {
+          return socket.destroy()
+        }
+        const upstream = net.connect(Number(targetUrl.port), targetUrl.hostname, () => {
+          const requestLine = `${req.method} ${targetUrl.pathname}${targetUrl.search} HTTP/1.1\r\n`
+          const headerLines: string[] = []
+          for (let i = 0; i < req.rawHeaders.length; i += 2) {
+            headerLines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`)
+          }
+          upstream.write(`${requestLine}${headerLines.join('\r\n')}\r\n\r\n`)
+          if (head.length > 0) upstream.write(head)
+          socket.pipe(upstream).pipe(socket)
+        })
+        upstream.on('error', () => socket.destroy())
+        socket.on('error', () => upstream.destroy())
+        socket.on('close', () => upstream.destroy())
+      })
+    },
+  }
+}
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const port = Number(env.VITE_PORT) || 5173
-  const proxyTarget = env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:18900'
+  const resolveBackendTarget = createBackendTargetResolver(env.VITE_API_PROXY_TARGET)
 
   return {
     plugins: [
@@ -20,6 +128,7 @@ export default defineConfig(({ mode }) => {
           }),
         ],
       }),
+      localBackendProxyPlugin(resolveBackendTarget),
     ],
     resolve: {
       alias: {
@@ -29,25 +138,6 @@ export default defineConfig(({ mode }) => {
     server: {
       port,
       strictPort: true,
-      proxy: {
-        '/api/local': {
-          target: proxyTarget,
-          changeOrigin: true,
-          ws: true,
-          configure: (proxy) => {
-            // Fail quickly when the backend is not started, returning a clear error instead of letting the request hang forever
-            proxy.on('error', (err, _req, res) => {
-              const message =
-                `本地后端未启动 (${proxyTarget})，请先运行 Go 后端：cd .. && go run ./cmd/client`
-              console.error('[vite proxy] /api/local 代理失败:', err.code || err.message)
-              if (res && typeof res.writeHead === 'function') {
-                res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' })
-                res.end(JSON.stringify({ error: message }))
-              }
-            })
-          },
-        },
-      },
     },
   }
 })

@@ -3,6 +3,7 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -17,6 +18,11 @@ import (
 const createNewProcessGroup = 0x00000200
 const processExitVerificationTimeout = 2 * time.Second
 
+// taskKillTimeout bounds the taskkill fallback. taskkill /T /F waits for every
+// process in the tree to exit; a CLI blocked on an uninterruptible wait (e.g. an
+// in-flight LLM network request) can otherwise hang the caller for minutes.
+const taskKillTimeout = 3 * time.Second
+
 // CreateProcessGroup sets process group attributes
 func CreateProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -24,19 +30,75 @@ func CreateProcessGroup(cmd *exec.Cmd) {
 	}
 }
 
-// TerminateProcessTree terminates the process tree
+// TerminateProcessTree forcibly terminates the process tree.
+//
+// Primary path: TerminateProcess on every process in the tree. Unlike
+// taskkill /T /F — which waits for each process to exit and can hang on a
+// process stuck in an uninterruptible wait — TerminateProcess issues the
+// termination immediately and returns without waiting.
+//
+// Fallback: taskkill /T /F (bounded by taskKillTimeout) for trees containing
+// processes that reject direct termination (e.g. elevated children).
 func TerminateProcessTree(pid int) error {
 	if pid <= 0 {
 		return nil
 	}
 
+	if err := terminateTreeImmediately(pid); err == nil {
+		return nil
+	}
+
+	return terminateTreeWithTaskKill(pid)
+}
+
+// terminateTreeImmediately force-kills every process in the tree via
+// TerminateProcess without waiting for the targets to exit.
+func terminateTreeImmediately(pid int) error {
+	processIDs, err := collectProcessTreePIDs(pid)
+	if err != nil || len(processIDs) == 0 {
+		processIDs = []int{pid}
+	}
+
+	var firstErr error
+	// Children first (collectProcessTreePIDs is BFS from the root) so a dying
+	// parent cannot spawn replacements before its children are gone.
+	for i := len(processIDs) - 1; i >= 0; i-- {
+		if err := terminatePID(processIDs[i]); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// terminatePID forcibly terminates one process without waiting for exit.
+// Already-exited processes are treated as success.
+func terminatePID(processID int) error {
+	handle, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(processID))
+	if err != nil {
+		// The process has already exited (ERROR_INVALID_PARAMETER); treat as terminated.
+		return nil
+	}
+	defer windows.CloseHandle(handle)
+	if err := windows.TerminateProcess(handle, 1); err != nil {
+		return fmt.Errorf("终止进程 %d 失败: %w", processID, err)
+	}
+	return nil
+}
+
+// terminateTreeWithTaskKill is the fallback for trees containing processes that
+// reject TerminateProcess (e.g. elevated children).
+func terminateTreeWithTaskKill(pid int) error {
 	// taskkill may return a non-zero exit code when some descendants have already exited or when another termination is not supported,
 	// Even if the entire target process tree is actually cleaned. Record the process tree before calling, and use the actual survival after calling
 	// PID shall prevail to avoid misreporting "part of the operation failed but finally exited" as a termination failure.
 	targetPIDs, snapshotErr := collectProcessTreePIDs(pid)
 
 	// taskkill /T will wait for and forcefully terminate the root process and all its descendants.
-	killCmd := exec.Command("taskkill", "/T", "/F", "/PID", fmt.Sprintf("%d", pid))
+	// Bound the wait: when a descendant is stuck in an uninterruptible state, taskkill itself
+	// blocks until that process exits, which can take minutes without a timeout.
+	killCtx, killCancel := context.WithTimeout(context.Background(), taskKillTimeout)
+	defer killCancel()
+	killCmd := exec.CommandContext(killCtx, "taskkill", "/T", "/F", "/PID", fmt.Sprintf("%d", pid))
 	output, err := killCmd.CombinedOutput()
 	if snapshotErr == nil {
 		survivors, verifyErr := waitForProcessesToExit(targetPIDs, processExitVerificationTimeout)

@@ -1,17 +1,21 @@
 package localserver
 
 import (
+	"bytes"
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"goteams-client/internal/apimanager"
-	"goteams-client/internal/capability"
+	"goteams-client/internal/applog"
 	"goteams-client/internal/cloud"
 	"goteams-client/internal/command"
 	"goteams-client/internal/config"
@@ -23,7 +27,6 @@ import (
 	"goteams-client/internal/storage"
 	"goteams-client/internal/tools"
 	"goteams-client/internal/workflow"
-	"goteams-client/internal/workitem"
 )
 
 // AccountManagerInterface account manager interface (implemented by bootstrap.AccountManager)
@@ -33,15 +36,10 @@ type AccountManagerInterface interface {
 	IsLoggedIn() bool
 }
 
-// LoginOptions Login options: Use a separate CloudClient and data directory when customizing the cloud address.
+// LoginOptions configures the optional cloud session. It never changes local storage.
 type LoginOptions struct {
 	// CloudClient Customize the cloud address client; pass nil for official login (use the default client).
 	CloudClient *cloud.Client
-	// DataDir account data (cloud session library) container directory: the layer directly containing the <userID> subdirectory.
-	// Both official and custom logins derive it from the server address as data/accounts_<key>, so the same address maps to the same directory.
-	// Required: must always be provided by the caller (empty means an error).
-	// Note: This field only determines the location of the account container and is independent of the local Profile library (base.db/key) directory.
-	DataDir string
 	// PersistLastLogin Whether to persist the last login index for automatic session recovery after restart.
 	// Both official and custom logins are persisted (when the custom login is restored, the client is rebuilt according to the ServerURL and renewed to the cloud).
 	PersistLastLogin bool
@@ -53,35 +51,43 @@ type LoginOptions struct {
 
 // Config local service configuration
 type Config struct {
-	DataDir        string
-	ConfigDir      string
-	RuntimeDir     string
-	BaseProfileDir string
-	BootstrapStore secrets.Store
-	SecretStore    *secrets.DelegatingStore
-	CloudConfig    *config.CloudConfig
-	BrowserTicket  string
-	CloudClient    *cloud.Client
-	AccountMgr     AccountManagerInterface
-	Capabilities   *capability.Registry
+	DataDir         string
+	ConfigDir       string
+	RuntimeDir      string
+	TaskRoot        string
+	BaseProfileDir  string
+	BootstrapStore  secrets.Store
+	SecretStore     *secrets.DelegatingStore
+	CloudConfig     *config.CloudConfig
+	BrowserTicket   string
+	DesktopToken    string
+	APIToken        string
+	APITokenFromEnv bool
+	Shutdown        func()
+	CloudClient     *cloud.Client
+	AccountMgr      AccountManagerInterface
+	TaskDB          *sql.DB
+	Orchestrator    *workflow.Orchestrator
+	WSHub           *WSHub
 }
 
 // SessionInfo session information of the current login account
 type SessionInfo struct {
-	DB           *sql.DB
-	Orchestrator *workflow.Orchestrator
-	WSHub        *WSHub
-	WorkitemSvc  *workitem.Service
-	DeviceMgr    *identity.DeviceManager
-	JWTMgr       *localauth.JWTManager
-	WSClient     *cloud.WSClient
+	DeviceMgr *identity.DeviceManager
+	JWTMgr    *localauth.JWTManager
 	// CloudClient The cloud client actually used by the current session (custom login is an independent client).
 	// It must be used to proxy cloud requests (task/work item/device registration, etc.), and the static official client cannot be used directly.
 	CloudClient *cloud.Client
 	AdminID     string
 	UserID      string
 	UserName    string
-	DataDir     string
+	// ServerURL 登录目标云端地址（normalized）。官方登录用它校验会话与当前配置的
+	// 远程域名一致，防止共享本地数据目录的多个实例互相串用登录态；custom 登录的
+	// 地址由用户主动选择，不受内置配置约束。
+	ServerURL string
+	// ServerType 登录目标类型（official | custom）。官方会话恢复与校验要求域名与
+	// 当前配置一致；custom 会话以自身地址为目标，不做域名一致性校验。
+	ServerType string
 }
 
 // sessionHolder thread-safely holds the current account session
@@ -108,14 +114,6 @@ func (h *sessionHolder) clear() {
 	h.mu.Unlock()
 }
 
-func (h *sessionHolder) db() *sql.DB {
-	s := h.get()
-	if s == nil {
-		return nil
-	}
-	return s.DB
-}
-
 // Server local HTTP service
 type Server struct {
 	config     Config
@@ -126,6 +124,8 @@ type Server struct {
 	profile    *LocalProfile
 	profileMu  sync.Mutex
 	profileDir string
+	ticketMu   sync.Mutex
+	ticket     string
 }
 
 // New creates a local service instance
@@ -137,6 +137,10 @@ func New(config Config) *Server {
 		sessions: &sessionHolder{},
 		dbRef:    storage.NewDBRef(),
 		profile:  NewLocalProfile(),
+		ticket:   config.BrowserTicket,
+	}
+	if config.WSHub != nil {
+		config.WSHub.SetAPIToken(config.APIToken)
 	}
 	s.router = s.buildRouter()
 
@@ -186,16 +190,7 @@ func (s *Server) currentAccountID() (string, error) {
 	return sess.UserID, nil
 }
 
-// currentDB gets the current database (returns nil if not logged in)
-func (s *Server) currentDB() *sql.DB {
-	return s.sessions.db()
-}
-
-// switchProfile switches local data Profile:
-// - dbDir is the local function library (base.db) directory, which is always a common Profile (data) and is shared by all accounts;
-// - secretDir is the key backend directory, isolated by login target - the official one is general Profile (data),
-// The custom address login is the account container directory corresponding to the self-built cloud (data/accounts_<key>),
-// Make the JWT/device keys of different clouds non-interfering with each other, and no longer generate the top-level data_cus_<key> directory.
+// switchProfile opens the fixed base profile and selects its credential store.
 func (s *Server) switchProfile(ctx context.Context, dbDir, secretDir string) error {
 	s.profileMu.Lock()
 	defer s.profileMu.Unlock()
@@ -232,13 +227,9 @@ func (s *Server) currentProfileDir() string {
 	return s.profileDir
 }
 
-// currentSessionDB returns the current cloud account session database (returns nil if not logged in).
+// currentSessionDB returns the application-scoped local task database.
 func (s *Server) currentSessionDB() *sql.DB {
-	sess := s.sessions.get()
-	if sess == nil {
-		return nil
-	}
-	return sess.DB
+	return s.config.TaskDB
 }
 
 // noopAccountID local function key is isolated by Profile (not account): the key reference does not have the account ID,
@@ -252,10 +243,29 @@ func (s *Server) Handler() http.Handler {
 	return s.router
 }
 
+// Close releases server-owned base profile resources. Application-level task
+// runtime resources are owned and closed by bootstrap.App.
+func (s *Server) Close() {
+	if s.profile != nil {
+		s.profile.Close()
+	}
+}
+
 // buildRouter builds the route
 func (s *Server) buildRouter() *gin.Engine {
 	r := gin.New()
-	r.Use(gin.Recovery())
+	r.Use(gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
+		applog.Error("本地 HTTP 服务发生未处理异常",
+			"method", c.Request.Method,
+			"path", c.Request.URL.Path,
+			"error", recovered,
+		)
+		c.AbortWithStatus(http.StatusInternalServerError)
+	}))
+	r.Use(noStoreAPI())
+	r.Use(logAllRequests())
+	r.Use(logFailedRequest())
+	r.Use(s.requireAPIToken())
 	r.Use(s.validateSession())
 
 	// Health check (no Session required)
@@ -267,6 +277,10 @@ func (s *Server) buildRouter() *gin.Engine {
 	auth.GET("/session", s.handleSessionStatus)
 	auth.POST("/login", s.handleLogin)
 	auth.POST("/logout", s.handleLogout)
+
+	if s.config.DesktopToken != "" && s.config.Shutdown != nil {
+		r.POST("/api/local/desktop/shutdown", s.handleDesktopShutdown)
+	}
 
 	// GoTeams status
 	r.GET("/api/local/goteams/status", s.handleGoTeamsStatus)
@@ -281,7 +295,7 @@ func (s *Server) buildRouter() *gin.Engine {
 
 	// The following local function routing groups can be used without cloud login, and the data is uniformly read and written to the local general Profile library (data/base.db, shared by all accounts);
 	// Configuration center (Git/SSH/Docker/database/model), interface management, command center, knowledge base.
-	// Note: The JWT/device key is isolated in data/accounts_<key>/secrets.json according to the server address (official and custom share the same rule).
+	// Cloud credentials use the fixed application credential store.
 	local := r.Group("/api/local")
 	configHandler.RegisterRoutes(local.Group("/config"))
 
@@ -303,39 +317,142 @@ func (s *Server) buildRouter() *gin.Engine {
 		return filepath.Join(dir, "knowledge", "content"), nil
 	})
 
-	// The following route verifies the cloud login status through requireLogin middleware
-	loggedIn := r.Group("", s.requireLogin())
-
 	// Tool Center
 	toolsHandler := tools.NewHandler(s.dbRef, s.config.SecretStore)
-	toolsGroup := loggedIn.Group("/api/local/tools")
+	toolsGroup := local.Group("/tools")
 	toolsHandler.RegisterRoutes(toolsGroup)
+	loggedIn := r.Group("", s.requireLogin())
 
-	//Task management
-	tasksHandler := NewTasksHandler(s.dbRef, s.currentSessionDB, s.currentOrchestrator, s.currentWorkitemSvc, s.currentCloudClient)
-	tasksGroup := loggedIn.Group("/api/local/tasks")
+	// Local task management and CLI execution are available without cloud login.
+	// Individual cloud-import endpoints validate the cloud session in their handler.
+	tasksHandler := NewTasksHandler(s.currentSessionDB, s.currentOrchestrator, s.currentCloudClient, s.config.WSHub, s.config.TaskRoot)
+	tasksGroup := local.Group("/tasks")
 	tasksHandler.RegisterRoutes(tasksGroup)
+	pipelinesHandler := NewPipelinesHandler(s.currentSessionDB, s.currentCloudClient)
+	pipelinesHandler.RegisterRoutes(local.Group("/pipelines"))
+	NewProjectsHandler(s.currentSessionDB).RegisterRoutes(local.Group("/projects"))
+	NewNotificationsHandler(s.currentSessionDB).RegisterRoutes(local.Group("/notifications"))
+	tasksHandler.RegisterTeamRoutes(loggedIn.Group("/api/local/team"))
+	pipelinesHandler.RegisterCloudRoutes(loggedIn.Group("/api/local/team"))
+	pipelinesHandler.RegisterCloudRoutes(loggedIn.Group("/api/local"))
 
 	registerWebUI(r)
 	return r
 }
 
-// currentOrchestratorGetter returns the current Orchestrator
-func (s *Server) currentOrchestrator() *workflow.Orchestrator {
-	sess := s.currentSession()
-	if sess == nil {
-		return nil
+// logAllRequests records every local API request so connectivity issues between
+// the front-end (Vite proxy) and the back-end are visible in the application log.
+func logAllRequests() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		applog.Info("本地 HTTP 请求",
+			"method", c.Request.Method,
+			"path", c.Request.URL.Path,
+			"status", c.Writer.Status(),
+			"cost_ms", time.Since(start).Milliseconds(),
+			"remote", c.Request.RemoteAddr,
+		)
 	}
-	return sess.Orchestrator
 }
 
-// currentWorkitemSvc returns the current WorkitemSvc
-func (s *Server) currentWorkitemSvc() *workitem.Service {
-	sess := s.currentSession()
-	if sess == nil {
-		return nil
+// noStoreAPI marks every loopback API response as non-cacheable. A stale
+// cached response (e.g. index.html) previously served to /api/local/* masked
+// the real session state in the Electron renderer.
+func noStoreAPI() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.Header("Cache-Control", "no-store")
+		}
+		c.Next()
 	}
-	return sess.WorkitemSvc
+}
+
+// logFailedRequest records every server-side HTTP error in the application log.
+// Database query failures eventually returned by handlers are therefore visible
+// even when Electron owns (and does not display) the sidecar's stderr.
+func logFailedRequest() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		writer := &errorResponseWriter{ResponseWriter: c.Writer}
+		c.Writer = writer
+		c.Next()
+		if c.Writer.Status() >= http.StatusInternalServerError {
+			applog.Error("本地 HTTP 请求失败",
+				"method", c.Request.Method,
+				"path", c.Request.URL.Path,
+				"status", c.Writer.Status(),
+				// Handlers include the original SQLite/SQL error in their JSON error
+				// response. Capture that response so the log has the useful database
+				// diagnostic without recording request bodies or SQL statements.
+				"response", strings.TrimSpace(writer.body.String()),
+			)
+		}
+	}
+}
+
+const maxLoggedErrorResponseBytes = 4096
+
+// errorResponseWriter retains a bounded copy only of responses so error logs
+// can carry handler diagnostics while keeping normal traffic unlogged.
+type errorResponseWriter struct {
+	gin.ResponseWriter
+	body bytes.Buffer
+}
+
+func (w *errorResponseWriter) Write(data []byte) (int, error) {
+	w.capture(data)
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *errorResponseWriter) WriteString(value string) (int, error) {
+	w.capture([]byte(value))
+	return w.ResponseWriter.WriteString(value)
+}
+
+func (w *errorResponseWriter) capture(data []byte) {
+	remaining := maxLoggedErrorResponseBytes - w.body.Len()
+	if remaining > 0 {
+		if len(data) > remaining {
+			data = data[:remaining]
+		}
+		_, _ = w.body.Write(data)
+	}
+}
+
+// requireAPIToken 强制除启动引导路径外的所有本地 API 请求携带本次启动的
+// 鉴权 token（header X-GoTeams-Api-Token，WS 在 handler 内校验 query）。
+// 浏览器无法为静态页面加载请求添加 header，因此非 /api/ 路径（页面与静态
+// 资源）放行；health 由 Electron 探测、auth/* 是登录与握手入口、
+// desktop/shutdown 已有独立 token，均放行。
+func (s *Server) requireAPIToken() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		path := c.Request.URL.Path
+		if path == "/api/local/health" ||
+			path == "/api/local/desktop/shutdown" ||
+			path == "/api/local/ws" ||
+			strings.HasPrefix(path, "/api/local/auth/") ||
+			!strings.HasPrefix(path, "/api/") {
+			c.Next()
+			return
+		}
+		expected := s.config.APIToken
+		if expected == "" {
+			applog.Warn("本地 API token 未配置，跳过校验", "path", path)
+			c.Next()
+			return
+		}
+		token := c.GetHeader("X-GoTeams-Api-Token")
+		if len(token) != len(expected) || subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "无效的访问令牌"})
+			return
+		}
+		c.Next()
+	}
+}
+
+// currentOrchestratorGetter returns the current Orchestrator
+func (s *Server) currentOrchestrator() *workflow.Orchestrator {
+	return s.config.Orchestrator
 }
 
 // currentCloudClient returns the cloud client used by the current session (fallback to the default client when the session does not exist).
@@ -370,10 +487,9 @@ func (s *Server) handleHealth(c *gin.Context) {
 
 // handleWebSocket WebSocket endpoint
 func (s *Server) handleWebSocket(c *gin.Context) {
-	sess := s.currentSession()
-	if sess == nil || sess.WSHub == nil {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
+	if s.config.WSHub == nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "本地任务运行时未初始化"})
 		return
 	}
-	sess.WSHub.HandleWebSocket(c)
+	s.config.WSHub.HandleWebSocket(c)
 }

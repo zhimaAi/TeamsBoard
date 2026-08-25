@@ -27,6 +27,9 @@ const selectedType = ref('')
 const selectedModel = ref('')
 const useCustomModel = ref(false)
 const customModel = ref('')
+const models = ref<string[]>([])
+const modelsLoading = ref(false)
+let modelReqSeq = 0
 
 const selectedCli = () => cliList.value.find(item => item.type === selectedType.value)
 
@@ -59,12 +62,11 @@ function saveCustomModel(cliType: string, model: string) {
   } catch { /* ignore */ }
 }
 
-/** Merge probed models + locally recorded custom models */
-function mergedModels(cli: DiscoveredCLI): { name: string; custom: boolean }[] {
-  const customs = loadCustomModels(cli.type)
-  const result: { name: string; custom: boolean }[] = cli.models.map(m => ({ name: m, custom: false }))
-  for (const m of customs) {
-    if (!cli.models.includes(m)) {
+/** Merge freshly probed models + locally recorded custom models */
+function mergedModels(probed: string[]): { name: string; custom: boolean }[] {
+  const result: { name: string; custom: boolean }[] = probed.map(m => ({ name: m, custom: false }))
+  for (const m of loadCustomModels(selectedType.value)) {
+    if (!probed.includes(m)) {
       result.push({ name: m, custom: true })
     }
   }
@@ -83,20 +85,16 @@ watch(() => props.open, async (visible) => {
 
 async function loadCLIs() {
   loading.value = true
+  models.value = []
   try {
     const result = await apiClient.get<{ items: DiscoveredCLI[] }>('/tasks/cli-discovery')
-    cliList.value = result.items || []
-    // Auto-select the first installed CLI
+    // 已安装的 CLI 排在前面，未安装的置后且不可选择
+    cliList.value = [...(result.items || [])].sort((a, b) => Number(b.installed) - Number(a.installed))
+    // Auto-select the first installed CLI and load its model list right away
     const firstInstalled = cliList.value.find(item => item.installed)
     if (firstInstalled) {
       selectedType.value = firstInstalled.type
-      const models = mergedModels(firstInstalled)
-      if (models.length > 0) {
-        selectedModel.value = models[0].name
-        useCustomModel.value = false
-      } else {
-        useCustomModel.value = true
-      }
+      await loadModels(firstInstalled.type)
     }
   } catch (error) {
     message.error(error instanceof Error ? error.message : 'CLI 探测失败')
@@ -105,14 +103,36 @@ async function loadCLIs() {
   }
 }
 
-function selectCli(type: string) {
+async function loadModels(cliType: string) {
+  const seq = ++modelReqSeq
+  modelsLoading.value = true
+  models.value = []
+  selectedModel.value = ''
+  let fetched: string[] = []
+  try {
+    const result = await apiClient.get<{ models: string[] }>('/tasks/cli-models', { cli_type: cliType })
+    fetched = result.models || []
+  } catch (error) {
+    if (seq === modelReqSeq) {
+      message.error(error instanceof Error ? error.message : '模型列表加载失败')
+    }
+  } finally {
+    if (seq !== modelReqSeq) return
+    modelsLoading.value = false
+    models.value = fetched
+    const merged = mergedModels(fetched)
+    selectedModel.value = merged.length > 0 ? merged[0].name : ''
+    useCustomModel.value = merged.length === 0
+  }
+}
+
+async function selectCli(type: string) {
   const cli = cliList.value.find(item => item.type === type)
-  if (!cli || !cli.installed) return
+  if (!cli || !cli.installed || type === selectedType.value) return
+  // Only load the model list of the clicked CLI on demand
   selectedType.value = type
-  const models = mergedModels(cli)
-  selectedModel.value = models.length > 0 ? models[0].name : ''
-  useCustomModel.value = models.length === 0
   customModel.value = ''
+  await loadModels(type)
 }
 
 function handleConfirm() {
@@ -171,7 +191,6 @@ function handleCancel() {
             </div>
             <div v-if="cli.installed" class="cli-card__meta">
               <span v-if="cli.version" class="cli-card__version">{{ cli.version }}</span>
-              <span v-if="cli.models.length" class="cli-card__models">{{ cli.models.length }} 个模型</span>
             </div>
             <div v-else class="cli-card__meta">
               <span class="cli-card__hint">请先安装并加入 PATH</span>
@@ -181,28 +200,30 @@ function handleCancel() {
 
         <div v-if="selectedCli()?.installed" class="cli-model-section">
           <div class="cli-model-section__label">模型配置</div>
-          <a-select
-            v-if="!useCustomModel && mergedModels(selectedCli()!).length > 0"
-            v-model:value="selectedModel"
-            placeholder="选择模型"
-            style="width: 100%"
-            show-search
-            :filter-option="(input: string, option: any) => (option?.value || '').toLowerCase().includes(input.toLowerCase())"
-          >
-            <a-select-option v-for="m in mergedModels(selectedCli()!)" :key="m.name" :value="m.name">
-              {{ m.name }}
-              <a-tag v-if="m.custom" color="blue" size="small" style="margin-left: 6px">自定义</a-tag>
-            </a-select-option>
-          </a-select>
-          <a-input
-            v-else
-            v-model:value="customModel"
-            placeholder="输入模型名称（可留空使用 CLI 默认模型）"
-            allow-clear
-          />
+          <a-spin :spinning="modelsLoading">
+            <a-select
+              v-if="!useCustomModel && mergedModels(models).length > 0"
+              v-model:value="selectedModel"
+              placeholder="选择模型"
+              style="width: 100%"
+              show-search
+              :filter-option="(input: string, option: any) => (option?.value || '').toLowerCase().includes(input.toLowerCase())"
+            >
+              <a-select-option v-for="m in mergedModels(models)" :key="m.name" :value="m.name">
+                {{ m.name }}
+                <a-tag v-if="m.custom" color="blue" size="small" style="margin-left: 6px">自定义</a-tag>
+              </a-select-option>
+            </a-select>
+            <a-input
+              v-else
+              v-model:value="customModel"
+              placeholder="输入模型名称（可留空使用 CLI 默认模型）"
+              allow-clear
+            />
+          </a-spin>
           <div class="cli-model-section__footer">
             <a
-              v-if="mergedModels(selectedCli()!).length > 0"
+              v-if="mergedModels(models).length > 0"
               class="cli-model-section__toggle"
               @click="useCustomModel = !useCustomModel"
             >

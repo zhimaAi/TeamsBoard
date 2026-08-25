@@ -2,34 +2,25 @@
 import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import apiClient from '@/api/client'
+import { isDesktopRuntime, selectDirectory } from '@/composables/useDesktop'
 import type { CloudWorkItem } from '@/types/workitem'
 
+interface RemoteStep {
+  id: number | string
+  uuid?: string
+  name: string
+  sort_order: number
+}
 interface Agent {
-  id: number
+  id: number | string
   name: string
   color: string
   cli_type: string
   workflow_version: number
   description?: string
+  steps?: RemoteStep[]
 }
-interface APICollection {
-  id: number
-  name: string
-  description: string
-}
-interface APIFolder {
-  id: number
-  collection_id: number
-  name: string
-  description: string
-}
-interface DBProfile {
-  id: number
-  name: string
-  db_type: string
-  database_name: string
-}
-
+interface StepRuntimeConfig { cloud_step_id: number | string; cli_type: string; model: string }
 const props = defineProps<{
   open: boolean
   initialStatus?: string
@@ -37,10 +28,6 @@ const props = defineProps<{
 }>()
 const maskEl = ref<HTMLElement | null>(null)
 
-/** Render the dropdown panel inside the overlay layer to avoid being covered by high z-index overlays or clipped by .ct-modal's overflow:hidden */
-function popupContainer() {
-  return maskEl.value ?? document.body
-}
 const emit = defineEmits<{
   (event: 'update:open', value: boolean): void
   (event: 'created', uuid: string): void
@@ -49,10 +36,10 @@ const emit = defineEmits<{
 /** Upper limit on the total number of working directories (primary + child) */
 const MAX_WORK_DIRS = 8
 
-const STEP_TITLES = ['选择需求/缺陷', '选择 Agent', '设置工作区']
+const STEP_TITLES = ['选择需求/缺陷', '选择流水线', '配置并导入']
 const assignmentMode = computed(() => Boolean(props.initialWorkItem))
 const minimumStep = computed(() => assignmentMode.value ? 1 : 0)
-const modalTitle = computed(() => assignmentMode.value ? '分配 Agent' : '新增任务')
+const modalTitle = computed(() => assignmentMode.value ? '导入任务' : '导入云端任务')
 
 const currentStep = ref(0)
 const loading = ref(false)
@@ -61,20 +48,14 @@ const errorText = ref('')
 
 const workItems = ref<CloudWorkItem[]>([])
 const agents = ref<Agent[]>([])
-const apiCollections = ref<APICollection[]>([])
-const apiFolders = ref<APIFolder[]>([])
-const dbProfiles = ref<DBProfile[]>([])
-const foldersLoading = ref(false)
 
 const keyword = ref('')
 const typeFilter = ref<'all' | 'requirement' | 'defect'>('all')
 const selectedWorkItem = ref<CloudWorkItem>()
-const selectedAgentID = ref<number>()
+const selectedAgentID = ref<number | string>()
+const stepConfigs = ref<StepRuntimeConfig[]>([])
 const mainWorkDir = ref('')
 const subWorkDirs = ref<string[]>([])
-const selectedAPICollectionID = ref<number>()
-const selectedAPIFolderID = ref<number>(0)
-const selectedDBProfileIDs = ref<number[]>([])
 
 const typeTabs = [
   { value: 'all', label: '全部' },
@@ -95,27 +76,14 @@ const workDirs = computed(() => [mainWorkDir.value, ...subWorkDirs.value].map(di
 const validWorkDirs = computed(() => workDirs.value.filter(Boolean))
 const canAddSubWorkDir = computed(() => workDirs.value.length < MAX_WORK_DIRS)
 
-const collectionOptions = computed(() => apiCollections.value.map(item => ({
-  value: item.id,
-  label: item.name,
-})))
-const folderOptions = computed(() => [
-  { value: 0, label: '留空则自动创建（按任务名）' },
-  ...apiFolders.value.map(item => ({ value: item.id, label: item.name })),
-])
-const dbProfileOptions = computed(() => dbProfiles.value.map(item => ({
-  value: item.id,
-  label: `${item.name}（${item.db_type} · ${item.database_name || '-'}）`,
-})))
-
-const selectedAgent = computed(() => agents.value.find(item => item.id === selectedAgentID.value))
+const selectedAgent = computed(() => agents.value.find(item => String(item.id) === String(selectedAgentID.value)))
 
 const summaryText = computed(() => {
   if (currentStep.value === 0) {
     return selectedWorkItem.value ? `已选择：${selectedWorkItem.value.title}` : `共 ${filteredItems.value.length} 项`
   }
   if (currentStep.value === 1) {
-    return selectedAgent.value ? `已选择：${selectedAgent.value.name}` : `共 ${agents.value.length} 个 Agent`
+    return selectedAgent.value ? `已选择：${selectedAgent.value.name}` : `共 ${agents.value.length} 条流水线`
   }
   return `工作目录 ${validWorkDirs.value.length} 个`
 })
@@ -123,7 +91,7 @@ const summaryText = computed(() => {
 const nextDisabled = computed(() => {
   if (currentStep.value === 0) return !selectedWorkItem.value
   if (currentStep.value === 1) return !selectedAgentID.value
-  return false
+  return stepConfigs.value.some(item => !item.cli_type.trim() || !item.model.trim())
 })
 
 function typeLabel(type: CloudWorkItem['type']) {
@@ -154,12 +122,9 @@ function resetState() {
   typeFilter.value = 'all'
   selectedWorkItem.value = props.initialWorkItem
   selectedAgentID.value = undefined
+  stepConfigs.value = []
   mainWorkDir.value = ''
   subWorkDirs.value = []
-  selectedAPICollectionID.value = undefined
-  selectedAPIFolderID.value = 0
-  selectedDBProfileIDs.value = []
-  apiFolders.value = []
   errorText.value = ''
 }
 
@@ -170,12 +135,24 @@ function reasonText(reason: unknown) {
 // Remember the last selected Agent and pre-select it automatically next time it opens.
 const LAST_AGENT_KEY = 'goteams.createTask.lastAgentID'
 
-function selectAgent(id: number) {
+async function selectAgent(id: number | string) {
   selectedAgentID.value = id
   try {
     localStorage.setItem(LAST_AGENT_KEY, String(id))
   } catch {
     /* Ignore persistence failures in scenarios such as privacy mode */
+  }
+  try {
+    const detail = await apiClient.get<Agent>(`/team/pipelines/${encodeURIComponent(String(id))}/snapshot`)
+    const index = agents.value.findIndex(item => String(item.id) === String(id))
+    if (index >= 0) agents.value[index] = detail
+    stepConfigs.value = (detail.steps || []).sort((a, b) => a.sort_order - b.sort_order).map(step => ({
+      cloud_step_id: step.id ?? step.uuid ?? '',
+      cli_type: '',
+      model: '',
+    }))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '流水线编排加载失败')
   }
 }
 
@@ -183,34 +160,28 @@ async function load() {
   loading.value = true
   errorText.value = ''
   try {
-    // The four data sources are independent: a failure in any one must not affect the options of the others.
+    // The two data sources are independent: a failure in one must not affect the other.
     const workItemRequest = props.initialWorkItem
       ? Promise.resolve({ items: [props.initialWorkItem] })
-      : apiClient.get<{ items: CloudWorkItem[] }>('/tasks/work-items')
-    const [workItemResult, agentResult, collectionResult, dbProfileResult] = await Promise.allSettled([
+      : apiClient.get<{ items: CloudWorkItem[] }>('/team/my-work')
+    const [workItemResult, agentResult] = await Promise.allSettled([
       workItemRequest,
-      apiClient.get<{ items: Agent[] }>('/tasks/agents'),
-      apiClient.get<{ data: APICollection[] }>('/apis/collections'),
-      apiClient.get<{ items: DBProfile[] }>('/config/database-profiles'),
+      apiClient.get<{ items: Agent[] }>('/team/pipelines'),
     ])
 
     workItems.value = workItemResult.status === 'fulfilled' ? workItemResult.value.items || [] : []
     agents.value = agentResult.status === 'fulfilled' ? agentResult.value.items || [] : []
-    apiCollections.value = collectionResult.status === 'fulfilled' ? collectionResult.value.data || [] : []
-    dbProfiles.value = dbProfileResult.status === 'fulfilled' ? dbProfileResult.value.items || [] : []
 
     // After the Agent list loads, auto-preselect the last selected Agent if it is still in the list.
-    const savedAgentID = Number(localStorage.getItem(LAST_AGENT_KEY))
-    if (savedAgentID && agents.value.some((a) => a.id === savedAgentID)) {
-      selectedAgentID.value = savedAgentID
+    const savedAgentID = localStorage.getItem(LAST_AGENT_KEY) || ''
+    if (savedAgentID && agents.value.some((a) => String(a.id) === savedAgentID)) {
+      await selectAgent(savedAgentID)
     }
 
     // Only error on data sources that actually failed, to avoid "one fails, whole screen blank".
     const failures: string[] = []
     if (workItemResult.status === 'rejected') failures.push(`需求/缺陷（${reasonText(workItemResult.reason)}）`)
-    if (agentResult.status === 'rejected') failures.push(`Agent（${reasonText(agentResult.reason)}）`)
-    if (collectionResult.status === 'rejected') failures.push(`接口集合（${reasonText(collectionResult.reason)}）`)
-    if (dbProfileResult.status === 'rejected') failures.push(`数据库连接（${reasonText(dbProfileResult.reason)}）`)
+    if (agentResult.status === 'rejected') failures.push(`云端流水线（${reasonText(agentResult.reason)}）`)
     errorText.value = failures.length ? `以下数据加载失败：${failures.join('、')}` : ''
   } catch (error) {
     errorText.value = error instanceof Error ? error.message : '数据加载失败'
@@ -219,37 +190,61 @@ async function load() {
   }
 }
 
-async function chooseAPICollection(value: unknown) {
-  const id = Number(value)
-  selectedAPIFolderID.value = 0
-  apiFolders.value = []
-  if (!id || Number.isNaN(id)) {
-    // Clear selection: the API collection is optional
-    selectedAPICollectionID.value = undefined
-    return
-  }
-  selectedAPICollectionID.value = id
-  foldersLoading.value = true
-  try {
-    const result = await apiClient.get<{ data: APIFolder[] }>('/apis/folders', { collection_id: id })
-    apiFolders.value = result.data || []
-  } catch (error) {
-    message.error(error instanceof Error ? error.message : '接口文件夹加载失败')
-  } finally {
-    foldersLoading.value = false
-  }
-}
-
-function addSubWorkDir() {
+async function addSubWorkDir() {
   if (!canAddSubWorkDir.value) {
     message.warning(`最多支持 ${MAX_WORK_DIRS} 个工作目录`)
     return
   }
+
+  // The desktop flow selects a real folder first, so cancelling the native dialog
+  // does not leave an empty child-directory row behind. Browser mode keeps manual
+  // input as a compatibility fallback because it has no access to absolute paths.
+  if (isDesktopRuntime()) {
+    const selected = await pickWorkDir(mainWorkDir.value || subWorkDirs.value.at(-1))
+    if (!selected) return
+
+    const duplicate = validWorkDirs.value.some(dir => dir.toLowerCase() === selected.trim().toLowerCase())
+    if (duplicate) {
+      message.warning('工作目录不能重复')
+      return
+    }
+    subWorkDirs.value.push(selected)
+    return
+  }
+
   subWorkDirs.value.push('')
 }
 
 function removeSubWorkDir(index: number) {
   subWorkDirs.value.splice(index, 1)
+}
+
+async function pickWorkDir(defaultPath?: string) {
+  try {
+    return await selectDirectory(defaultPath)
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '无法打开文件夹选择器')
+    return undefined
+  }
+}
+
+async function chooseMainWorkDir() {
+  const selected = await pickWorkDir(mainWorkDir.value)
+  if (selected) mainWorkDir.value = selected
+}
+
+async function chooseSubWorkDir(index: number) {
+  const selected = await pickWorkDir(subWorkDirs.value[index])
+  if (!selected) return
+
+  const duplicate = validWorkDirs.value.some((dir, dirIndex) => (
+    dirIndex !== index + 1 && dir.toLowerCase() === selected.trim().toLowerCase()
+  ))
+  if (duplicate) {
+    message.warning('工作目录不能重复')
+    return
+  }
+  subWorkDirs.value[index] = selected
 }
 
 function goPrev() {
@@ -267,7 +262,7 @@ function goNext() {
   }
   if (currentStep.value === 1) {
     if (!selectedAgentID.value) {
-      message.warning('请选择执行 Agent')
+      message.warning('请选择云端流水线')
       return
     }
     currentStep.value = 2
@@ -285,6 +280,10 @@ async function createTask() {
     message.warning('请填写工作目录地址')
     return
   }
+  if (!stepConfigs.value.length || stepConfigs.value.some(item => !item.cli_type.trim() || !item.model.trim())) {
+    message.warning('请为每一个 Agent 编排配置 CLI 和模型')
+    return
+  }
   if (subWorkDirs.value.some(dir => !dir.trim())) {
     message.warning('子工作目录不能为空，请填写或移除')
     return
@@ -296,18 +295,16 @@ async function createTask() {
   }
   creating.value = true
   try {
-    const result = await apiClient.post<{ uuid: string }>('/tasks', {
+    const result = await apiClient.post<{ uuid: string }>('/team/imports', {
       work_item_type: selectedWorkItem.value.type,
       work_item_id: selectedWorkItem.value.id,
-      agent_id: selectedAgentID.value,
+      cloud_pipeline_id: selectedAgentID.value,
+      step_configs: stepConfigs.value,
       work_dir: validWorkDirs.value[0],
       work_dirs: validWorkDirs.value,
-      api_collection_id: selectedAPICollectionID.value || 0,
-      api_folder_id: selectedAPIFolderID.value || 0,
-      database_profile_ids: selectedDBProfileIDs.value,
       status: props.initialStatus || '',
     })
-    message.success('任务创建成功')
+    message.success('任务已导入到本地看板')
     emit('created', result.uuid)
     close()
   } catch (error) {
@@ -425,18 +422,18 @@ watch(() => props.open, (open) => {
               </div>
             </section>
 
-            <!-- Step 2: select Agent -->
+            <!-- Step 2: select cloud pipeline -->
             <section v-show="currentStep === 1" class="ct-step-panel">
               <p v-if="loading" class="ct-placeholder">加载中…</p>
-              <p v-else-if="agents.length === 0" class="ct-placeholder">暂无可用 Agent，请先在云端配置</p>
+              <p v-else-if="agents.length === 0" class="ct-placeholder">暂无可用流水线，请先在云端配置</p>
               <div v-else class="ct-agent-grid">
                 <button
                   v-for="(agent, index) in agents"
                   :key="agent.id"
                   type="button"
                   class="ct-agent-card"
-                  :class="{ selected: selectedAgentID === agent.id }"
-                  :aria-pressed="selectedAgentID === agent.id"
+                  :class="{ selected: String(selectedAgentID) === String(agent.id) }"
+                  :aria-pressed="String(selectedAgentID) === String(agent.id)"
                   @click="selectAgent(agent.id)"
                 >
                   <span class="ct-agent-icon">
@@ -457,7 +454,7 @@ watch(() => props.open, (open) => {
                   </span>
                   <span class="ct-agent-name">{{ agent.name }}</span>
                   <span class="ct-agent-desc">
-                    {{ agent.description || `${agent.cli_type || '默认 CLI'} · 工作流 v${agent.workflow_version || 1}` }}
+                    {{ agent.description || `${agent.steps?.length || 0} 个 Agent 编排步骤` }}
                   </span>
                 </button>
               </div>
@@ -466,8 +463,37 @@ watch(() => props.open, (open) => {
             <!-- Step 3: set workspace -->
             <section v-show="currentStep === 2" class="ct-step-panel ct-step-form">
               <div class="ct-field">
+                <label class="ct-label required">Agent 编排执行配置</label>
+                <p v-if="!selectedAgent?.steps?.length" class="ct-placeholder">流水线没有可执行的 Agent 编排</p>
+                <div v-for="(step, index) in selectedAgent?.steps || []" :key="String(step.id || step.uuid)" class="ct-runtime-step">
+                  <div class="ct-runtime-title"><span>{{ index + 1 }}</span><strong>{{ step.name }}</strong></div>
+                  <div class="ct-runtime-fields">
+                    <input v-model="stepConfigs[index].cli_type" type="text" placeholder="CLI 类型，如 codex" aria-label="CLI 类型">
+                    <input v-model="stepConfigs[index].model" type="text" placeholder="模型，如 gpt-5" aria-label="模型类型">
+                  </div>
+                </div>
+                <p class="ct-hint">每一个 Agent 编排都必须指定本机 CLI 和模型，导入后会保存为本次任务的永久快照。</p>
+              </div>
+              <div class="ct-field">
                 <label class="ct-label required" for="ct-main-workdir">工作目录地址</label>
-                <div class="ct-input">
+                <button
+                  v-if="isDesktopRuntime()"
+                  id="ct-main-workdir"
+                  type="button"
+                  class="ct-directory-button"
+                  :title="mainWorkDir || '选择主工作目录'"
+                  @click="chooseMainWorkDir"
+                >
+                  <svg class="ct-input-icon" viewBox="0 0 20 20" width="20" height="20" fill="none" aria-hidden="true">
+                    <path d="M2.5 5.5A1.5 1.5 0 014 4h3.6l1.4 2h7A1.5 1.5 0 0117.5 7.5v7A1.5 1.5 0 0116 16H4a1.5 1.5 0 01-1.5-1.5v-9z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                  </svg>
+                  <span class="ct-directory-path" :class="{ placeholder: !mainWorkDir }">
+                    {{ mainWorkDir || '点击选择主工作目录' }}
+                  </span>
+                  <span class="ct-directory-action">{{ mainWorkDir ? '重新选择' : '选择文件夹' }}</span>
+                  <span class="ct-input-counter">{{ workDirs.length }}/{{ MAX_WORK_DIRS }}</span>
+                </button>
+                <div v-else class="ct-input">
                   <svg class="ct-input-icon" viewBox="0 0 20 20" width="20" height="20" fill="none" aria-hidden="true">
                     <path d="M2.5 5.5A1.5 1.5 0 014 4h3.6l1.4 2h7A1.5 1.5 0 0117.5 7.5v7A1.5 1.5 0 0116 16H4a1.5 1.5 0 01-1.5-1.5v-9z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
                   </svg>
@@ -482,14 +508,32 @@ watch(() => props.open, (open) => {
                 <p class="ct-hint">
                   CLI 在主工作目录启动；可添加子工作目录，Agent 可通过绝对路径访问它们。
                   <button type="button" class="ct-link" :disabled="!canAddSubWorkDir" @click="addSubWorkDir">
-                    + 添加子工作目录
+                    + {{ isDesktopRuntime() ? '选择子工作目录' : '添加子工作目录' }}
                   </button>
                 </p>
               </div>
 
               <div v-for="(_, index) in subWorkDirs" :key="`sub-${index}`" class="ct-field">
                 <label class="ct-label" :for="`ct-sub-workdir-${index}`">子工作目录 {{ index + 1 }}</label>
-                <div class="ct-input">
+                <div v-if="isDesktopRuntime()" class="ct-directory-row">
+                  <button
+                    :id="`ct-sub-workdir-${index}`"
+                    type="button"
+                    class="ct-directory-button"
+                    :title="subWorkDirs[index]"
+                    @click="chooseSubWorkDir(index)"
+                  >
+                    <svg class="ct-input-icon" viewBox="0 0 20 20" width="20" height="20" fill="none" aria-hidden="true">
+                      <path d="M2.5 5.5A1.5 1.5 0 014 4h3.6l1.4 2h7A1.5 1.5 0 0117.5 7.5v7A1.5 1.5 0 0116 16H4a1.5 1.5 0 01-1.5-1.5v-9z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                    </svg>
+                    <span class="ct-directory-path">{{ subWorkDirs[index] }}</span>
+                    <span class="ct-directory-action">重新选择</span>
+                  </button>
+                  <button type="button" class="ct-input-remove ct-directory-remove" aria-label="移除该子工作目录" @click="removeSubWorkDir(index)">
+                    移除
+                  </button>
+                </div>
+                <div v-else class="ct-input">
                   <svg class="ct-input-icon" viewBox="0 0 20 20" width="20" height="20" fill="none" aria-hidden="true">
                     <path d="M2.5 5.5A1.5 1.5 0 014 4h3.6l1.4 2h7A1.5 1.5 0 0117.5 7.5v7A1.5 1.5 0 0116 16H4a1.5 1.5 0 01-1.5-1.5v-9z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
                   </svg>
@@ -505,58 +549,6 @@ watch(() => props.open, (open) => {
                 </div>
               </div>
 
-              <div class="ct-field">
-                <label class="ct-label">选择接口集合</label>
-                <a-select
-                  class="ct-select"
-                  :value="selectedAPICollectionID"
-                  :options="collectionOptions"
-                  :loading="loading"
-                  :get-popup-container="popupContainer"
-                  allow-clear
-                  placeholder="选择接口集合（可不选）"
-                  @change="chooseAPICollection"
-                >
-                  <template #notFoundContent>
-                    <span v-if="loading">加载中…</span>
-                    <span v-else>暂无接口集合，请先到「接口管理」创建</span>
-                  </template>
-                </a-select>
-                <p class="ct-hint">选填。选择后 AI 创建、修改的接口都会归属到该集合。</p>
-              </div>
-
-              <div class="ct-field">
-                <label class="ct-label">接口文件夹</label>
-                <a-select
-                  v-model:value="selectedAPIFolderID"
-                  class="ct-select"
-                  :options="folderOptions"
-                  :loading="foldersLoading"
-                  :get-popup-container="popupContainer"
-                  :disabled="!selectedAPICollectionID"
-                  placeholder="留空则自动创建"
-                />
-                <p class="ct-hint">留空则按任务名自动创建文件夹，接口操作将被限制在该文件夹内。</p>
-              </div>
-
-              <div class="ct-field">
-                <label class="ct-label">选择数据库</label>
-                <a-select
-                  v-model:value="selectedDBProfileIDs"
-                  class="ct-select"
-                  mode="multiple"
-                  :options="dbProfileOptions"
-                  :loading="loading"
-                  :get-popup-container="popupContainer"
-                  placeholder="可选择多个数据库连接"
-                >
-                  <template #notFoundContent>
-                    <span v-if="loading">加载中…</span>
-                    <span v-else>暂无数据库连接，请先到「设置 - 数据库连接」添加</span>
-                  </template>
-                </a-select>
-                <p class="ct-hint">选中的数据库将作为本次任务 goteams-db 可访问的范围；不选则不注入数据库约束。</p>
-              </div>
             </section>
           </div>
 
@@ -605,6 +597,23 @@ watch(() => props.open, (open) => {
   border-radius: 16px;
   box-shadow: 0 12px 48px rgb(0 0 0 / 18%);
 }
+.ct-runtime-step {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) 2fr;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fafafa;
+}
+.ct-runtime-title { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.ct-runtime-title > span { display: inline-flex; width: 24px; height: 24px; flex: 0 0 24px; align-items: center; justify-content: center; border-radius: 50%; color: #fff; background: #3157e2; font-size: 12px; }
+.ct-runtime-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ct-runtime-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ct-runtime-fields input { min-width: 0; height: 34px; padding: 0 10px; border: 1px solid #d9d9d9; border-radius: 6px; outline: none; }
+.ct-runtime-fields input:focus { border-color: #3157e2; box-shadow: 0 0 0 2px rgba(49,87,226,.1); }
 
 /* Header */
 .ct-header {
@@ -994,6 +1003,48 @@ watch(() => props.open, (open) => {
   font-size: 14px;
   color: #bfbfbf;
 }
+.ct-directory-button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 40px;
+  padding: 9px 12px;
+  color: #262626;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+}
+.ct-directory-button:hover,
+.ct-directory-button:focus-visible {
+  border-color: #3157e2;
+  outline: none;
+}
+.ct-directory-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ct-directory-path.placeholder {
+  color: rgb(0 0 0 / 45%);
+}
+.ct-directory-action {
+  flex: none;
+  color: #1677ff;
+}
+.ct-directory-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ct-directory-remove {
+  padding: 0 4px;
+}
 .ct-input-remove {
   flex: none;
   font-size: 13px;
@@ -1007,6 +1058,9 @@ watch(() => props.open, (open) => {
   font-size: 13px;
   line-height: 20px;
   color: #8c8c8c;
+}
+.ct-hint--warning {
+  color: #d46b08;
 }
 .ct-link {
   padding: 0;

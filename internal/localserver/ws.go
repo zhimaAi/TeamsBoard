@@ -2,6 +2,7 @@ package localserver
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -32,9 +33,10 @@ type PushFunc func() (pushType string, data interface{})
 
 // WSHub local WebSocket manager
 type WSHub struct {
-	mu      sync.RWMutex
-	clients map[*websocket.Conn]*wsClient
-	logDB   *sql.DB
+	mu       sync.RWMutex
+	clients  map[*websocket.Conn]*wsClient
+	logDB    *sql.DB
+	apiToken string
 
 	// Universal push
 	pushMu     sync.RWMutex
@@ -56,6 +58,13 @@ func NewWSHub(logDB *sql.DB) *WSHub {
 		clients: make(map[*websocket.Conn]*wsClient),
 		logDB:   logDB,
 	}
+}
+
+// SetAPIToken records the startup API token for handshake validation.
+func (h *WSHub) SetAPIToken(token string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.apiToken = token
 }
 
 // RegisterPushFunc registers a periodic push function.
@@ -140,6 +149,31 @@ func (h *WSHub) BroadcastToAll(msgType string, data interface{}) {
 	}
 }
 
+// BroadcastTaskChanged notifies task views that persisted task/step state has
+// changed and should be reloaded from the HTTP API.
+func (h *WSHub) BroadcastTaskChanged(taskUUID string) {
+	if taskUUID == "" {
+		return
+	}
+	h.BroadcastToAll("task.changed", map[string]interface{}{"task_uuid": taskUUID})
+}
+
+// BroadcastActivity pushes the throttled latest CLI activity to all clients.
+// Task views filter by task_uuid and patch the running-step subtitle locally,
+// so it stays fresh without polling /progress.
+func (h *WSHub) BroadcastActivity(taskUUID, sessionUUID, eventType, content string, at int64) {
+	if taskUUID == "" || sessionUUID == "" {
+		return
+	}
+	h.BroadcastToAll("executor.activity", map[string]interface{}{
+		"task_uuid":    taskUUID,
+		"session_uuid": sessionUUID,
+		"event_type":   eventType,
+		"content":      content,
+		"at":           at,
+	})
+}
+
 // Close Closes all local WebSocket client connections (browser connections).
 // Called on account switch/logout: proactively sending a close frame triggers the browser-side onclose,
 // so it auto-reconnects and binds to the new account session's WSHub, avoiding the old connection becoming an orphan.
@@ -164,6 +198,18 @@ func (h *WSHub) Close() {
 
 // HandleWebSocket handles the WebSocket connection
 func (h *WSHub) HandleWebSocket(c *gin.Context) {
+	// Validate the startup API token passed via ?token= (browsers cannot set
+	// custom headers on WebSocket handshakes).
+	token := c.Query("token")
+	h.mu.RLock()
+	expected := h.apiToken
+	h.mu.RUnlock()
+	if expected != "" && (len(token) != len(expected) ||
+		subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1) {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "无效的访问令牌"})
+		return
+	}
+
 	// Validate the Session Cookie
 	sessionID, err := c.Cookie("goteams_local_session")
 	if err != nil || sessionID == "" {
@@ -321,6 +367,11 @@ func (h *WSHub) BroadcastStateChanged(taskUUID, stepKey, sessionUUID, status str
 			c.conn.Close()
 		}
 	}
+
+	// executor.state_changed is scoped to explicit session subscribers. Task
+	// pages use the shared socket, so publish a lightweight global invalidation
+	// event as well and let each page filter by task_uuid.
+	h.BroadcastTaskChanged(taskUUID)
 }
 
 func writeClientJSON(client *wsClient, value interface{}) error {

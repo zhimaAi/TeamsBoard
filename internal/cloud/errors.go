@@ -9,19 +9,47 @@ import (
 	"goteams-client/internal/protocol"
 )
 
+// maxErrorBodyLength caps the raw cloud response body retained for diagnostics
+// so a verbose error page (e.g. a proxy HTML 502) cannot blow up the log line.
+const maxErrorBodyLength = 1024
+
 // APIError Error returned by cloud API
 type APIError struct {
 	StatusCode int
 	Code       string
 	Message    string
 	Retryable  bool
+	// Body is the raw cloud response body (truncated to maxErrorBodyLength) kept
+	// for diagnostics. Some endpoints return the real failure detail in a field
+	// other than message/error, or only inside the raw body, so it is surfaced
+	// through Error() instead of being silently dropped.
+	Body string
 }
 
 func (e *APIError) Error() string {
+	var msg string
 	if e.Code != "" {
-		return fmt.Sprintf("cloud api error [%d] %s: %s", e.StatusCode, e.Code, e.Message)
+		msg = fmt.Sprintf("cloud api error [%d] %s: %s", e.StatusCode, e.Code, e.Message)
+	} else {
+		msg = fmt.Sprintf("cloud api error [%d]: %s", e.StatusCode, e.Message)
 	}
-	return fmt.Sprintf("cloud api error [%d]: %s", e.StatusCode, e.Message)
+	if e.Body != "" {
+		msg += fmt.Sprintf(" (response body: %s)", e.Body)
+	}
+	return msg
+}
+
+// truncateBody caps a raw response body for storage in APIError.Body, keeping
+// single-line output for slog. Empty bodies stay empty so callers can tell
+// "no body" apart from "empty string".
+func truncateBody(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	if len(body) > maxErrorBodyLength {
+		return string(body[:maxErrorBodyLength]) + "...(truncated)"
+	}
+	return string(body)
 }
 
 // IsRetryable returns whether the error can be retried
@@ -39,6 +67,8 @@ func parseAPIError(resp *http.Response) *APIError {
 		}
 	}
 
+	truncated := truncateBody(body)
+
 	var errBody struct {
 		// code may be a string or a number, use interface{} to be compatible with both situations
 		Code    interface{} `json:"code"`
@@ -46,9 +76,11 @@ func parseAPIError(resp *http.Response) *APIError {
 		Error   string      `json:"error"`
 	}
 	if jsonErr := json.Unmarshal(body, &errBody); jsonErr != nil {
+		// The body is not JSON (e.g. a proxy HTML error page): surface it directly.
 		return &APIError{
 			StatusCode: resp.StatusCode,
-			Message:    string(body),
+			Message:    truncated,
+			Body:       truncated,
 		}
 	}
 
@@ -79,5 +111,6 @@ func parseAPIError(resp *http.Response) *APIError {
 		Code:       code,
 		Message:    msg,
 		Retryable:  retryable,
+		Body:       truncated,
 	}
 }

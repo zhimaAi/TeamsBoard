@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -510,13 +509,10 @@ func (h *Handler) getCloudConfig(c *gin.Context) {
 		apiBaseURL = h.cloudCfg.APIBaseURL
 	}
 	if h.configPath != "" {
-		// Read disk config.ini override only if APP_ENV is not set;
-		// When there is APP_ENV, strictly refer to the embedded config_<env>.ini to avoid interference from disk residual overwriting.
-		if env := strings.TrimSpace(os.Getenv("APP_ENV")); env == "" {
-			if ini, err := config.LoadINI(h.configPath); err == nil {
-				if override := ini.Get("cloud", "api_base_url"); override != "" {
-					apiBaseURL = override
-				}
+		// Disk config.ini overrides the cloud address at runtime; the client can connect to any cloud.
+		if ini, err := config.LoadINI(h.configPath); err == nil {
+			if override := ini.Get("cloud", "api_base_url"); override != "" {
+				apiBaseURL = override
 			}
 		}
 	}
