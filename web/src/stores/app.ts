@@ -6,8 +6,10 @@ export type CloudStatus = 'online' | 'offline' | 'auth-expired'
 
 /** Manageable left navigation menu key (consistent with backend tools.MenuKeys) */
 export const MANAGEABLE_MENU_KEYS = [
-  'goteams',
   'workflows',
+  'tasks',
+  'agents',
+  'projects',
   'commands',
   'knowledge',
   'apis',
@@ -27,6 +29,9 @@ export const useAppStore = defineStore('app', () => {
   /** Number of CLI running tasks */
   const cliTaskCount = ref(0)
 
+  /** Number of unread task notifications */
+  const unreadTaskNotifications = ref(0)
+
   /** Left navigation menu switch status (key -> whether it is visible), visible by default if not recorded */
   const menuEnabled = ref<Record<string, boolean>>({})
 
@@ -41,6 +46,11 @@ export const useAppStore = defineStore('app', () => {
   /** Set the number of CLI running tasks */
   function setCliTaskCount(count: number) {
     cliTaskCount.value = Math.max(0, count)
+  }
+
+  /** Set the number of unread task notifications */
+  function setUnreadTaskNotifications(count: number) {
+    unreadTaskNotifications.value = Math.max(0, count)
   }
 
   /** Batch set menu switch status */
@@ -89,10 +99,12 @@ export const useAppStore = defineStore('app', () => {
   return {
     cloudStatus,
     cliTaskCount,
+    unreadTaskNotifications,
     menuEnabled,
     menuOrder,
     setCloudStatus,
     setCliTaskCount,
+    setUnreadTaskNotifications,
     setMenuEnabled,
     setMenuConfig,
     setMenuOrder,

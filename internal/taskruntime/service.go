@@ -1,0 +1,639 @@
+package taskruntime
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/google/uuid"
+)
+
+var ErrNotFound = errors.New("task not found")
+
+type SnapshotStep struct {
+	SourceStepID string `json:"source_step_id"`
+	LocalStepID  string `json:"local_step_id"`
+	CloudStepID  string `json:"cloud_step_id"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	Avatar       string `json:"avatar"`
+	Prompt       string `json:"prompt"`
+	CLIType      string `json:"cli_type"`
+	ModelName    string `json:"model_name"`
+	SortOrder    int    `json:"sort_order"`
+}
+
+type Snapshot struct {
+	SourceType       string         `json:"source_type"`
+	SourcePipelineID string         `json:"source_pipeline_id"`
+	CloudSourceKey   string         `json:"cloud_source_key"`
+	Name             string         `json:"name"`
+	Description      string         `json:"description"`
+	Avatar           string         `json:"avatar"`
+	Steps            []SnapshotStep `json:"steps"`
+}
+
+type CreateInput struct {
+	SourceType                 string
+	CloudSourceKey             string
+	CloudUserID                string
+	WorkItemType               string
+	WorkItemID                 string
+	WorkspaceID                int64
+	ProjectUUID                string
+	SubprojectUUIDs            []string
+	Title                      string
+	Content                    string
+	Priority                   string
+	PlannedStartDate           string
+	PlannedEndDate             string
+	WorkDirs                   []string
+	Status                     string
+	SelectedPipelineUUID       string
+	SelectedPipelineConfigJSON string
+	Snapshot                   Snapshot
+}
+
+type Service struct {
+	db       *sql.DB
+	taskRoot string
+}
+
+type AdvanceResult struct {
+	NextStepUUID string `json:"next_step_uuid"`
+	TaskDone     bool   `json:"task_done"`
+}
+
+func NewService(db *sql.DB, taskRoot string) *Service {
+	return &Service{db: db, taskRoot: taskRoot}
+}
+
+func (s *Service) Create(ctx context.Context, in CreateInput) (taskUUID string, err error) {
+	if s.db == nil {
+		return "", fmt.Errorf("任务数据库未初始化")
+	}
+	in.Title = strings.TrimSpace(in.Title)
+	if in.Title == "" {
+		return "", fmt.Errorf("任务标题不能为空")
+	}
+	if in.SourceType == "" {
+		in.SourceType = "local"
+	}
+	if in.SourceType != "local" && in.SourceType != "cloud" {
+		return "", fmt.Errorf("无效任务来源: %s", in.SourceType)
+	}
+	hasSnapshot := strings.TrimSpace(in.Snapshot.SourcePipelineID) != "" || len(in.Snapshot.Steps) > 0
+	if hasSnapshot {
+		if in.Snapshot.SourceType == "" {
+			in.Snapshot.SourceType = in.SourceType
+		}
+		if err := ValidateSnapshot(&in.Snapshot); err != nil {
+			return "", err
+		}
+	}
+	workDirs, projectIDs, err := s.resolveWorkDirs(ctx, in.ProjectUUID, in.SubprojectUUIDs, in.WorkDirs)
+	if err != nil {
+		return "", err
+	}
+
+	root, err := filepath.Abs(strings.TrimSpace(s.taskRoot))
+	if err != nil || strings.TrimSpace(s.taskRoot) == "" {
+		return "", fmt.Errorf("任务数据根目录无效")
+	}
+	if err = os.MkdirAll(root, 0o755); err != nil {
+		return "", fmt.Errorf("创建任务数据根目录失败: %w", err)
+	}
+	taskUUID = uuid.New().String()
+	taskDirID := uuid.New().String()
+	taskDir := filepath.Join(root, taskDirID)
+	if err = os.Mkdir(taskDir, 0o755); err != nil {
+		return "", fmt.Errorf("创建任务专属目录失败: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.RemoveAll(taskDir)
+		}
+	}()
+	taskMDPath := filepath.Join(taskDir, "task.md")
+	if err = os.WriteFile(taskMDPath, []byte(renderTaskMarkdown(in.Title, in.Content)), 0o644); err != nil {
+		return "", fmt.Errorf("写入 task.md 失败: %w", err)
+	}
+
+	stepDirs := make([]string, len(in.Snapshot.Steps))
+	for i := range in.Snapshot.Steps {
+		stepDirs[i] = filepath.Join(taskDir, fmt.Sprintf("%02d-%s-%s", i+1, safeDirName(in.Snapshot.Steps[i].Name), uuid.New().String()[:8]))
+		if err = os.Mkdir(stepDirs[i], 0o755); err != nil {
+			return "", fmt.Errorf("创建 Agent 编排专属目录失败: %w", err)
+		}
+	}
+
+	now := time.Now().UnixMilli()
+	status := strings.TrimSpace(in.Status)
+	if status == "" || status == "todo" {
+		status = "pending"
+	}
+	if status == "in_progress" {
+		status = "active"
+	}
+	if status == "developing" {
+		status = "active"
+	}
+	if status == "developed" || status == "completed" {
+		status = "done"
+	}
+	if status != "pending" && status != "active" && status != "done" && status != "blocked" {
+		return "", fmt.Errorf("无效任务状态: %s", status)
+	}
+	if status == "active" && !hasSnapshot {
+		return "", fmt.Errorf("任务启动前必须选择流水线")
+	}
+	snapshotUUID := ""
+	hash := ""
+	if hasSnapshot {
+		snapshotUUID = uuid.New().String()
+		hash, err = snapshotHash(in.Snapshot)
+		if err != nil {
+			return "", err
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("开启任务事务失败: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `INSERT INTO gt_tasks
+		(uuid, source_type, cloud_source_key, cloud_user_id, work_item_type, work_item_id, workspace_id, project_uuid,
+		 title, content_snapshot, priority, planned_start_date, planned_end_date, task_dir_id, task_dir, task_md_path,
+		 selected_pipeline_uuid, selected_pipeline_config_json, pipeline_snapshot_uuid,
+		 status, execution_status, current_step_uuid, current_step_completed, work_dir, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', '', 0, ?, ?, ?)`,
+		taskUUID, in.SourceType, in.CloudSourceKey, in.CloudUserID, in.WorkItemType, in.WorkItemID, in.WorkspaceID,
+		strings.TrimSpace(in.ProjectUUID), in.Title, in.Content, strings.TrimSpace(in.Priority), strings.TrimSpace(in.PlannedStartDate), strings.TrimSpace(in.PlannedEndDate), taskDirID, taskDir, taskMDPath,
+		strings.TrimSpace(in.SelectedPipelineUUID), strings.TrimSpace(in.SelectedPipelineConfigJSON), snapshotUUID, status, workDirs[0], now, now)
+	if err != nil {
+		return "", fmt.Errorf("创建任务失败: %w", err)
+	}
+	if hasSnapshot {
+		_, err = tx.ExecContext(ctx, `INSERT INTO gt_task_pipeline_snapshots
+		(uuid, task_uuid, source_type, source_pipeline_id, cloud_source_key, name, description, avatar, snapshot_hash, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, snapshotUUID, taskUUID, in.Snapshot.SourceType,
+			in.Snapshot.SourcePipelineID, in.Snapshot.CloudSourceKey, in.Snapshot.Name, in.Snapshot.Description,
+			in.Snapshot.Avatar, hash, now)
+		if err != nil {
+			return "", fmt.Errorf("保存临时流水线失败: %w", err)
+		}
+	}
+	for i, projectID := range projectIDs {
+		relation := "subproject"
+		if i == 0 && projectID == strings.TrimSpace(in.ProjectUUID) {
+			relation = "primary"
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO gt_task_project_links(task_uuid, project_uuid, relation_type, sort_order, created_at) VALUES(?, ?, ?, ?, ?)`, taskUUID, projectID, relation, i, now); err != nil {
+			return "", fmt.Errorf("保存任务项目关联失败: %w", err)
+		}
+	}
+	for i, dir := range workDirs {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO gt_task_work_dirs (task_uuid, path, sort_order, created_at) VALUES (?, ?, ?, ?)`, taskUUID, dir, i, now); err != nil {
+			return "", fmt.Errorf("保存项目目录失败: %w", err)
+		}
+	}
+	var currentStepUUID string
+	for i, step := range in.Snapshot.Steps {
+		stepUUID := uuid.New().String()
+		stepStatus := "pending"
+		if status == "active" && i == 0 {
+			stepStatus = "active"
+			currentStepUUID = stepUUID
+		}
+		stepKey := fmt.Sprintf("step-%02d", i+1)
+		_, err = tx.ExecContext(ctx, `INSERT INTO gt_task_steps
+			(uuid, task_uuid, task_pipeline_snapshot_uuid, source_type, source_step_id, local_step_uuid, cloud_step_id,
+			 step_key, step_order, name, description, avatar, prompt_snapshot, cli_type, model_name, step_dir,
+			 status, execution_status, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?)`,
+			stepUUID, taskUUID, snapshotUUID, in.Snapshot.SourceType, step.SourceStepID, step.LocalStepID, step.CloudStepID,
+			stepKey, i, step.Name, step.Description, step.Avatar, step.Prompt, step.CLIType, step.ModelName, stepDirs[i], stepStatus, now, now)
+		if err != nil {
+			return "", fmt.Errorf("保存临时 Agent 编排失败: %w", err)
+		}
+	}
+	if currentStepUUID != "" {
+		if _, err = tx.ExecContext(ctx, `UPDATE gt_tasks SET current_step_uuid = ? WHERE uuid = ?`, currentStepUUID, taskUUID); err != nil {
+			return "", fmt.Errorf("设置当前 Agent 编排失败: %w", err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return "", fmt.Errorf("提交任务事务失败: %w", err)
+	}
+	committed = true
+	return taskUUID, nil
+}
+
+// AssignPipeline creates the task's immutable, permanent execution snapshot.
+// A task can be assigned exactly once and only before it has started.
+func (s *Service) AssignPipeline(ctx context.Context, taskUUID string, snapshot Snapshot) (err error) {
+	if err := ValidateSnapshot(&snapshot); err != nil {
+		return err
+	}
+	var taskDir, status, existingSnapshot, currentStep string
+	err = s.db.QueryRowContext(ctx, `SELECT task_dir, status, pipeline_snapshot_uuid, current_step_uuid FROM gt_tasks WHERE uuid = ?`, taskUUID).
+		Scan(&taskDir, &status, &existingSnapshot, &currentStep)
+	if err == sql.ErrNoRows {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if status == "done" || currentStep != "" {
+		return fmt.Errorf("任务已经开始，不能重新分配流水线")
+	}
+	if existingSnapshot != "" {
+		return fmt.Errorf("任务已经分配流水线，不能覆盖永久快照")
+	}
+
+	snapshotUUID := uuid.NewString()
+	hash, err := snapshotHash(snapshot)
+	if err != nil {
+		return err
+	}
+	stepDirs := make([]string, len(snapshot.Steps))
+	createdDirs := make([]string, 0, len(snapshot.Steps))
+	defer func() {
+		if err != nil {
+			for _, dir := range createdDirs {
+				_ = os.RemoveAll(dir)
+			}
+		}
+	}()
+	for i, step := range snapshot.Steps {
+		stepDirs[i] = filepath.Join(taskDir, fmt.Sprintf("%02d-%s-%s", i+1, safeDirName(step.Name), uuid.NewString()[:8]))
+		if err = os.Mkdir(stepDirs[i], 0o755); err != nil {
+			return fmt.Errorf("创建 Agent 编排专属目录失败: %w", err)
+		}
+		createdDirs = append(createdDirs, stepDirs[i])
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var unchanged int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM gt_tasks WHERE uuid=? AND pipeline_snapshot_uuid='' AND current_step_uuid='' AND status<>'done'`, taskUUID).Scan(&unchanged); err != nil {
+		return err
+	}
+	if unchanged != 1 {
+		return fmt.Errorf("任务状态已变化，不能分配流水线")
+	}
+	now := time.Now().UnixMilli()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO gt_task_pipeline_snapshots
+		(uuid, task_uuid, source_type, source_pipeline_id, cloud_source_key, name, description, avatar, snapshot_hash, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, snapshotUUID, taskUUID, snapshot.SourceType, snapshot.SourcePipelineID,
+		snapshot.CloudSourceKey, snapshot.Name, snapshot.Description, snapshot.Avatar, hash, now); err != nil {
+		return err
+	}
+	for i, step := range snapshot.Steps {
+		stepUUID := uuid.NewString()
+		if _, err = tx.ExecContext(ctx, `INSERT INTO gt_task_steps
+			(uuid, task_uuid, task_pipeline_snapshot_uuid, source_type, source_step_id, local_step_uuid, cloud_step_id,
+			 step_key, step_order, name, description, avatar, prompt_snapshot, cli_type, model_name, step_dir,
+			 status, execution_status, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'idle', ?, ?)`, stepUUID, taskUUID,
+			snapshotUUID, snapshot.SourceType, step.SourceStepID, step.LocalStepID, step.CloudStepID,
+			fmt.Sprintf("step-%02d", i+1), i, step.Name, step.Description, step.Avatar, step.Prompt,
+			step.CLIType, step.ModelName, stepDirs[i], now, now); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE gt_tasks SET pipeline_snapshot_uuid=?, updated_at=? WHERE uuid=? AND pipeline_snapshot_uuid=''`, snapshotUUID, now, taskUUID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Service) Delete(ctx context.Context, taskUUID string) error {
+	var taskDir string
+	var active int
+	err := s.db.QueryRowContext(ctx, `SELECT task_dir, (SELECT COUNT(*) FROM gt_cli_sessions WHERE task_uuid = gt_tasks.uuid AND status IN ('created','running','waiting_input','stop_requested')) FROM gt_tasks WHERE uuid = ?`, taskUUID).Scan(&taskDir, &active)
+	if err == sql.ErrNoRows {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if active > 0 {
+		return fmt.Errorf("任务仍有正在执行的 CLI 会话，请先终止后再删除")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, statement := range []string{
+		`DELETE FROM gt_task_notifications WHERE task_uuid = ?`,
+		`DELETE FROM gt_cli_sessions WHERE task_uuid = ?`,
+		`DELETE FROM gt_task_progress WHERE task_uuid = ?`,
+		`DELETE FROM gt_task_steps WHERE task_uuid = ?`,
+		`DELETE FROM gt_task_work_dirs WHERE task_uuid = ?`,
+		`DELETE FROM gt_task_pipeline_snapshots WHERE task_uuid = ?`,
+		`DELETE FROM gt_tasks WHERE uuid = ?`,
+	} {
+		if _, err = tx.ExecContext(ctx, statement, taskUUID); err != nil {
+			return err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	root, _ := filepath.Abs(s.taskRoot)
+	target, _ := filepath.Abs(taskDir)
+	rel, relErr := filepath.Rel(root, target)
+	if relErr == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." {
+		if err = os.RemoveAll(target); err != nil {
+			return fmt.Errorf("任务数据已从数据库删除，但专属目录删除失败: %w", err)
+		}
+	}
+	return nil
+}
+
+// Start activates the first immutable step. The caller starts its initial CLI
+// conversation only when the returned step UUID is non-empty.
+func (s *Service) Start(ctx context.Context, taskUUID string) (string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	var status, currentStepUUID, pipelineSnapshotUUID string
+	if err = tx.QueryRowContext(ctx, `SELECT status, current_step_uuid, pipeline_snapshot_uuid FROM gt_tasks WHERE uuid = ?`, taskUUID).Scan(&status, &currentStepUUID, &pipelineSnapshotUUID); err == sql.ErrNoRows {
+		return "", ErrNotFound
+	} else if err != nil {
+		return "", err
+	}
+	if status == "done" {
+		return "", fmt.Errorf("任务已完成")
+	}
+	if currentStepUUID != "" {
+		return "", fmt.Errorf("任务已经开始")
+	}
+	if pipelineSnapshotUUID == "" {
+		return "", fmt.Errorf("任务启动前必须选择流水线")
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT uuid, COALESCE(cli_type,''), COALESCE(model_name,'') FROM gt_task_steps WHERE task_uuid = ? ORDER BY step_order, rowid`, taskUUID)
+	if err != nil {
+		return "", err
+	}
+	stepIndex := 0
+	missingSteps := make([]int, 0)
+	for rows.Next() {
+		stepIndex++
+		var stepUUID string
+		var cliType, modelName string
+		if scanErr := rows.Scan(&stepUUID, &cliType, &modelName); scanErr != nil {
+			rows.Close()
+			return "", scanErr
+		}
+		if stepIndex == 1 {
+			currentStepUUID = stepUUID
+		}
+		if strings.TrimSpace(cliType) == "" || strings.TrimSpace(modelName) == "" {
+			missingSteps = append(missingSteps, stepIndex)
+		}
+	}
+	rows.Close()
+	if stepIndex == 0 {
+		return "", fmt.Errorf("任务没有 Agent 编排")
+	}
+	if len(missingSteps) > 0 {
+		return "", fmt.Errorf("第 %d 个 Agent 编排缺少 CLI 和模型配置", missingSteps[0])
+	}
+	now := time.Now().UnixMilli()
+	if _, err = tx.ExecContext(ctx, `UPDATE gt_task_steps SET status = 'active', updated_at = ? WHERE uuid = ? AND status = 'pending'`, now, currentStepUUID); err != nil {
+		return "", err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE gt_tasks SET status = 'active', current_step_uuid = ?, current_step_completed = 0,
+		started_at = CASE WHEN started_at = 0 THEN ? ELSE started_at END, updated_at = ? WHERE uuid = ?`, currentStepUUID, now, now, taskUUID); err != nil {
+		return "", err
+	}
+	if err = tx.Commit(); err != nil {
+		return "", err
+	}
+	return currentStepUUID, nil
+}
+
+func ValidateSnapshot(snapshot *Snapshot) error {
+	if snapshot.SourceType == "" {
+		snapshot.SourceType = "local"
+	}
+	if snapshot.SourceType != "local" && snapshot.SourceType != "cloud" {
+		return fmt.Errorf("无效流水线来源: %s", snapshot.SourceType)
+	}
+	if strings.TrimSpace(snapshot.SourcePipelineID) == "" {
+		return fmt.Errorf("流水线来源 ID 不能为空")
+	}
+	if len(snapshot.Steps) == 0 {
+		return fmt.Errorf("流水线至少需要一个 Agent 编排步骤")
+	}
+	for i := range snapshot.Steps {
+		step := &snapshot.Steps[i]
+		step.Name = strings.TrimSpace(step.Name)
+		step.Prompt = strings.TrimSpace(step.Prompt)
+		step.CLIType = strings.TrimSpace(step.CLIType)
+		step.ModelName = strings.TrimSpace(step.ModelName)
+		if step.Name == "" || step.Prompt == "" {
+			return fmt.Errorf("第 %d 个 Agent 编排必须配置名称和提示词", i+1)
+		}
+	}
+	sort.SliceStable(snapshot.Steps, func(i, j int) bool { return snapshot.Steps[i].SortOrder < snapshot.Steps[j].SortOrder })
+	return nil
+}
+
+// ValidateSnapshotFull validates the snapshot structure and also requires
+// every step to have CLI and Model configured. Used when the task will start
+// executing immediately after pipeline assignment.
+func ValidateSnapshotFull(snapshot *Snapshot) error {
+	if err := ValidateSnapshot(snapshot); err != nil {
+		return err
+	}
+	for i, step := range snapshot.Steps {
+		if step.CLIType == "" || step.ModelName == "" {
+			return fmt.Errorf("第 %d 个 Agent 编排必须配置 CLI 和模型", i+1)
+		}
+	}
+	return nil
+}
+
+func (s *Service) resolveWorkDirs(ctx context.Context, primary string, subprojects, associated []string) ([]string, []string, error) {
+	projectIDs := make([]string, 0, len(subprojects)+1)
+	dirs := make([]string, 0, len(subprojects)+len(associated)+1)
+	seenProjects := map[string]struct{}{}
+	appendProject := func(id string) error {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return nil
+		}
+		if _, exists := seenProjects[id]; exists {
+			return fmt.Errorf("任务项目不能重复: %s", id)
+		}
+		var dir string
+		if err := s.db.QueryRowContext(ctx, `SELECT main_dir FROM gt_projects WHERE uuid=?`, id).Scan(&dir); err == sql.ErrNoRows {
+			return fmt.Errorf("项目不存在: %s", id)
+		} else if err != nil {
+			return err
+		}
+		seenProjects[id] = struct{}{}
+		projectIDs = append(projectIDs, id)
+		dirs = append(dirs, dir)
+		return nil
+	}
+	if err := appendProject(primary); err != nil {
+		return nil, nil, err
+	}
+	for _, id := range subprojects {
+		if err := appendProject(id); err != nil {
+			return nil, nil, err
+		}
+	}
+	dirs = append(dirs, associated...)
+	normalized, err := normalizeWorkDirs(dirs)
+	return normalized, projectIDs, err
+}
+
+// CompleteStep permanently closes the current step and atomically activates
+// the next one. Completed steps can never be executed again.
+func (s *Service) CompleteStep(ctx context.Context, taskUUID, stepUUID string) (*AdvanceResult, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var currentStepUUID, stepStatus string
+	var stepOrder int
+	err = tx.QueryRowContext(ctx, `SELECT t.current_step_uuid, s.status, s.step_order
+		FROM gt_tasks t JOIN gt_task_steps s ON s.task_uuid = t.uuid
+		WHERE t.uuid = ? AND s.uuid = ?`, taskUUID, stepUUID).Scan(&currentStepUUID, &stepStatus, &stepOrder)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if currentStepUUID != stepUUID || stepStatus != "active" {
+		if stepStatus == "completed" {
+			return nil, fmt.Errorf("该 Agent 编排已经完成")
+		}
+		return nil, fmt.Errorf("只能完成当前 Agent 编排")
+	}
+	var activeSessions, terminalProgress int
+	if err = tx.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM gt_cli_sessions WHERE task_uuid = ? AND step_uuid = ? AND status IN ('created','running','waiting_input','stop_requested')),
+		(SELECT COUNT(*) FROM gt_task_progress WHERE task_uuid = ? AND task_step_uuid = ? AND status IN ('success','failed','stopped','interrupted'))`,
+		taskUUID, stepUUID, taskUUID, stepUUID).Scan(&activeSessions, &terminalProgress); err != nil {
+		return nil, err
+	}
+	if activeSessions > 0 {
+		return nil, fmt.Errorf("当前 CLI 仍在执行")
+	}
+	if terminalProgress == 0 {
+		return nil, fmt.Errorf("当前 Agent 编排尚未产生执行结果")
+	}
+	now := time.Now().UnixMilli()
+	if _, err = tx.ExecContext(ctx, `UPDATE gt_task_steps SET status = 'completed', completed_at = ?, updated_at = ? WHERE uuid = ?`, now, now, stepUUID); err != nil {
+		return nil, err
+	}
+	var nextStepUUID string
+	err = tx.QueryRowContext(ctx, `SELECT uuid FROM gt_task_steps WHERE task_uuid = ? AND step_order > ? AND status = 'pending' ORDER BY step_order LIMIT 1`, taskUUID, stepOrder).Scan(&nextStepUUID)
+	result := &AdvanceResult{}
+	if err == sql.ErrNoRows {
+		result.TaskDone = true
+		if _, err = tx.ExecContext(ctx, `UPDATE gt_tasks SET status = 'done', current_step_uuid = ?, current_step_completed = 1, execution_status = 'success', finished_at = ?, updated_at = ? WHERE uuid = ?`, stepUUID, now, now, taskUUID); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	} else {
+		result.NextStepUUID = nextStepUUID
+		if _, err = tx.ExecContext(ctx, `UPDATE gt_task_steps SET status = 'active', updated_at = ? WHERE uuid = ?`, now, nextStepUUID); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE gt_tasks SET status = 'active', current_step_uuid = ?, current_step_completed = 0, execution_status = 'idle', updated_at = ? WHERE uuid = ?`, nextStepUUID, now, taskUUID); err != nil {
+			return nil, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func normalizeWorkDirs(values []string) ([]string, error) {
+	if len(values) == 0 {
+		return nil, fmt.Errorf("至少需要一个项目目录")
+	}
+	result := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		abs, err := filepath.Abs(strings.TrimSpace(value))
+		if err != nil || strings.TrimSpace(value) == "" {
+			return nil, fmt.Errorf("项目目录无效: %s", value)
+		}
+		info, err := os.Stat(abs)
+		if err != nil || !info.IsDir() {
+			return nil, fmt.Errorf("项目目录不存在或不是目录: %s", abs)
+		}
+		key := filepath.Clean(abs)
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(key)
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, filepath.Clean(abs))
+	}
+	return result, nil
+}
+
+func safeDirName(value string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(value) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	result := strings.Trim(b.String(), "-")
+	if result == "" {
+		return "step"
+	}
+	if len([]rune(result)) > 32 {
+		return string([]rune(result)[:32])
+	}
+	return result
+}
+
+func renderTaskMarkdown(title, content string) string {
+	return fmt.Sprintf("# %s\n\n%s\n", title, strings.TrimSpace(content))
+}
+
+func snapshotHash(snapshot Snapshot) (string, error) {
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", fmt.Errorf("序列化流水线快照失败: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}

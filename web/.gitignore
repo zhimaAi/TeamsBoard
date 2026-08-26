@@ -11,3 +11,5 @@ pnpm-debug.log*
 .vscode/*
 !.vscode/extensions.json
 .idea
+components.d.ts
+.agents/

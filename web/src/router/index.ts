@@ -10,14 +10,13 @@ const routes: RouteRecordRaw[] = [
       {
         path: '',
         name: 'home',
-        redirect: '/workbench',
+        redirect: '/board',
       },
-      // Workbench (the internal name follows goteams, consistent with the menu configuration key)
       {
         path: 'workbench',
-        name: 'goteams',
-        component: () => import('@/views/workbench/index.vue'),
-        meta: { title: '工作台', menu: 'goteams' },
+        // 本期去掉登录：不再跳转团队工作（入口已禁用），直接进入本地看板
+        // redirect: { path: '/board', query: { tab: 'team' } },
+        redirect: '/board',
       },
       // Order
       {
@@ -41,22 +40,51 @@ const routes: RouteRecordRaw[] = [
       // Workflow
       {
         path: 'workflows',
-        name: 'workflows',
-        component: () => import('@/views/workflows/TaskBoard.vue'),
-        meta: { title: '任务看板', menu: 'workflows', requiresCloud: true },
+        redirect: '/board',
+      },
+      {
+        path: 'board',
+        name: 'board',
+        component: () => import('@/views/workflows/BoardHub.vue'),
+        meta: { title: '看板', menu: 'workflows', contentLayout: 'custom', isScroll: false },
       },
       {
         path: 'workflows/import',
         name: 'workflows-import',
         component: () => import('@/views/workflows/ImportTask.vue'),
-        meta: { title: '导入需求 / 缺陷', menu: 'workflows', requiresCloud: true },
+        meta: { title: '导入任务', menu: 'workflows', requiresCloud: true },
       },
       {
         path: 'workflows/task/:taskUuid',
         name: 'workflows-task-detail',
         component: () => import('@/views/workflows/TaskDetail.vue'),
         props: true,
-        meta: { title: '任务详情', menu: 'workflows', requiresCloud: true },
+        meta: { title: '任务详情', menu: 'workflows' },
+      },
+      {
+        path: 'board/task/:taskUuid',
+        name: 'board-task-detail',
+        component: () => import('@/views/workflows/TaskDetail.vue'),
+        props: true,
+        meta: { title: '任务详情', menu: 'workflows',contentLayout: 'custom', isScroll: false},
+      },
+      {
+        path: 'tasks',
+        name: 'tasks',
+        component: () => import('@/views/tasks/TaskNotifications.vue'),
+        meta: { title: '对话', menu: 'tasks', contentLayout: 'custom', isScroll: false },
+      },
+      {
+        path: 'agents',
+        name: 'agents',
+        component: () => import('@/views/agents/AgentPipelines.vue'),
+        meta: { title: 'Agent', menu: 'agents' },
+      },
+      {
+        path: 'projects',
+        name: 'projects',
+        component: () => import('@/views/projects/Projects.vue'),
+        meta: { title: '项目', menu: 'projects' },
       },
       // knowledge base
       {
@@ -97,7 +125,7 @@ const routes: RouteRecordRaw[] = [
   // The bottom line
   {
     path: '/:pathMatch(.*)*',
-    redirect: '/workbench',
+    redirect: '/board',
   },
 ]
 
@@ -109,12 +137,19 @@ const router = createRouter({
 router.beforeEach((to) => {
   const authStore = useAuthStore()
 
-  //Routes that require cloud login. If not logged in, return to the workbench to log in.
+  // 本期去掉登录：登录入口已隐藏，未登录访问 requiresCloud 路由时回到本地看板（不再进入登录页）
   if (to.meta.requiresCloud && !authStore.cloudLoggedIn) {
-    return { path: '/workbench' }
+    // return { path: '/workbench' }
+    return { path: '/board' }
   }
 
   return true
+})
+
+router.afterEach((to) => {
+  if (import.meta.env.DEV) {
+    console.log(`[Route] ${to.fullPath}`)
+  }
 })
 
 export default router

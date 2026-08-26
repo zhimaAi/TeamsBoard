@@ -17,3 +17,36 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+.scrollbar--subtle {
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+}
+
+.scrollbar--subtle::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scrollbar--subtle::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar--subtle::-webkit-scrollbar-thumb {
+  border-radius: 6px;
+  background: transparent;
+}
+
+.scrollbar--subtle:hover,
+.scrollbar--subtle:focus-within {
+  scrollbar-color: rgba(140, 149, 168, 0.42) transparent;
+}
+
+.scrollbar--subtle:hover::-webkit-scrollbar-thumb,
+.scrollbar--subtle:focus-within::-webkit-scrollbar-thumb {
+  background: rgba(140, 149, 168, 0.35);
+}
+
+.scrollbar--subtle::-webkit-scrollbar-thumb:hover {
+  background: rgba(140, 149, 168, 0.6);
+}

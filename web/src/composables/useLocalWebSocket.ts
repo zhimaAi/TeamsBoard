@@ -1,4 +1,5 @@
 import { ref, onMounted, onUnmounted } from 'vue'
+import { getApiToken, invalidateApiToken } from '@/api/token'
 
 // ────────────────────────────────────────────────────
 // Singleton WebSocket connection (module level, shared across components)
@@ -11,15 +12,18 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 const handlers = new Map<string, Set<MessageHandler>>()
 let intentionalClose = false
 
-function wsUrl(): string {
+// 浏览器 WebSocket 握手无法携带自定义 header，鉴权 token 通过 query 传递
+async function wsUrl(): Promise<string> {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.host}/api/local/ws`
+  const token = await getApiToken()
+  const query = token ? `?token=${encodeURIComponent(token)}` : ''
+  return `${protocol}//${window.location.host}/api/local/ws${query}`
 }
 
-function connect() {
+async function connect() {
   if (socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) return
   intentionalClose = false
-  socket = new WebSocket(wsUrl())
+  socket = new WebSocket(await wsUrl())
 
   socket.onopen = () => {
     // No additional operations are required after reconnection. The backend will send a welcome message (if any) when the connection is established.
@@ -49,6 +53,8 @@ function connect() {
   socket.onclose = () => {
     socket = null
     if (!intentionalClose) {
+      // 后端重启后 token 会失效，重连前清除缓存以便重取
+      invalidateApiToken()
       reconnectTimer = setTimeout(connect, 2000)
     }
   }

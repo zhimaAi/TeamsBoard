@@ -18,7 +18,6 @@ import (
 
 	"goteams-client/internal/applog"
 	"goteams-client/internal/secrets"
-	"goteams-client/internal/skills"
 	"goteams-client/internal/storage"
 )
 
@@ -97,15 +96,6 @@ func NewHandler(dbRef *storage.DBRef, accountIDFn func() (string, error), secret
 	return &Handler{dbRef: dbRef, secretStore: secretStore, accountIDFn: accountIDFn}
 }
 
-// requireSkill middleware to verify goteams-api Skill switch (write operation)
-func (h *Handler) requireSkill(c *gin.Context) {
-	if err := skills.Require(h.dbRef.Get(), skills.SkillAPI); err != nil {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": err.Error()})
-		return
-	}
-	c.Next()
-}
-
 // nowMillis returns the current Unix millisecond timestamp
 func nowMillis() int64 {
 	return time.Now().UnixMilli()
@@ -151,16 +141,6 @@ func (h *Handler) ListCollections(c *gin.Context) {
 		}
 		list = filtered
 	}
-	if grant, scoped := capabilityGrant(c); scoped {
-		filtered := make([]Collection, 0, 1)
-		for _, col := range list {
-			if col.ID == grant.APICollectionID {
-				filtered = append(filtered, col)
-			}
-		}
-		list = filtered
-	}
-
 	if list == nil {
 		list = []Collection{}
 	}
@@ -291,18 +271,6 @@ func (h *Handler) DeleteCollection(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
 		return
 	}
-	var taskCount int
-	if err := h.dbRef.Get().QueryRowContext(c.Request.Context(),
-		`SELECT COUNT(*) FROM gt_tasks WHERE api_collection_id = ?`, id,
-	).Scan(&taskCount); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "检查集合任务引用失败: " + err.Error()})
-		return
-	}
-	if taskCount > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "该集合已被任务引用，不能删除"})
-		return
-	}
-
 	tx, err := h.dbRef.Get().BeginTx(c.Request.Context(), nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "开启事务失败: " + err.Error()})
@@ -423,14 +391,7 @@ func (h *Handler) ListRequests(c *gin.Context) {
 	                 body, body_type, body_form_json, environment_id, description, created_at, updated_at
 	          FROM gt_api_requests WHERE collection_id=?`
 	args := []any{collectionID}
-	if grant, scoped := capabilityGrant(c); scoped {
-		if collectionID != grant.APICollectionID {
-			c.JSON(http.StatusForbidden, gin.H{"error": "集合不在当前任务授权范围内"})
-			return
-		}
-		query += ` AND folder_id=?`
-		args = append(args, grant.APIFolderID)
-	} else if folderIDStr != "" {
+	if folderIDStr != "" {
 		folderID, parseErr := strconv.ParseInt(folderIDStr, 10, 64)
 		if parseErr != nil || folderID < 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "folder_id 参数无效"})
@@ -495,9 +456,6 @@ func (h *Handler) GetRequest(c *gin.Context) {
 	}
 
 	decodeRequestJSON(&req, headersJSON, queryJSON, authJSON, bodyFormJSON)
-	if !requireRequestInCapabilityScope(c, req.CollectionID, req.FolderID) {
-		return
-	}
 	c.JSON(http.StatusOK, req)
 }
 
@@ -525,9 +483,6 @@ func (h *Handler) CreateRequest(c *gin.Context) {
 	}
 	if input.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name 不能为空"})
-		return
-	}
-	if !requireRequestInCapabilityScope(c, input.CollectionID, input.FolderID) {
 		return
 	}
 	if input.Method == "" {
@@ -653,17 +608,6 @@ func (h *Handler) UpdateRequest(c *gin.Context) {
 		return
 	}
 	decodeRequestJSON(&req, headersJSON, queryJSON, authJSON, bodyFormJSON)
-	if !requireRequestInCapabilityScope(c, req.CollectionID, req.FolderID) {
-		return
-	}
-	if grant, scoped := capabilityGrant(c); scoped {
-		if (input.CollectionID != nil && *input.CollectionID != grant.APICollectionID) ||
-			(input.FolderID != nil && *input.FolderID != grant.APIFolderID) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "不能把接口移动到当前任务授权范围之外"})
-			return
-		}
-	}
-
 	//Apply updates
 	if input.CollectionID != nil {
 		req.CollectionID = *input.CollectionID
@@ -711,10 +655,6 @@ func (h *Handler) UpdateRequest(c *gin.Context) {
 	if input.Headers != nil {
 		req.Headers = input.Headers
 	}
-	if !requireRequestInCapabilityScope(c, req.CollectionID, req.FolderID) {
-		return
-	}
-
 	newHeadersJSON, err := jsonStringMap(req.Headers)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "序列化 headers 失败: " + err.Error()})
@@ -774,10 +714,6 @@ func (h *Handler) DeleteRequest(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询请求失败: " + err.Error()})
 		return
 	}
-	if !requireRequestInCapabilityScope(c, collectionID, folderID) {
-		return
-	}
-
 	tx, err := h.dbRef.Get().BeginTx(c.Request.Context(), nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "开启事务失败: " + err.Error()})
@@ -850,9 +786,6 @@ func (h *Handler) ExecuteRequest(c *gin.Context) {
 		return
 	}
 	decodeRequestJSON(&request, headersJSON, queryJSON, authJSON, bodyFormJSON)
-	if !requireRequestInCapabilityScope(c, request.CollectionID, request.FolderID) {
-		return
-	}
 	request.Auth, err = h.loadAuthSecret(request.ID, request.Auth)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取请求认证信息失败"})
@@ -969,13 +902,6 @@ func (h *Handler) ExecuteRequest(c *gin.Context) {
 // GET /api/local/apis/environments
 func (h *Handler) ListEnvironments(c *gin.Context) {
 	collectionID, _ := strconv.ParseInt(c.Query("collection_id"), 10, 64)
-	if grant, scoped := capabilityGrant(c); scoped {
-		if collectionID > 0 && collectionID != grant.APICollectionID {
-			c.JSON(http.StatusForbidden, gin.H{"error": "集合不在当前任务授权范围内"})
-			return
-		}
-		collectionID = grant.APICollectionID
-	}
 	query := `SELECT id, collection_id, name, description, variables_json, created_at, updated_at
 	          FROM gt_api_environments`
 	args := []any{}

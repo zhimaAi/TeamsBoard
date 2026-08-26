@@ -1,0 +1,40 @@
+appId: cn.goteams.client
+productName: TeamsBoard
+asar: true
+
+directories:
+  output: ../dist/desktop
+
+files:
+  - main/**/*
+  - preload/**/*
+  - shared/**/*
+  - build/icon.png
+  - package.json
+
+win:
+  icon: build/icon.png
+  target:
+    - nsis
+  artifactName: "TeamsBoard-${version}-windows-${arch}.${ext}"
+  extraResources:
+    - from: resources/backend
+      to: backend
+      filter:
+        - client.exe
+
+mac:
+  icon: build/icon.png
+  target:
+    - dmg
+  category: public.app-category.developer-tools
+  artifactName: "TeamsBoard-${version}-macos-${arch}.${ext}"
+  extraResources:
+    - from: resources/backend
+      to: backend
+      filter:
+        - client
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

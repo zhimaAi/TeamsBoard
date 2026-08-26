@@ -97,7 +97,7 @@ watch(() => authStore.cloudLoggedIn, (loggedIn) => {
   <div v-else class="workbench-page">
     <section class="login-card">
       <div class="brand-mark" aria-hidden="true">
-        <img src="@/assets/logo.svg" alt="GoTeams" />
+        <img src="@/assets/logo.svg" alt="TeamsBoard" />
       </div>
 
       <div v-if="configState === 'loading'" class="card-state loading-state">
@@ -106,7 +106,7 @@ watch(() => authStore.cloudLoggedIn, (loggedIn) => {
 
       <template v-else>
         <h1>欢迎回来</h1>
-        <p class="login-subtitle">请登录以继续使用 Teams Desk Agent</p>
+        <p class="login-subtitle">请登录以继续使用 TeamsBoard</p>
 
         <LoginForm
           :loading="loginLoading"

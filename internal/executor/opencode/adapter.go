@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -31,26 +32,25 @@ func NewAdapter() executor.Adapter {
 	return &Adapter{}
 }
 
-// NewConversation New conversation: opencode run --format json --auto -m <model> <prompt>
+// NewConversation New conversation: opencode run --format json --auto -m <model> (prompt on stdin)
 func (a *Adapter) NewConversation(ctx context.Context, opts executor.RunOptions) (<-chan executor.ExecutorEvent, error) {
 	args := []string{"run", "--format", "json", "--auto"}
 	if opts.ModelProfile != "" {
 		args = append(args, "-m", opts.ModelProfile)
 	}
 	args = append(args, opts.ExtraArgs...)
-	args = append(args, opts.Prompt)
 
 	return a.runCommand(ctx, opts, args)
 }
 
-// ResumeConversation Continue the conversation: opencode run --format json --auto --session <id> -m <model> <prompt>
+// ResumeConversation Continue the conversation:
+// opencode run --format json --auto --session <id> -m <model> (prompt on stdin)
 func (a *Adapter) ResumeConversation(ctx context.Context, opts executor.ResumeOptions) (<-chan executor.ExecutorEvent, error) {
 	args := []string{"run", "--format", "json", "--auto", "--session", opts.ExternalSessionID}
 	if opts.ModelProfile != "" {
 		args = append(args, "-m", opts.ModelProfile)
 	}
 	args = append(args, opts.ExtraArgs...)
-	args = append(args, opts.Prompt)
 
 	return a.runCommand(ctx, opts.RunOptions, args)
 }
@@ -78,6 +78,17 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 		cmd.Env = env
 	}
 
+	// Prompt must be passed via stdin. On Windows, `opencode` is normally
+	// installed as a .cmd/.bat shim that is launched through cmd.exe; a
+	// multi-line prompt in the command line gets mangled by cmd.exe and the CLI
+	// only receives the first line. `opencode run` reads the message from stdin
+	// when stdin is not a TTY, so the prompt is delivered there instead.
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("创建 stdin 管道失败: %w", err)
+	}
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
@@ -99,6 +110,16 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 	a.cmd = cmd
 	a.pid = cmd.Process.Pid
 	a.mu.Unlock()
+
+	stdinDone := make(chan error, 1)
+	go func() {
+		_, writeErr := io.WriteString(stdin, opts.Prompt)
+		closeErr := stdin.Close()
+		if writeErr == nil {
+			writeErr = closeErr
+		}
+		stdinDone <- writeErr
+	}()
 
 	// Continue reading stderr for diagnostics
 	var stderrDiag diagnosticTail
@@ -129,6 +150,8 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 		outputTokens := 0
 		resultError := ""
 		sawCompletion := false
+		sawError := false
+		sawJSON := false
 		var stdoutDiag diagnosticTail
 
 		for scanner.Scan() {
@@ -142,9 +165,10 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 				stdoutDiag.AppendLine(line)
 				continue
 			}
+			sawJSON = true
 
-			if sessionID == "" && event.SessionID != "" {
-				sessionID = event.SessionID
+			if sessionID == "" && event.getSessionID() != "" {
+				sessionID = event.getSessionID()
 			}
 
 			switch event.Type {
@@ -159,6 +183,56 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 					}
 				}
 			case "tool_use", "tool_call":
+				// New format (>=1.18): the tool call, its input and its completed
+				// result are all carried in the single "part" field.
+				if event.Part != nil {
+					name := event.Part.Tool
+					if name == "" {
+						name = event.Name
+					}
+					input := ""
+					if event.Part.State != nil {
+						input = rawText(event.Part.State.Input)
+					}
+					if input == "" {
+						input = rawText(event.Input)
+					}
+					callContent := strings.TrimSpace(name + " " + input)
+					if event.Part.State != nil && event.Part.State.Status == "completed" && event.Part.State.Output != "" {
+						// emit both the call and its result so the console can show them
+						if callContent != "" {
+							eventCh <- executor.ExecutorEvent{
+								Type:      executor.EventToolCall,
+								Content:   callContent,
+								SessionID: sessionID,
+								Timestamp: nowMillis(),
+							}
+						}
+						eventCh <- executor.ExecutorEvent{
+							Type:      executor.EventToolResult,
+							Content:   event.Part.State.Output,
+							SessionID: sessionID,
+							Timestamp: nowMillis(),
+						}
+						continue
+					}
+					if event.Part.State != nil && event.Part.State.Error != "" {
+						eventCh <- executor.ExecutorEvent{
+							Type:      executor.EventToolResult,
+							Content:   "错误: " + event.Part.State.Error,
+							SessionID: sessionID,
+							Timestamp: nowMillis(),
+						}
+					}
+					eventCh <- executor.ExecutorEvent{
+						Type:      executor.EventToolCall,
+						Content:   callContent,
+						SessionID: sessionID,
+						Timestamp: nowMillis(),
+					}
+					continue
+				}
+				// Legacy format: name/input at the top level.
 				content := strings.TrimSpace(event.Name + " " + rawText(event.Input))
 				eventCh <- executor.ExecutorEvent{
 					Type:      executor.EventToolCall,
@@ -173,10 +247,20 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 					SessionID: sessionID,
 					Timestamp: nowMillis(),
 				}
+			case "step_finish":
+				// opencode >=1.18 finishes each step with type=step_finish; a final
+				// "stop" reason means the whole run is done.
+				if event.Part != nil && event.Part.Reason == "stop" {
+					sawCompletion = true
+				}
+				if event.Part != nil && event.Part.Reason == "error" {
+					sawError = true
+					sawCompletion = true
+				}
 			case "result", "complete", "done":
 				sawCompletion = true
-				if event.SessionID != "" {
-					sessionID = event.SessionID
+				if sid := event.getSessionID(); sid != "" {
+					sessionID = sid
 				}
 				if event.Usage.InputTokens > 0 {
 					inputTokens = event.Usage.InputTokens
@@ -185,16 +269,20 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 					outputTokens = event.Usage.OutputTokens
 				}
 				if event.IsError {
-					resultError = strings.TrimSpace(rawText(event.Content))
-					if resultError == "" {
+					msg := extractErrorMessage(event)
+					if msg != "" {
+						resultError = msg
+					} else {
 						resultError = "OpenCode 返回错误结果"
 					}
+					sawError = true
 				}
 			case "error":
-				resultError = strings.TrimSpace(rawText(event.Content))
-				if resultError == "" {
-					resultError = event.Error
+				msg := extractErrorMessage(event)
+				if msg != "" {
+					resultError = msg
 				}
+				sawError = true
 				sawCompletion = true
 			}
 		}
@@ -203,17 +291,31 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 		stderrWG.Wait()
 
 		waitErr := cmd.Wait()
+		stdinErr := <-stdinDone
 		a.clearProcess(cmd)
 
 		// Build error message
+		if sawError && resultError == "" {
+			resultError = "OpenCode 返回错误事件"
+		}
 		failureDetails := make([]string, 0, 4)
 		if resultError != "" {
 			failureDetails = append(failureDetails, resultError)
 		}
+		if stdinErr != nil {
+			failureDetails = append(failureDetails, "写入 OpenCode Prompt 失败: "+stdinErr.Error())
+		}
 		if !sawCompletion {
-			failureDetails = append(failureDetails, "OpenCode 未输出有效的结束事件")
-			if output := stdoutDiag.String(); output != "" {
-				failureDetails = append(failureDetails, "未解析的 OpenCode 输出:\n"+output)
+			// OpenCode 以 0 退出码正常结束且已输出过 JSON 事件时，视为执行成功：
+			// 部分 OpenCode 版本不会显式输出 complete/result/done 等结束事件，
+			// 仅以关闭 stdout 表示任务结束，此时不应误报“未输出有效的结束事件”。
+			if waitErr == nil && sawJSON {
+				sawCompletion = true
+			} else {
+				failureDetails = append(failureDetails, "OpenCode 未输出有效的结束事件")
+				if output := stdoutDiag.String(); output != "" {
+					failureDetails = append(failureDetails, "未解析的 OpenCode 输出:\n"+output)
+				}
 			}
 		}
 
@@ -264,14 +366,15 @@ func (a *Adapter) clearProcess(cmd *exec.Cmd) {
 
 // opencodeEvent OpenCode JSON event
 type opencodeEvent struct {
-	Type      string          `json:"type"`
-	Content   json.RawMessage `json:"content"`
-	Name      string          `json:"name"`
-	Input     json.RawMessage `json:"input"`
-	SessionID string          `json:"session_id"`
-	Error     string          `json:"error"`
-	IsError   bool            `json:"is_error"`
-	Message   struct {
+	Type         string          `json:"type"`
+	Content      json.RawMessage `json:"content"`
+	Name         string          `json:"name"`
+	Input        json.RawMessage `json:"input"`
+	SessionID    string          `json:"session_id"`
+	SessionIDAlt string          `json:"sessionID"`
+	Error        *opencodeError  `json:"error"`
+	IsError      bool            `json:"is_error"`
+	Message      struct {
 		Content []opencodeContentBlock `json:"content"`
 	} `json:"message"`
 	Usage struct {
@@ -280,6 +383,36 @@ type opencodeEvent struct {
 	} `json:"usage"`
 	// opencode may use the parts structure
 	Parts []opencodePart `json:"parts"`
+	// opencode >= 1.18 emits every event with a single "part" payload:
+	// {"type":"text","part":{"type":"text","text":"..."}}
+	// {"type":"tool_use","part":{"type":"tool","tool":"read","state":{...}}}
+	// {"type":"step_finish","part":{"reason":"stop",...}}
+	Part *opencodePart `json:"part"`
+}
+
+// opencodeState carries the execution state of a tool part.
+type opencodeState struct {
+	Status string          `json:"status"` // pending | completed | error
+	Input  json.RawMessage `json:"input"`
+	Output string          `json:"output"`
+	Error  string          `json:"error"`
+}
+
+// getSessionID returns the session id, tolerant of both the snake_case
+// (session_id) and camelCase (sessionID) field names used by OpenCode.
+func (e opencodeEvent) getSessionID() string {
+	if e.SessionID != "" {
+		return e.SessionID
+	}
+	return e.SessionIDAlt
+}
+
+// opencodeError OpenCode JSON error event payload.
+// OpenCode emits errors as {"type":"error","error":{"name":...,"message":...,"data":{"message":...}}}
+type opencodeError struct {
+	Name    string         `json:"name"`
+	Message string         `json:"message"`
+	Data    map[string]any `json:"data"`
 }
 
 type opencodeContentBlock struct {
@@ -293,9 +426,19 @@ type opencodeContentBlock struct {
 type opencodePart struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+	// tool part fields
+	Tool    string         `json:"tool"`
+	CallID  string         `json:"callID"`
+	State   *opencodeState `json:"state"`
+	Reason  string         `json:"reason"`
+	Session string         `json:"sessionID"`
 }
 
 func extractContent(event opencodeEvent) string {
+	// New format (>=1.18): text lives in the single "part" field.
+	if event.Part != nil && event.Part.Type == "text" && event.Part.Text != "" {
+		return event.Part.Text
+	}
 	// Extract from message.content first
 	for _, block := range event.Message.Content {
 		if block.Type == "text" && block.Text != "" {
@@ -314,6 +457,29 @@ func extractContent(event opencodeEvent) string {
 	}
 	// Fall back to the content field
 	return rawText(event.Content)
+}
+
+// extractErrorMessage extracts the human-readable message from an OpenCode
+// error event. OpenCode nests the message at either error.message or
+// error.data.message, and may also carry a plain content payload.
+func extractErrorMessage(event opencodeEvent) string {
+	if event.Error != nil {
+		if msg := strings.TrimSpace(event.Error.Message); msg != "" {
+			return msg
+		}
+		if event.Error.Data != nil {
+			if m, ok := event.Error.Data["message"].(string); ok && strings.TrimSpace(m) != "" {
+				return strings.TrimSpace(m)
+			}
+		}
+		if name := strings.TrimSpace(event.Error.Name); name != "" {
+			return name
+		}
+	}
+	if content := strings.TrimSpace(rawText(event.Content)); content != "" {
+		return content
+	}
+	return ""
 }
 
 func rawText(raw json.RawMessage) string {

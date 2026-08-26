@@ -1,0 +1,27 @@
+{
+  "name": "goteams-client-desktop",
+  "version": "0.1.4",
+  "private": true,
+  "description": "TeamsBoard Electron desktop shell",
+  "author": "TeamsBoard",
+  "main": "main/index.cjs",
+  "scripts": {
+    "dev": "concurrently -k -s command-DESKTOP -n WEB,DESKTOP -c green,blue \"npm --prefix ../web run dev:web\" \"wait-on tcp:5173 && cross-env GOTEAMS_DESKTOP_RENDERER_URL=http://localhost:5173 electron .\"",
+    "typecheck": "tsc -p jsconfig.json",
+    "test": "npm run typecheck && node --test test/*.test.cjs",
+    "pack": "electron-builder --config electron-builder.yml",
+    "pack:win": "electron-builder --config electron-builder.yml --win",
+    "pack:win:release": "electron-builder --config electron-builder.release.cjs --win",
+    "pack:mac": "electron-builder --config electron-builder.yml --mac",
+    "pack:mac:zip": "electron-builder --config electron-builder.mac-zip.cjs --mac"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "concurrently": "^10.0.4",
+    "cross-env": "^10.1.0",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^7.0.2",
+    "wait-on": "^9.1.0"
+  }
+}

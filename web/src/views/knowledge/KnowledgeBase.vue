@@ -1131,18 +1131,19 @@ onBeforeUnmount(() => {
 
 .knowledge-titlebar {
   display: flex;
-  height: 72px;
+  height: 44px;
   align-items: center;
-  padding: 0 30px;
-  border-bottom: 1px solid #e6e8eb;
+  padding: 0 24px;
+  border-bottom: 1px solid #f0f0f0;
   font-size: 20px;
-  font-weight: 650;
+  font-weight: 600;
+  line-height: 28px;
 }
 
 .knowledge-page {
   display: grid;
   grid-template-columns: 360px minmax(480px, 1fr) 300px;
-  height: calc(100vh - 72px);
+  height: calc(100vh - 44px);
   min-height: 0;
   overflow: hidden;
   background: #fff;

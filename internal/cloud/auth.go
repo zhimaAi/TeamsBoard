@@ -93,6 +93,7 @@ func (c *Client) RefreshToken(ctx context.Context, token string) (*LoginResponse
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
+	c.injectAuthHeaders(req)
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := c.httpClient.Do(req)
