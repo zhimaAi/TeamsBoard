@@ -1,175 +1,178 @@
-# TeamsBoard
+<p align="center"><img src="assets/imgs/logo.svg" alt="TeamsBoard Logo" width="96" /></p>
 
-![TeamsBoard](imgs/head_image_zh.png)
+<p align="center"><strong style="font-size: 2em;">TeamsBoard</strong></p>
 
-> <p align="center"><strong>简体中文</strong> | <a href="README_en.md">English</a></p>
+<p align="center"><strong>A dashboard for managing multiple AI coding tools like Claude Code and Codex ,accelerating your workflow by up to 5x.</strong></p>
 
-## 产品定位
+<p align="center"><strong>English</strong> | <a href="README_zh.md">简体中文</a></p>
 
-TeamsBoard 是一个面向团队的一体化 AI 协同工作台。它解决的核心问题是：**AI Agent 不再只是聊天窗口里的问答工具，而是可以被组织、被指派、被跟踪的团队生产力单元**。
+![TeamsBoard](assets/imgs/image-20260825172159352.png)
 
-- **任务即对话**：每项任务都绑定一个与 Agent 的对话工作台，任务的推进过程就是与 Agent 协作的过程。Agent 在关键节点向你发起确认请求，由人来做最终决策。
-- **专家流水线编排**：把多个各有所长的 Agent 编排成流水线或专家团，让复杂任务按角色分工、按顺序协作完成，而非靠单一大模型通吃。
-- **本地项目直连**：项目与本地目录、Git 仓库深度绑定，Agent 在真实的工作目录上执行，任务完成后成果直接落在你的代码库里。
-- **团队协同闭环**：从看板分配任务、到 Agent 执行、再到确认与归档，任务流转的每一步都在同一个工作台上完成，全团队可见、可跟踪。
+## Product Vision
 
-## 核心功能
+TeamsBoard is an all-in-one AI coding workbench for teams that **manages mainstream AI coding tools like Claude Code and Codex from a single panel**. It solves a core problem: **AI coding tools no longer work in silos across different terminals — they can be centrally orchestrated, organized, assigned, and tracked as productive team units**, boosting development efficiency by 5x through multi-agent parallel collaboration.
 
-### 📋 看板
-- **双视图切换**：我的看板 / 团队工作，快速聚焦个人任务或纵览团队进度
-- **拖拽流转**：任务卡片按状态（待开始 / 进行中 / 已阻塞 / 已完成）拖拽流转
-- **流水线 / 专家团指派**：任务可指定执行的流水线或专家团，未指派时提供引导弹窗，避免任务「裸奔」
-- **Linear 风格新建任务**：属性行 chip 交互 + 更多菜单，快速录入任务信息
-- **任务详情页**：步骤定位、Agent 动态过滤、单发送按钮对话，任务上下文一目了然
+- **Unified Tool Management**: Connect mainstream AI coding tools like Claude Code, Codex, Cursor, and Qoder in one panel — configure CLIs, models, and prompts centrally, and switch between tools freely without opening multiple terminals.
+- **Task as Conversation**: Every task is paired with a dedicated Agent conversation workspace. The progress of a task **is** the process of collaborating with an Agent. Agents send confirmation requests at key decision points, leaving the final call to you.
+- **Expert Pipeline Orchestration**: Arrange multiple specialized Agents into pipelines or expert panels, letting complex tasks be completed through role-based collaboration rather than a single monolithic model.
+- **Local Project Integration**: Projects are deeply bound to local directories and Git repositories. Agents execute tasks in your real working directory, delivering results directly into your codebase.
+- **Team Collaboration Loop**: From kanban assignment to Agent execution to review and archiving — every step happens on the same workbench, visible and traceable across the entire team.
 
-### 💬 对话工作台
-- **与 Agent 协作推进任务**：Agent 的确认请求会在这里与你沟通，人机协作决策
-- **消息管理**：右键菜单支持标为已读 / 设为未读 / 归档，保持工作台干净
+## Core Features
 
-### 🤖 专家流水线
-- **流水线编排**：纵向轨道可视化编排多个 Agent，支持拖拽排序、新建、编辑、删除
-- **专家团模式**：成员多选组建agent专家团，团长agent负责协调成员agent，agent间可通过@方式通信
-- **Agent 配置**：每个 Agent 可配置 CLI、模型与提示词
+### 📋 Kanban
+- **Dual View Toggle**: My Board / Team Work — quickly focus on personal tasks or see team-wide progress
+- **Drag & Drop Flow**: Task cards move across status lanes (To Do / In Progress / Blocked / Done)
+- **Pipeline / Expert Panel Assignment**: Assign a pipeline or expert panel to any task; unassigned tasks show a guidance modal to prevent "naked" execution
+- **Linear-style Task Creation**: Attribute chips with inline editing + more menu for rapid task entry
+- **Task Detail Page**: Step navigation, Agent dynamic filtering, single-send conversation — full context at a glance
 
-### 📁 本地项目
-- **目录绑定**：项目绑定本地目录，任务关联时自动作为工作目录
-- **Git 自动检测**：选择项目目录后自动识别 Git 仓库并读取远端地址
-- **任务目录联动**：新建任务时选择所属项目，其目录自动填充为任务工作目录；关联项目目录以 chips 形式管理
+### 💬 Conversation Workspace
+- **Collaborate with Agents**: Agents send confirmation requests here — human-AI collaborative decision making
+- **Message Management**: Right-click menu supports Mark as Read / Mark as Unread / Archive to keep the workspace clean
 
-### 🧰 团队资源管理
-- **命令**：集中管理常用命令
-- **知识库**：团队知识沉淀与共享
-- **接口管理**：统一维护团队接口信息
-- **配置中心**：集中管理团队级配置项
+### 🤖 Expert Pipelines
+- **Pipeline Builder**: Vertically arranged visual pipeline editor with drag-and-drop reordering, create, edit, and delete
+- **Expert Panel Mode**: Select multiple members to form an expert panel; the panel lead coordinates members; agents communicate via @mentions
+- **Agent Configuration**: Each Agent can be configured with a CLI, model, and custom prompt
 
-## 界面预览
+### 📁 Local Projects
+- **Directory Binding**: Bind a project to a local directory — automatically used as the working directory when tasks are associated
+- **Git Auto-detection**: Automatically detects Git repositories and reads the remote URL when selecting a project directory
+- **Task-Directory Linking**: Selecting a project when creating a task auto-fills its directory as the task working directory; associated project directories are managed as chips
 
-| 看板                                                         | 对话                                                         |
-| ------------------------------------------------------------ | ------------------------------------------------------------ |
-| ![image-20260825172159352](imgs/image-20260825172159352.png) | ![image-20260825172230944](imgs/image-20260825172230944.png) |
+### 🧰 Team Resource Management
+- **Commands**: Centralized management of frequently used commands
+- **Knowledge Base**: Team knowledge accumulation and sharing
+- **API Management**: Unified maintenance of team API information
+- **Config Center**: Centralized management of team-level configuration items
 
-| 任务详情                                                     | 专家流水线                                                   | 项目                                                         |
-| ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| ![image-20260825172313108](imgs/image-20260825172313108.png) | ![image-20260825172400871](imgs/image-20260825172400871.png) | ![image-20260825172433446](imgs/image-20260825172433446.png) |
+## Screenshots
 
-## 技术栈
+| Kanban | Conversation |
+|--------|-------------|
+| ![Kanban](assets/imgs/image-20260825172159352.png) | ![Conversation](assets/imgs/image-20260825172230944.png) |
 
-| 层 | 技术 |
-| --- | --- |
-| 桌面 | Electron 43、electron-builder 26 |
-| 前端 | Vue 3.5、markdown-it（Markdown 渲染） |
-| 后端 | Go 1.26 |
+| Task Detail | Expert Pipeline | Project |
+|-------------|----------------|---------|
+| ![Task Detail](assets/imgs/image-20260825172313108.png) | ![Pipeline](assets/imgs/image-20260825172400871.png) | ![Project](assets/imgs/image-20260825172433446.png) |
 
-## 快速开始
+## Tech Stack
 
-###  1、下载并安装客户端
+| Layer | Technology |
+|-------|-----------|
+| Desktop Shell | Electron 43, electron-builder 26 |
+| Frontend | Vue 3.5, markdown-it (Markdown rendering) |
+| Backend | Go 1.26 |
 
-TeamsBoard 提供Windows(x64/arm)、Mac os(x64/arm）安装包，可以直接下载安装
+## Quick Start
 
-| 平台          | 安装包                                                       |
-| ------------- | ------------------------------------------------------------ |
-| Windows x64   | [下载]( https://goteams-cn.oss-cn-hangzhou.aliyuncs.com/client/v0.1.4/TeamsBoard-0.1.4-windows-x64.exe) |
-| Windows arm64 | [下载](https://goteams-cn.oss-cn-hangzhou.aliyuncs.com/client/v0.1.4/TeamsBoard-0.1.4-windows-arm64.exe) |
-| Mac os x64    | [下载](https://goteams-cn.oss-cn-hangzhou.aliyuncs.com/client/v0.1.4/TeamsBoard-0.1.4-macos-x64.dmg) |
-| Mac os arm    | [下载](https://goteams-cn.oss-cn-hangzhou.aliyuncs.com/client/v0.1.4/TeamsBoard-0.1.4-windows-arm64.exe) |
+### 1. Download and Install
 
-### 2、创建流水线，绑定本地cli
+TeamsBoard provides installers for Windows (x64/arm64) and macOS (x64/arm).
 
-打开客户端后，点击【专家流水线】，可以新建流水线，也可以使用系统内置的三个流水线。首次使用内置的流水线，需要给agent绑定本地cli。
+| Platform | Download |
+|----------|----------|
+| Windows x64 | [Download](https://goteams-cn.oss-cn-hangzhou.aliyuncs.com/client/v0.1.4/TeamsBoard-0.1.4-windows-x64.exe) |
+| Windows arm64 | [Download](https://goteams-cn.oss-cn-hangzhou.aliyuncs.com/client/v0.1.4/TeamsBoard-0.1.4-windows-arm64.exe) |
+| macOS x64 | [Download](https://goteams-cn.oss-cn-hangzhou.aliyuncs.com/client/v0.1.4/TeamsBoard-0.1.4-macos-x64.dmg) |
+| macOS arm64 | [Download](https://goteams-cn.oss-cn-hangzhou.aliyuncs.com/client/v0.1.4/TeamsBoard-0.1.4-windows-arm64.exe) |
 
-![image-20260825174754783](imgs/image-20260825174754783.png)
+### 2. Create a Pipeline and Bind a Local CLI
 
-### 3、创建一个本地任务
+Open the client, navigate to **Expert Pipelines**, and you can create a new pipeline or use one of the three built-in pipelines. When using a built-in pipeline for the first time, you need to bind a local CLI to each Agent.
 
-Teamsboard提供了两种方式来创建任务。
+![Pipeline Setup](assets/imgs/image-20260825174754783.png)
 
-- 经典模式：在看板中手动创建任务，创建任务时需要选择工作目录（代码目录），
+### 3. Create a Local Task
 
-  ![image-20260825175113707](imgs/image-20260825175113707.png)
+TeamsBoard offers two ways to create a task:
 
-- 对话模式：可以在对话界面点击新建对话，快速创建任务。
+- **Classic Mode**: Manually create a task on the Kanban board. Select a working directory (code directory) when creating the task.
 
-  ![image-20260825175347287](imgs/image-20260825175347287.png)
+  ![Create Task Classic](assets/imgs/image-20260825175113707.png)
 
-### 4、查看进度和结果
+- **Conversation Mode**: Click "New Conversation" in the conversation interface to quickly create a task.
 
-通过对话工作台，可以查看agent执行的进度和结果，可以和agent沟通。
+  ![Create Task Conversation](assets/imgs/image-20260825175347287.png)
 
-![image-20260825175611051](imgs/image-20260825175611051.png)
+### 4. View Progress and Results
 
-## 支持的CLI
+Use the conversation workspace to monitor Agent execution progress, view results, and communicate with Agents.
 
-TeamsBoard 支持以下 13 种 CLI Agent，可在流水线中为每个 Agent 绑定本地 CLI：
+![Task Progress](assets/imgs/image-20260825175611051.png)
 
-| CLI | 说明 |
-| --- | --- |
-| Claude | Claude Code（Anthropic） |
+## Supported CLIs
+
+TeamsBoard supports the following 13 CLI-based Agents, which can be bound to individual Agents in a pipeline:
+
+| CLI | Description |
+|-----|-------------|
+| Claude | Claude Code (Anthropic) |
 | CODEx | CODEx Agent |
 | CodeBuddy | CodeBuddy |
 | Copilot | GitHub Copilot |
-| Cursor | Cursor 编辑器 |
+| Cursor | Cursor Editor |
 | Grok | xAI Grok |
 | Hermes | Hermes |
-| Kimi | 月之暗面 Kimi |
+| Kimi | Moonshot AI Kimi |
 | OpenClaw | OpenClaw |
 | OpenCode | OpenCode |
 | Pi | Pi |
 | Qoder | Qoder |
-| Qwen | 通义千问 |
+| Qwen | Tongyi Qianwen (Alibaba) |
 
-## 内置流水线
+## Built-in Pipelines
 
-系统内置三条开发流水线，覆盖从需求到交付的全流程。首次使用需为 Agent 绑定本地 CLI。
+The system comes with three built-in development pipelines covering the full lifecycle from requirements to delivery. When using them for the first time, bind a local CLI to each Agent.
 
-### 1. 全栈开发流水线
+### 1. Full-Stack Development Pipeline
 
-覆盖需求结构化、架构设计、前后端开发、测试、代码审查与合流交付的全流程。
+Covers requirements structuring, architecture design, frontend & backend development, testing, code review, and merge documentation.
 
-| 步骤 | Agent 角色 | 职责 |
-| --- | --- | --- |
-| 1 | 需求结构化官 | 将原始需求转化为结构化用户故事与验收标准，挖掘歧义点 |
-| 2 | 架构师 | 产出技术方案、影响面分析，拆解为 ≤5 个线性任务 |
-| 3 | 后端开发工程师 | 实现后端业务逻辑与数据访问层，产出 OpenAPI 3.0 契约 |
-| 4 | 前端开发工程师 | 基于 OpenAPI 生成 TS 类型与 API Client，实现 UI 交互 |
-| 5 | 测试工程师 | 编写接口自动化与 E2E 测试脚本，产出测试报告 |
-| 6 | 合流文档官 | 聚合变更为变更摘要文档，标记流水线通关状态 |
+| Step | Agent Role | Responsibilities |
+|------|------------|-----------------|
+| 1 | Requirements Structurer | Transform raw requirements into structured user stories and acceptance criteria; identify ambiguities |
+| 2 | Architect | Produce technical proposals and impact analysis; decompose into ≤5 linear tasks |
+| 3 | Backend Developer | Implement backend business logic and data access layer; produce OpenAPI 3.0 contracts |
+| 4 | Frontend Developer | Generate TypeScript types and API Client from OpenAPI; implement UI interactions |
+| 5 | Test Engineer | Write API automation and E2E test scripts; produce test reports |
+| 6 | Merge Documenter | Aggregate changes into a change summary document; mark pipeline completion status |
 
-### 2. 后端开发流水线
+### 2. Backend Development Pipeline
 
-覆盖需求结构化、架构设计、后端开发、集成测试、代码审查与合流交付的后端专属流水线。
+A backend-focused pipeline covering requirements structuring, architecture design, development, integration testing, code review, and merge documentation.
 
-| 步骤 | Agent 角色 | 职责 |
-| --- | --- | --- |
-| 1 | 需求结构化官 | 同全栈流水线 |
-| 2 | 架构师 | 同全栈流水线（含鉴权策略设计） |
-| 3 | 后端开发工程师 | 同全栈流水线 |
-| 4 | 集成测试工程师 | 全链路集成测试，覆盖接口间依赖编排、数据持久化与幂等性 |
-| 5 | 代码审查官 | 审查设计一致性、健壮性、契约与实体一致性 |
-| 6 | 合流文档官 | 聚合变更为变更摘要，含 API 示例与部署注意事项 |
+| Step | Agent Role | Responsibilities |
+|------|------------|-----------------|
+| 1 | Requirements Structurer | Same as full-stack pipeline |
+| 2 | Architect | Same as full-stack pipeline (including authentication strategy design) |
+| 3 | Backend Developer | Same as full-stack pipeline |
+| 4 | Integration Test Engineer | Full-chain integration testing covering inter-service dependency orchestration, data persistence, and idempotency |
+| 5 | Code Reviewer | Review design consistency, robustness, contract and entity consistency |
+| 6 | Merge Documenter | Aggregate changes into a summary with API examples and deployment notes |
 
-### 3. 前端开发流水线
+### 3. Frontend Development Pipeline
 
-覆盖交互设计、前端架构、前端开发、集成测试、代码审查与合流交付的前端专属流水线。
+A frontend-focused pipeline covering interaction design, frontend architecture, development, integration testing, code review, and merge documentation.
 
-| 步骤 | Agent 角色 | 职责 |
-| --- | --- | --- |
-| 1 | 需求与交互结构化官 | 将 PRD/设计稿转化为用户交互流程与 UI 验收标准 |
-| 2 | 前端架构师 | 组件树拆解、状态管理、路由与 Mock 策略设计 |
-| 3 | 前端开发工程师 | 实现页面/组件、状态管理，完整对接 API 契约 |
-| 4 | 前端集成测试工程师 | 组件集成测试与 E2E 场景测试 |
-| 5 | 代码审查官 | 审查性能、可访问性、类型安全与组件复用性 |
-| 6 | 合流文档官 | 聚合前端变更为摘要，含 UI 变更描述与环境变量清单 |
+| Step | Agent Role | Responsibilities |
+|------|------------|-----------------|
+| 1 | Requirements & Interaction Structurer | Transform PRDs/design drafts into user interaction flows and UI acceptance criteria |
+| 2 | Frontend Architect | Component tree decomposition, state management, routing, and mock strategy design |
+| 3 | Frontend Developer | Implement pages/components, state management, and fully integrate API contracts |
+| 4 | Frontend Integration Test Engineer | Component integration tests and E2E scenario tests |
+| 5 | Code Reviewer | Review performance, accessibility, type safety, and component reusability |
+| 6 | Merge Documenter | Aggregate frontend changes into a summary with UI change descriptions and environment variable checklists |
 
+## Community & Contact
 
+Feel free to reach out for help or to provide suggestions for improving TeamsBoard:
 
-## 🏡 社区交流 & 联系我们
-
-欢迎联系我们获取帮助，或者提供建议帮助我们改善 GoTeams 客户端。您可以通过以下方式联系我们：
-
-- **邮箱**：发送邮件到 [jarvis@chatwiki.com](mailto:jarvis@chatwiki.com)
-- **GitHub Issues**：[提交 Issue](https://github.com/your-org/goteams/issues)
-- **官网**：[goteams.cn](https://goteams.cn/)
+- **Email**: [jarvis@chatwiki.com](mailto:jarvis@chatwiki.com)
+- **GitHub Issues**: [Submit an Issue](https://github.com/your-org/goteams/issues)
+- **Website**: [goteams.cn](https://goteams.cn/)
 
 ## License
 
-本项目基于 [MIT License](LICENSE) 开源。
+This project is open-sourced under the [MIT License](LICENSE).
