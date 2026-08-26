@@ -17,10 +17,8 @@ import (
 // No longer rely on cloud login, unified reading and writing of "local Profile library":
 // - General Profile: ~/.goteams/data/base.db (shared by all accounts, both official and custom address logins are written into this library)
 //
-// Switch the underlying *sql.DB when switching Profile (exposed to each handler through dbRef);
-// The key backend (JWT/device) is isolated per server address: official and custom logins share
-// the same rule, both use ~/.goteams/data/accounts_<key>/secrets.json (key is derived from the
-// normalized server URL), and the same address always maps to the same directory.
+// The fixed underlying *sql.DB is exposed to local handlers through dbRef. Cloud
+// login does not select another database or create an account-specific directory.
 type LocalProfile struct {
 	mu  sync.Mutex
 	db  *sql.DB
@@ -64,7 +62,7 @@ func (p *LocalProfile) openAndMigrate(ctx context.Context, dir string) (*sql.DB,
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("创建 Profile 数据目录失败: %w", err)
 	}
-	manager, err := storage.NewManagerFile(filepath.Join(dir, "base.db"))
+	manager, err := storage.NewManagerFileForRole(filepath.Join(dir, "base.db"), storage.DatabaseBase)
 	if err != nil {
 		return nil, fmt.Errorf("打开本地 Profile 数据库失败: %w", err)
 	}

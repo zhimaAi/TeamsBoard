@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRouter } from 'vue-router'
 import apiClient from '@/api/client'
+import { isDesktopRuntime, selectDirectory } from '@/composables/useDesktop'
 
 interface WorkItem {
   type: 'requirement' | 'defect'
@@ -18,26 +19,8 @@ interface Agent {
   workflow_version: number
 }
 interface AgentSnapshot extends Agent {
-  steps: Array<{ step_key: string; name: string; sort_order: number; cli_type: string }>
+  steps: Array<{ step_key: string; name: string; sort_order: number; cli_type: string; prompt?: string }>
 }
-interface APICollection {
-  id: number
-  name: string
-  description: string
-}
-interface APIFolder {
-  id: number
-  collection_id: number
-  name: string
-  description: string
-}
-interface DBProfile {
-  id: number
-  name: string
-  db_type: string
-  database_name: string
-}
-
 const router = useRouter()
 const loading = ref(false)
 const creating = ref(false)
@@ -50,13 +33,6 @@ const agentSnapshot = ref<AgentSnapshot>()
 const workDirs = ref<string[]>([''])
 const keyword = ref('')
 const typeFilter = ref<string>('all')
-const apiCollections = ref<APICollection[]>([])
-const apiFolders = ref<APIFolder[]>([])
-const selectedAPICollectionID = ref<number>()
-const selectedAPIFolderID = ref<number>(0)
-const foldersLoading = ref(false)
-const dbProfiles = ref<DBProfile[]>([])
-const selectedDBProfileIDs = ref<number[]>([])
 
 const filteredItems = computed(() => workItems.value.filter((item) => {
   const matchesType = typeFilter.value === 'all' || item.type === typeFilter.value
@@ -73,48 +49,24 @@ const isTaskReady = computed(() => Boolean(
   selectedWorkItem.value
   && selectedAgentID.value
   && normalizedWorkDirs.value.length > 0
-  && normalizedWorkDirs.value.every(Boolean)
-  && selectedAPICollectionID.value,
+  && normalizedWorkDirs.value.every(Boolean),
 ))
-const dbProfileOptions = computed(() => dbProfiles.value.map(p => ({
-  value: p.id,
-  label: `${p.name}（${p.db_type} · ${p.database_name || '-'}）`,
-})))
 
 async function load() {
   loading.value = true
   errorText.value = ''
   selectedWorkItem.value = undefined
   try {
-    const [workItemResult, agentResult, collectionResult, dbProfileResult] = await Promise.all([
+    const [workItemResult, agentResult] = await Promise.all([
       apiClient.get<{ items: WorkItem[] }>('/tasks/work-items'),
       apiClient.get<{ items: Agent[] }>('/tasks/agents'),
-      apiClient.get<{ data: APICollection[] }>('/apis/collections'),
-      apiClient.get<{ items: DBProfile[] }>('/config/database-profiles'),
     ])
     workItems.value = workItemResult.items || []
     agents.value = agentResult.items || []
-    apiCollections.value = collectionResult.data || []
-    dbProfiles.value = dbProfileResult.items || []
   } catch (error) {
     errorText.value = error instanceof Error ? error.message : '云端数据加载失败'
   } finally {
     loading.value = false
-  }
-}
-
-async function chooseAPICollection(id: number) {
-  selectedAPICollectionID.value = id
-  selectedAPIFolderID.value = 0
-  apiFolders.value = []
-  foldersLoading.value = true
-  try {
-    const result = await apiClient.get<{ data: APIFolder[] }>('/apis/folders', { collection_id: id })
-    apiFolders.value = result.data || []
-  } catch (error) {
-    message.error(error instanceof Error ? error.message : '接口文件夹加载失败')
-  } finally {
-    foldersLoading.value = false
   }
 }
 
@@ -137,6 +89,11 @@ function removeWorkDir(index: number) {
   workDirs.value.splice(index, 1)
 }
 
+async function chooseWorkDir(index: number) {
+  const selected = await selectDirectory(workDirs.value[index])
+  if (selected) workDirs.value[index] = selected
+}
+
 async function createTask() {
   if (!selectedWorkItem.value) {
     message.warning('请选择一个需求或缺陷')
@@ -155,10 +112,6 @@ async function createTask() {
     message.warning('工作目录不能重复')
     return
   }
-  if (!selectedAPICollectionID.value) {
-    message.warning('请选择接口集合')
-    return
-  }
   creating.value = true
   try {
     const result = await apiClient.post<{ uuid: string }>('/tasks', {
@@ -167,9 +120,6 @@ async function createTask() {
       agent_id: selectedAgentID.value,
       work_dir: normalizedWorkDirs.value[0],
       work_dirs: normalizedWorkDirs.value,
-      api_collection_id: selectedAPICollectionID.value,
-      api_folder_id: selectedAPIFolderID.value || 0,
-      database_profile_ids: selectedDBProfileIDs.value,
     })
     message.success('任务创建成功')
     router.push(`/workflows/task/${result.uuid}`)
@@ -274,13 +224,16 @@ onMounted(load)
               required
               class="work-dir-form-item"
             >
-              <a-input
-                v-model:value="workDirs[index]"
-                :placeholder="index === 0
-                  ? '请输入本机真实存在的目录，例如 D:\\work\\your-project'
-                  : '请输入需要关联处理的其他目录'"
-                @press-enter="createTask"
-              />
+              <div class="work-dir-picker">
+                <a-input
+                  v-model:value="workDirs[index]"
+                  :placeholder="index === 0
+                    ? '请输入本机真实存在的目录，例如 D:\\work\\your-project'
+                    : '请输入需要关联处理的其他目录'"
+                  @press-enter="createTask"
+                />
+                <a-button v-if="isDesktopRuntime()" @click="chooseWorkDir(index)">浏览</a-button>
+              </div>
             </a-form-item>
             <a-button v-if="index > 0" danger class="work-dir-remove" @click="removeWorkDir(index)">
               移除
@@ -292,63 +245,13 @@ onMounted(load)
         </span>
       </a-card>
 
-      <a-card title="4. 选择接口集合与文件夹" class="work-dir-card">
-        <a-form layout="vertical">
-          <a-form-item label="接口集合" required>
-            <a-select
-              :value="selectedAPICollectionID"
-              placeholder="请选择“接口开发”中的集合"
-              @change="chooseAPICollection"
-            >
-              <a-select-option v-for="collection in apiCollections" :key="collection.id" :value="collection.id">
-                {{ collection.name }}
-              </a-select-option>
-            </a-select>
-          </a-form-item>
-          <a-form-item label="接口文件夹" style="margin-bottom: 8px">
-            <a-select
-              v-model:value="selectedAPIFolderID"
-              :disabled="!selectedAPICollectionID"
-              :loading="foldersLoading"
-              placeholder="不选择则按任务名自动创建"
-            >
-              <a-select-option :value="0">按任务名自动创建文件夹</a-select-option>
-              <a-select-option v-for="folder in apiFolders" :key="folder.id" :value="folder.id">
-                {{ folder.name }}
-              </a-select-option>
-            </a-select>
-          </a-form-item>
-        </a-form>
-        <span class="muted">AI 通过 goteams-api 创建、查询、修改或删除的接口都会被限制在该任务文件夹内。</span>
-      </a-card>
-
-      <a-card title="5. 选择数据库（可选）" class="work-dir-card">
-        <a-form layout="vertical">
-          <a-form-item
-            label="数据库连接"
-            tooltip="选择后，若提示词包含 goteams-db 占位符（如 {Db操作}），将把对应 database_profile_id 注入任务，AI 即可通过 goteams-db 查询这些数据库。"
-          >
-            <a-select
-              v-model:value="selectedDBProfileIDs"
-              mode="multiple"
-              placeholder="可选择多个数据库连接"
-              :options="dbProfileOptions"
-              :disabled="dbProfiles.length === 0"
-            />
-          </a-form-item>
-        </a-form>
-        <span class="muted">
-          该配置为可选。选中的数据库会被限定为本次任务可访问的 database_profile_id 范围；
-          若未配置数据库，则 AI 不会注入数据库范围约束。
-        </span>
-      </a-card>
     </a-spin>
 
     <div class="action-bar">
       <span v-if="isTaskReady">
         将使用所选 Agent 为“{{ selectedWorkItem?.title }}”创建任务
       </span>
-      <span v-else class="muted">完成工作项、Agent、工作目录和接口集合配置后即可创建任务</span>
+      <span v-else class="muted">完成工作项、Agent 和工作目录配置后即可创建任务</span>
       <a-space>
         <a-button @click="router.push('/workflows')">取消</a-button>
         <a-button type="primary" :loading="creating" @click="createTask">创建任务</a-button>
@@ -380,6 +283,11 @@ onMounted(load)
   display: flex;
   align-items: flex-end;
   gap: 10px;
+}
+.work-dir-picker {
+  display: flex;
+  width: 100%;
+  gap: 8px;
 }
 .work-dir-form-item {
   flex: 1;

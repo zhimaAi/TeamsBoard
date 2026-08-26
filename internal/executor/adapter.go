@@ -11,6 +11,16 @@ const (
 	CLITypeClaude    = "claude"
 	CLITypeCodeBuddy = "codebuddy"
 	CLITypeOpenCode  = "opencode"
+	CLITypeCursor    = "cursor"
+	CLITypeCopilot   = "copilot"
+	CLITypeGrok      = "grok"
+	CLITypeHermes    = "hermes"
+	CLITypeKimi      = "kimi"
+	CLITypeQoder     = "qoder"
+	CLITypeQoderCN   = "qoder-cn"
+	CLITypeQwen      = "qwen"
+	CLITypeOpenClaw  = "openclaw"
+	CLITypePi        = "pi"
 )
 
 // Event type constant

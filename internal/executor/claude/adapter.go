@@ -196,6 +196,7 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 							eventCh <- executor.ExecutorEvent{
 								Type:      executor.EventMessage,
 								Content:   block.Text,
+								SessionID: sessionID,
 								Timestamp: nowMillis(),
 							}
 						}
@@ -207,12 +208,14 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 						eventCh <- executor.ExecutorEvent{
 							Type:      executor.EventToolCall,
 							Content:   content,
+							SessionID: sessionID,
 							Timestamp: nowMillis(),
 						}
 					case "tool_result":
 						eventCh <- executor.ExecutorEvent{
 							Type:      executor.EventToolResult,
 							Content:   claudeRawText(block.Content),
+							SessionID: sessionID,
 							Timestamp: nowMillis(),
 						}
 					}
@@ -221,6 +224,7 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 					eventCh <- executor.ExecutorEvent{
 						Type:      executor.EventMessage,
 						Content:   content,
+						SessionID: sessionID,
 						Timestamp: nowMillis(),
 					}
 				}
@@ -229,6 +233,7 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 					eventCh <- executor.ExecutorEvent{
 						Type:      executor.EventMessage,
 						Content:   content,
+						SessionID: sessionID,
 						Timestamp: nowMillis(),
 					}
 				}
@@ -236,12 +241,14 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 				eventCh <- executor.ExecutorEvent{
 					Type:      executor.EventToolCall,
 					Content:   strings.TrimSpace(event.Name + " " + claudeRawText(event.Input)),
+					SessionID: sessionID,
 					Timestamp: nowMillis(),
 				}
 			case "tool_result":
 				eventCh <- executor.ExecutorEvent{
 					Type:      executor.EventToolResult,
 					Content:   claudeRawText(event.Content),
+					SessionID: sessionID,
 					Timestamp: nowMillis(),
 				}
 			case "result":

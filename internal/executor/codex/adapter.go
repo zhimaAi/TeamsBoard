@@ -184,6 +184,7 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 					eventCh <- executor.ExecutorEvent{
 						Type:      executor.EventMessage,
 						Content:   content,
+						SessionID: sessionID,
 						Timestamp: timestamp,
 					}
 				}
@@ -191,12 +192,14 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 				eventCh <- executor.ExecutorEvent{
 					Type:      executor.EventToolCall,
 					Content:   rawJSONText(event.Content),
+					SessionID: sessionID,
 					Timestamp: timestamp,
 				}
 			case "tool_result", "function_call_output":
 				eventCh <- executor.ExecutorEvent{
 					Type:      executor.EventToolResult,
 					Content:   rawJSONText(event.Content),
+					SessionID: sessionID,
 					Timestamp: timestamp,
 				}
 			case "item.started":
@@ -204,6 +207,7 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 					eventCh <- executor.ExecutorEvent{
 						Type:      executor.EventToolCall,
 						Content:   content,
+						SessionID: sessionID,
 						Timestamp: timestamp,
 					}
 				}
@@ -214,6 +218,7 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 						eventCh <- executor.ExecutorEvent{
 							Type:      executor.EventMessage,
 							Content:   event.Item.Text,
+							SessionID: sessionID,
 							Timestamp: timestamp,
 						}
 					}
@@ -222,6 +227,7 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 						eventCh <- executor.ExecutorEvent{
 							Type:      executor.EventToolResult,
 							Content:   content,
+							SessionID: sessionID,
 							Timestamp: timestamp,
 						}
 					}
@@ -237,6 +243,7 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 					Type:         executor.EventUsage,
 					InputTokens:  event.InputTokens,
 					OutputTokens: event.OutputTokens,
+					SessionID:    sessionID,
 					Timestamp:    timestamp,
 				}
 			case "turn.completed":
@@ -248,6 +255,7 @@ func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args
 					Type:         executor.EventUsage,
 					InputTokens:  event.Usage.InputTokens,
 					OutputTokens: event.Usage.OutputTokens,
+					SessionID:    sessionID,
 					Timestamp:    timestamp,
 				}
 			case "turn.failed", "error":

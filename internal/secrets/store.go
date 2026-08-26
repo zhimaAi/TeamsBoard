@@ -15,6 +15,9 @@ const (
 	KeyJWT              = KeyPrefix + "jwt"
 	KeyDeviceCredential = KeyPrefix + "device_credential"
 	KeyLastLogin        = KeyPrefix + "last_login"
+	// KeyLastLoginCustom 是 custom 登录索引的固定 key：custom 地址由用户主动选择、
+	// 不受内置配置约束，无法用按地址派生的 key 定位，因此额外写入一份固定索引供恢复。
+	KeyLastLoginCustom = KeyPrefix + "last_login_custom"
 )
 
 // ErrNotFound means the secret does not exist

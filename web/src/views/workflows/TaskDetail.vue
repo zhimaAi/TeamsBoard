@@ -1,149 +1,392 @@
+<template>
+  <div class="task-detail-page" :class="{ embedded }">
+    <header class="detail-header">
+      <button
+        v-if="!embedded"
+        type="button"
+        class="back-button"
+        title="返回"
+        aria-label="返回"
+        @click="returnToBoard"
+      >
+        <LeftOutlined />
+      </button>
+      <div class="detail-title">
+        <h1 class="detail-title-text">看板详情</h1>
+      </div>
+      <div v-if="task" class="header-controls">
+        <a-select
+          v-model:value="selectedTaskStatus"
+          class="status-select"
+          :disabled="changingStatus"
+          :options="taskStatusOptions"
+          aria-label="任务状态"
+          @change="changeStatus"
+        />
+        <div class="work-dir" :title="task.work_dir || '未设置工作目录'">
+          <FolderOpenOutlined /><span>{{ task.work_dir || '未设置工作目录' }}</span>
+        </div>
+        <button
+          type="button"
+          class="detail-button"
+          title="查看任务详情"
+          aria-label="查看任务详情"
+          @click="detailModalOpen = true"
+        >
+          <img class="detail-info-icon" :src="detailInfoIcon" alt="" aria-hidden="true" />
+        </button>
+        <button v-if="taskStatus === 'pending'" type="button" class="start-button" :disabled="starting"
+          @click="startTask">
+          {{ starting ? '启动中…' : '启动任务' }}
+        </button>
+        <button
+          type="button"
+          class="delete-button"
+          :disabled="deleting"
+          title="删除任务"
+          aria-label="删除任务"
+          @click="deleteTask"
+        >
+          <img :src="deleteTaskIcon" alt="" aria-hidden="true" />
+        </button>
+      </div>
+    </header>
+
+    <section v-if="task" class="pipeline-card">
+      <div class="pipeline-card-head">
+        <PipelineFlowIcon class="pipeline-card-icon" />
+        <span class="pipeline-card-label">执行流水线</span>
+        <span class="pipeline-card-sep" aria-hidden="true"></span>
+        <strong class="pipeline-card-name">{{
+          task.pipeline_name_snapshot || '未指派流水线'
+          }}</strong>
+        <span v-if="sortedSteps.length" class="pipeline-card-progress">第 {{ currentStepIndex + 1 }}/{{
+          sortedSteps.length }} 步</span>
+      </div>
+      <AgentStepStrip v-if="hasPipelineSnapshot" :steps="sortedSteps" :current-step-index="currentStepIndex"
+        :current-step-uuid="effectiveCurrentStepUuid" :selected-step-uuid="selectedStepUuid" @select="selectStep" />
+      <UnassignedPipelineGuide v-else @assign="assignModalOpen = true" />
+    </section>
+
+    <div v-if="task" class="detail-scroll">
+
+      <div class="detail-content">
+        <template v-if="hasPipelineSnapshot">
+          <NextStepButton v-if="showNextStepCard" :next-step-name="nextStepName" :is-last-step="isLastStep"
+            :disabled="!canComplete" :completing="completing" @confirm="completeStep" />
+          <h2 class="task-title">{{ task.title }}</h2>
+          <div v-if="task.description" class="task-desc" :class="{ expanded: descriptionExpanded }">
+            <div ref="requirementContentRef" class="task-desc-content" v-html="renderedDescription"
+              @click="openImagePreview" />
+            <button v-if="descriptionNeedsExpand" type="button" class="desc-toggle"
+              @click="descriptionExpanded = !descriptionExpanded">
+              <DownOutlined v-if="!descriptionExpanded" />
+              <UpOutlined v-else />
+              {{ descriptionExpanded ? '收起' : '展开更多' }}
+            </button>
+          </div>
+          <p class="conversation-scope-note">
+            <img
+              class="conversation-scope-icon"
+              :src="conversationFilterIcon"
+              alt=""
+              aria-hidden="true"
+            />
+            <span>仅展示「{{
+              selectedStep?.name || 'Agent'
+            }}」的动态与你的留言，点击执行流水线可切换</span>
+          </p>
+          <StepMessageList ref="messageListRef" :items="selectedProgress" :steps="sortedSteps"
+            :highlight-uuid="highlightUuid" :loading="loading" :selected-step-name="selectedStep?.name || ''"
+            @copy="copyResult" />
+        </template>
+        <div v-else class="pipeline-empty">
+          <div class="pipeline-empty-icon">
+            <img src="@/assets/icons/task-unassigned-pipeline.png" alt="" aria-hidden="true" />
+          </div>
+          <p>未指派流水线</p>
+          <span>请先分配流水线，动态记录将自动展示</span>
+        </div>
+      </div>
+    </div>
+    <div v-else-if="loading" class="detail-loading">
+      <a-spin />
+    </div>
+    <a-empty v-else class="detail-empty" description="任务不存在" />
+
+    <ChatComposer v-if="task && hasPipelineSnapshot" v-model="question" :can-ask="canAsk" :submitting="submitting"
+      :placeholder="composerPlaceholder" :context-text="composerContextText" :task-uuid="resolvedTaskUuid"
+      :current-step="selectedStep" @submit="submitQuestion" @prompt-saved="load" />
+
+    <TaskDetailInfoModal v-model:open="detailModalOpen" :task="task" :status="taskStatus"
+      :rendered-description="renderedDescription" @preview-image="showImagePreview" />
+
+    <TaskImagePreviewModal v-model:open="previewImageVisible" :image-url="previewImageUrl" />
+
+    <AssignPipelineModal v-model:open="assignModalOpen" :task-uuid="resolvedTaskUuid" :task-title="task?.title || ''"
+      :preferred-pipeline-uuid="task?.selected_pipeline_uuid || ''" mode="detail" @assigned="handleAssigned" />
+  </div>
+</template>
+
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
+import {
+  DownOutlined,
+  FolderOpenOutlined,
+  LeftOutlined,
+  UpOutlined,
+} from '@ant-design/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 import apiClient from '@/api/client'
-import MarkdownPreview from '@/components/MarkdownPreview.vue'
-import TaskExecutionConsole from '@/components/TaskExecutionConsole.vue'
-import CliSelectModal from '@/components/CliSelectModal.vue'
+import detailInfoIcon from '@/assets/icons/task-detail-view.svg'
+import deleteTaskIcon from '@/assets/icons/task-detail-delete.svg'
+import conversationFilterIcon from '@/assets/icons/task-conversation-filter.svg'
+import MarkdownIt from 'markdown-it'
+import AssignPipelineModal from '@/components/AssignPipelineModal.vue'
+import AgentStepStrip from '@/components/task-progress/AgentStepStrip.vue'
+import ChatComposer from '@/components/task-progress/ChatComposer.vue'
+import NextStepButton from '@/components/task-progress/NextStepButton.vue'
+import PipelineFlowIcon from '@/components/task-progress/PipelineFlowIcon.vue'
+import StepMessageList from '@/components/task-progress/StepMessageList.vue'
+import UnassignedPipelineGuide from '@/components/task-progress/UnassignedPipelineGuide.vue'
+import { isUserMessage, resultText } from '@/components/task-progress/utils'
 import { useDocumentTitle } from '@/composables/useDocumentTitle'
+import { useLocalWS, useLocalWSStatus } from '@/composables/useLocalWebSocket'
+import type { TaskProgress } from '@/types/pipeline'
+import type { TaskWithDetails } from '@/types/task-detail'
+import TaskDetailInfoModal from '@/views/workflows/components/TaskDetailInfoModal.vue'
+import TaskImagePreviewModal from '@/views/workflows/components/TaskImagePreviewModal.vue'
 
-interface TaskDocument {
-  uuid: string
-  client_document_id: string
-  name: string
-  content: string
-  updated_at: number
-}
-
-interface Step {
-  uuid: string
-  step_key: string
-  name: string
-  sort_order: number
-  cli_type: string
-  status: string
-  execution_status: string
-  prompt_snapshot: string
-  documents: TaskDocument[]
-}
-interface Task {
-  uuid: string
-  title: string
-  status: string
-  execution_status: string
-  agent_id: string
-  cli_type: string
-  work_item_type: string
-  work_item_id: string
-  work_dir: string
-  work_dirs: string[]
-  api_collection_id: number
-  api_collection_name: string
-  api_folder_id: number
-  api_folder_name: string
-  created_at: number
-  updated_at: number
-  steps: Step[]
-}
 const route = useRoute()
 const router = useRouter()
-const props = withDefaults(defineProps<{
-  taskUuid?: string
-  embedded?: boolean
-}>(), {
-  embedded: false,
-})
-const emit = defineEmits<{
-  close: []
-}>()
-const resolvedTaskUuid = computed(() => {
-  if (props.taskUuid) return props.taskUuid
-  const routeUuid = route.params.taskUuid
-  return Array.isArray(routeUuid) ? routeUuid[0] || '' : routeUuid || ''
-})
-const loading = ref(false)
-const task = ref<Task>()
+const props = withDefaults(
+  defineProps<{ taskUuid?: string; embedded?: boolean; autoStart?: boolean }>(),
+  { embedded: false, autoStart: false },
+)
+const emit = defineEmits<{ close: []; changed: [] }>()
+const resolvedTaskUuid = computed(() => props.taskUuid || String(route.params.taskUuid || ''))
+const task = ref<TaskWithDetails>()
+const deleting = ref(false)
+const starting = ref(false)
+const changingStatus = ref(false)
+const selectedTaskStatus = ref('pending')
+const detailModalOpen = ref(false)
+const assignModalOpen = ref(false)
+const previewImageUrl = ref('')
+const previewImageVisible = ref(false)
+const descriptionExpanded = ref(false)
+const descriptionNeedsExpand = ref(false)
+const requirementContentRef = ref<HTMLElement>()
 const taskTitle = computed(() => task.value?.title)
-
+const taskStatus = computed(() => statusValue(task.value?.status))
+const taskStatusOptions = [
+  { value: 'pending', label: '待开始' },
+  { value: 'in_progress', label: '进行中' },
+  { value: 'blocked', label: '已阻塞' },
+  { value: 'done', label: '已完成' },
+]
+const hasPipelineSnapshot = computed(() =>
+  Boolean(task.value?.pipeline_snapshot_uuid || task.value?.steps?.length),
+)
 useDocumentTitle(taskTitle)
 
-const runningStep = ref<string>()
-const deleting = ref(false)
-const consoleOpen = ref(false)
-const consoleStepKey = ref<string>()
-const consoleSessionUuid = ref<string>()
-const selectedStepKey = ref('')
-const selectedContentKey = ref('prompt')
-const cliModalOpen = ref(false)
-const pendingRunStep = ref<Step>()
-const statusOptions = [
-  { label: '活跃中', value: 'active' },
-  { label: '待开始', value: 'pending' },
-  { label: '开发中', value: 'developing' },
-  { label: '开发完成', value: 'developed' },
-]
+watch(
+  taskStatus,
+  (status) => {
+    selectedTaskStatus.value = status
+  },
+  { immediate: true },
+)
 
-const completedCount = computed(() => task.value?.steps.filter(
-  (step) => step.execution_status === 'success' || step.status === 'completed',
-).length || 0)
-const selectedStep = computed(() => task.value?.steps.find(
-  (step) => step.step_key === selectedStepKey.value,
-))
-const selectedDocument = computed(() => selectedStep.value?.documents?.find(
-  (document) => `document:${document.uuid || document.client_document_id || document.name}` === selectedContentKey.value,
-))
+// 轮询、步骤选择和会话展示共享进度数据，由详情容器统一维护以避免重复请求。
+const loading = ref(false)
+const submitting = ref(false)
+const completing = ref(false)
+const progress = ref<TaskProgress[]>([])
+const selectedStepUuid = ref('')
+const question = ref('')
+const highlightUuid = ref('')
+const messageListRef = ref<InstanceType<typeof StepMessageList>>()
+let refreshTimer: ReturnType<typeof setTimeout> | undefined
+let highlightTimer: ReturnType<typeof setTimeout> | undefined
+const wsConnected = useLocalWSStatus()
 
-async function load() {
-  const taskUuid = resolvedTaskUuid.value
-  if (!taskUuid) return
-  loading.value = true
+const sortedSteps = computed(() =>
+  [...(task.value?.steps || [])].sort((a, b) => a.sort_order - b.sort_order),
+)
+const effectiveCurrentStepUuid = computed(
+  () =>
+    task.value?.current_step_uuid ||
+    sortedSteps.value.find((step) => step.status === 'active')?.uuid ||
+    sortedSteps.value[0]?.uuid ||
+    '',
+)
+const currentStep = computed(() =>
+  sortedSteps.value.find((step) => step.uuid === effectiveCurrentStepUuid.value),
+)
+const currentStepIndex = computed(() =>
+  sortedSteps.value.findIndex((step) => step.uuid === effectiveCurrentStepUuid.value),
+)
+const selectedStep = computed(() =>
+  sortedSteps.value.find((step) => step.uuid === selectedStepUuid.value),
+)
+const selectedStepIndex = computed(() =>
+  sortedSteps.value.findIndex((step) => step.uuid === selectedStepUuid.value),
+)
+const selectedProgress = computed(() =>
+  progress.value.filter((item) => item.task_step_uuid === selectedStepUuid.value),
+)
+const selectedIsCurrent = computed(() => selectedStepUuid.value === effectiveCurrentStepUuid.value)
+const selectedStepReached = computed(() =>
+  Boolean(
+    selectedStep.value &&
+      (selectedIsCurrent.value ||
+        selectedStep.value.status === 'completed' ||
+        (currentStepIndex.value >= 0 &&
+          selectedStepIndex.value >= 0 &&
+          selectedStepIndex.value < currentStepIndex.value) ||
+        selectedProgress.value.length > 0),
+  ),
+)
+const hasRunningSelectedConversation = computed(() =>
+  progress.value.some(
+    (item) =>
+      item.task_step_uuid === selectedStepUuid.value &&
+      !isUserMessage(item) &&
+      (item.status === 'created' || item.status === 'running'),
+  ),
+)
+const currentStepLocked = computed(
+  () =>
+    !task.value ||
+    task.value.status === 'done' ||
+    Boolean(task.value.current_step_completed) ||
+    currentStep.value?.status === 'completed',
+)
+const canAsk = computed(
+  () => selectedStepReached.value && !hasRunningSelectedConversation.value,
+)
+const canComplete = computed(
+  () =>
+    selectedIsCurrent.value &&
+    !currentStepLocked.value &&
+    canAsk.value &&
+    !submitting.value &&
+    selectedProgress.value.length > 0,
+)
+const lastProgressTerminal = computed(() => {
+  const last = [...selectedProgress.value].reverse().find((item) => !isUserMessage(item))
+  return Boolean(last && !['created', 'running'].includes(last.status))
+})
+const isLastStep = computed(() =>
+  Boolean(currentStep.value && sortedSteps.value.at(-1)?.uuid === currentStep.value.uuid),
+)
+const nextStepName = computed(() =>
+  isLastStep.value ? '' : sortedSteps.value[currentStepIndex.value + 1]?.name || '',
+)
+const showNextStepCard = computed(
+  () => selectedIsCurrent.value && !currentStepLocked.value && lastProgressTerminal.value,
+)
+const composerPlaceholder = computed(() => {
+  if (!selectedStepReached.value) return '执行到当前步骤后才可发起对话'
+  if (hasRunningSelectedConversation.value) return 'Agent 正在执行，请等待本轮完成'
+  return '输入留言，与该步骤 Agent 沟通…'
+})
+const composerContextText = computed(
+  () =>
+    `正在与「${selectedStep.value?.name || 'Agent'}」沟通 · 步骤 ${Math.max(selectedStepIndex.value + 1, 1)}`,
+)
+
+function returnToBoard() {
+  if (props.embedded) emit('close')
+  else void router.push('/board')
+}
+
+function statusValue(status?: string) {
+  if (['todo', 'pending'].includes(status || '')) return 'pending'
+  if (['active', 'running', 'developing', 'developed', 'in_progress'].includes(status || ''))
+    return 'in_progress'
+  if (['done', 'completed'].includes(status || '')) return 'done'
+  return status || 'pending'
+}
+
+async function changeStatus(next: string) {
+  if (!task.value || changingStatus.value) return
+  const previous = statusValue(task.value.status)
+  if (next === previous) return
+  if (next === 'in_progress' && !hasPipelineSnapshot.value) {
+    selectedTaskStatus.value = previous
+    assignModalOpen.value = true
+    return
+  }
+  // 启动依赖完整的步骤配置；缺项时回到分配弹窗补全，避免提交不可执行快照。
+  if (
+    next === 'in_progress' &&
+    hasPipelineSnapshot.value &&
+    task.value.steps?.some((s) => !s.prompt_snapshot || !s.cli_type || !s.model_name)
+  ) {
+    selectedTaskStatus.value = previous
+    assignModalOpen.value = true
+    return
+  }
+  changingStatus.value = true
   try {
-    const loadedTask = await apiClient.get<Task>(`/tasks/${taskUuid}`)
-    if (taskUuid !== resolvedTaskUuid.value) return
-    task.value = loadedTask
-    if (!loadedTask.steps.some(step => step.step_key === selectedStepKey.value)) {
-      selectedStepKey.value = loadedTask.steps[0]?.step_key || ''
-      selectedContentKey.value = 'prompt'
+    await apiClient.put(`/tasks/${resolvedTaskUuid.value}/status`, { status: next })
+    task.value.status = next
+    if (next === 'in_progress' && previous === 'pending') {
+      message.success('任务已切换为进行中并自动启动')
+      void load()
     }
+    emit('changed')
   } catch (error) {
-    if (taskUuid !== resolvedTaskUuid.value) return
-    message.error(error instanceof Error ? error.message : '任务详情加载失败')
-  } finally {
-    if (taskUuid === resolvedTaskUuid.value) loading.value = false
-  }
-}
-
-async function updateStatus(status: string) {
-  if (!task.value) return
-  const taskUuid = resolvedTaskUuid.value
-  try {
-    await apiClient.put(`/tasks/${taskUuid}/status`, { status })
-    task.value.status = status
-    message.success('任务状态已更新')
-  } catch (error) {
+    selectedTaskStatus.value = previous
     message.error(error instanceof Error ? error.message : '状态更新失败')
+  } finally {
+    changingStatus.value = false
   }
 }
 
-async function deleteTask() {
-  const taskUuid = resolvedTaskUuid.value
+async function startTask() {
+  if (!task.value || starting.value) return
+  if (!hasPipelineSnapshot.value) {
+    assignModalOpen.value = true
+    return
+  }
+  starting.value = true
+  try {
+    await apiClient.post(`/tasks/${resolvedTaskUuid.value}/start`, {})
+    task.value.status = 'in_progress'
+    message.success('任务已启动')
+    void load()
+    emit('changed')
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '任务启动失败')
+  } finally {
+    starting.value = false
+  }
+}
+
+function handleAssigned() {
+  void load()
+  emit('changed')
+}
+
+function deleteTask() {
   Modal.confirm({
     title: '确认删除任务',
-    content: '删除后该任务及其步骤、会话等数据将无法恢复，确定要删除吗？',
+    content:
+      '将同时删除该任务的临时流水线、Agent 编排快照、进度、通知和任务专属目录。此操作无法恢复。',
     okText: '删除',
     okType: 'danger',
     cancelText: '取消',
     onOk: async () => {
       deleting.value = true
       try {
-        await apiClient.delete(`/tasks/${taskUuid}`)
+        await apiClient.delete(`/tasks/${resolvedTaskUuid.value}`)
         message.success('任务已删除')
-        if (props.embedded) {
-          emit('close')
-        } else {
-          router.push('/workflows')
-        }
+        emit('changed')
+        returnToBoard()
       } catch (error) {
         message.error(error instanceof Error ? error.message : '删除失败')
       } finally {
@@ -153,864 +396,592 @@ async function deleteTask() {
   })
 }
 
-async function runStep(step: Step) {
-  if (!task.value?.work_dir && !task.value?.work_dirs?.length) {
-    message.error('该任务没有工作目录，请重新创建任务')
+const md = new MarkdownIt({ breaks: true, linkify: true })
+
+const renderedDescription = computed(() => {
+  const text = task.value?.description
+  if (!text) return ''
+  // 兼容接口可能返回的历史 HTML 描述；纯文本和 Markdown 仍统一渲染。
+  if (/<[a-z][\s\S]*>/i.test(text)) return text
+  return md.render(text)
+})
+
+async function load(silent = false) {
+  if (!resolvedTaskUuid.value) return
+  if (!silent) loading.value = true
+  if (refreshTimer) clearTimeout(refreshTimer)
+  try {
+    const [loadedTask, loadedProgress] = await Promise.all([
+      apiClient.get<TaskWithDetails>(`/tasks/${resolvedTaskUuid.value}`),
+      apiClient.get<{ items: TaskProgress[] } | TaskProgress[]>(
+        `/tasks/${resolvedTaskUuid.value}/progress`,
+      ),
+    ])
+    task.value = loadedTask
+    const progressItems = Array.isArray(loadedProgress)
+      ? loadedProgress
+      : loadedProgress.items || []
+    progress.value = [...progressItems].sort((a, b) => a.created_at - b.created_at)
+    if (
+      !selectedStepUuid.value ||
+      !loadedTask.steps.some((step) => step.uuid === selectedStepUuid.value)
+    ) {
+      const latestProgressStep = progress.value.at(-1)?.task_step_uuid || ''
+      const validLatestProgressStep =
+        latestProgressStep && loadedTask.steps.some((step) => step.uuid === latestProgressStep)
+          ? latestProgressStep
+          : ''
+      selectedStepUuid.value =
+        validLatestProgressStep ||
+        loadedTask.current_step_uuid ||
+        loadedTask.steps.find((step) => step.status === 'active')?.uuid ||
+        loadedTask.steps[0]?.uuid ||
+        ''
+    }
+    descriptionExpanded.value = false
+    await nextTick()
+    const content = requirementContentRef.value
+    if (content) descriptionNeedsExpand.value = content.scrollHeight > content.clientHeight + 1
+  } catch (error) {
+    if (!silent) message.error(error instanceof Error ? error.message : '任务进度加载失败')
+  } finally {
+    if (!silent) loading.value = false
+    scheduleRefresh()
+  }
+}
+
+// WS 连接正常时进度刷新依赖 task.changed 推送，轮询仅在断线期间兜底，避免长任务持续请求 /progress。
+function scheduleRefresh() {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  if (
+    wsConnected.value ||
+    !progress.value.some(
+      (item) => !isUserMessage(item) && (item.status === 'created' || item.status === 'running'),
+    )
+  ) {
     return
   }
-  pendingRunStep.value = step
-  cliModalOpen.value = true
+  refreshTimer = setTimeout(() => {
+    void load(true)
+  }, 2000)
 }
 
-async function onCliConfirm(payload: { cli_type: string; model: string }) {
-  const step = pendingRunStep.value
-  if (!step) return
-  pendingRunStep.value = undefined
-  runningStep.value = step.step_key
-  const taskUuid = resolvedTaskUuid.value
-  try {
-    const result = await apiClient.post<{ session_uuid: string }>(
-      `/tasks/${taskUuid}/steps/${encodeURIComponent(step.step_key)}/runs`,
-      {
-        request_id: crypto.randomUUID(),
-        cli_type: payload.cli_type,
-        model: payload.model,
-      },
+useLocalWS('task.changed', (data: { task_uuid?: string }) => {
+  if (data.task_uuid === resolvedTaskUuid.value) {
+    void load(true)
+    emit('changed')
+  }
+})
+
+// CLI 活动推送（节流约 1s/条）：就地更新正在执行消息下方的实时活动小字，避免重新拉 /progress。
+useLocalWS(
+  'executor.activity',
+  (data: {
+    task_uuid?: string
+    session_uuid?: string
+    event_type?: string
+    content?: string
+    at?: number
+  }) => {
+    if (!data.session_uuid || data.task_uuid !== resolvedTaskUuid.value) return
+    // 继续对话时同一 session 有两条 progress（用户提问 + AI 执行），
+    // 只能更新 AI 执行项，用户气泡不渲染活动小字
+    const target = progress.value.find(
+      (item) => !isUserMessage(item) && item.session_uuid === data.session_uuid,
     )
-    message.success(`步骤已启动，会话 ${result.session_uuid.slice(0, 8)}`)
-    consoleStepKey.value = step.step_key
-    consoleSessionUuid.value = result.session_uuid
-    consoleOpen.value = true
-    await load()
-  } catch (error) {
-    message.error(error instanceof Error ? error.message : '步骤启动失败')
-  } finally {
-    runningStep.value = undefined
-  }
-}
+    if (target) {
+      target.latest_event_type = data.event_type
+      target.latest_event_content = data.content
+      target.latest_event_at = data.at
+    }
+  },
+)
 
-function openConsole(stepKey?: string) {
-  consoleStepKey.value = stepKey || task.value?.steps[0]?.step_key
-  consoleSessionUuid.value = undefined
-  consoleOpen.value = true
-}
-
-function selectStep(step: Step) {
-  selectedStepKey.value = step.step_key
-  selectedContentKey.value = 'prompt'
-}
-
-function documentContentKey(document: TaskDocument) {
-  return `document:${document.uuid || document.client_document_id || document.name}`
-}
-
-function statusColor(status: string) {
-  return { success: 'green', running: 'processing', failed: 'red', stopped: 'orange' }[status] || 'default'
-}
-
-function returnToBoard() {
-  if (props.embedded) {
-    emit('close')
+watch(wsConnected, (connected) => {
+  if (connected) {
+    // 重连成功后补偿拉取一次，随后继续依赖推送刷新
+    void load(true)
   } else {
-    router.push('/workflows')
+    scheduleRefresh()
+  }
+})
+
+async function locateTarget() {
+  await nextTick()
+  const last = progress.value
+    .filter((item) => item.task_step_uuid === selectedStepUuid.value)
+    .at(-1)
+  if (last) messageListRef.value?.scrollToItem(last.uuid)
+}
+
+function selectStep(uuid: string) {
+  selectedStepUuid.value = uuid
+  const last = progress.value.filter((item) => item.task_step_uuid === uuid).at(-1)
+  if (last) flashTarget(last.uuid)
+}
+
+function flashTarget(uuid: string) {
+  highlightUuid.value = uuid
+  if (highlightTimer) clearTimeout(highlightTimer)
+  highlightTimer = setTimeout(() => {
+    highlightUuid.value = ''
+  }, 1200)
+}
+
+async function submitQuestion() {
+  const text = question.value.trim()
+  const step = selectedStep.value
+  if (!text || !step || !canAsk.value) return
+  submitting.value = true
+  try {
+    await apiClient.post(`/tasks/${resolvedTaskUuid.value}/steps/${step.uuid}/questions`, {
+      question: text,
+      request_id: crypto.randomUUID(),
+    })
+    question.value = ''
+    message.success('消息已发送，继续选中 Agent 对话')
+    await load()
+    await locateTarget()
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '消息发送失败')
+  } finally {
+    submitting.value = false
   }
 }
 
-watch(resolvedTaskUuid, (taskUuid) => {
-  task.value = undefined
-  selectedStepKey.value = ''
-  selectedContentKey.value = 'prompt'
-  consoleOpen.value = false
-  cliModalOpen.value = false
-  if (taskUuid) void load()
-}, { immediate: true })
+async function completeStep() {
+  const step = currentStep.value
+  if (!step || !canComplete.value) return
+  completing.value = true
+  try {
+    await apiClient.post(`/tasks/${resolvedTaskUuid.value}/steps/${step.uuid}/complete`, {})
+    const wasLastStep = sortedSteps.value.at(-1)?.uuid === step.uuid
+    message.success(wasLastStep ? '任务已完成' : '已进入下一步并自动启动执行')
+    await load()
+    const nextCurrent = task.value?.current_step_uuid
+    if (nextCurrent && nextCurrent !== selectedStepUuid.value) {
+      selectedStepUuid.value = nextCurrent
+      await locateTarget()
+    }
+    if (wasLastStep) emit('changed')
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '进入下一步失败')
+  } finally {
+    completing.value = false
+  }
+}
+
+async function copyResult(item: TaskProgress) {
+  try {
+    await navigator.clipboard.writeText(resultText(item))
+    message.success('已复制')
+  } catch {
+    message.warning('复制失败')
+  }
+}
+
+function openImagePreview(e: MouseEvent) {
+  const target = e.target
+  if (target instanceof HTMLImageElement) showImagePreview(target.src)
+}
+
+function showImagePreview(url: string) {
+  previewImageUrl.value = url
+  previewImageVisible.value = true
+}
+
+watch(
+  resolvedTaskUuid,
+  () => {
+    selectedStepUuid.value = ''
+    void load()
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  if (highlightTimer) clearTimeout(highlightTimer)
+})
 </script>
-
-<template>
-  <div class="task-detail-page" :class="{ 'task-detail-page--embedded': embedded }">
-    <a-spin :spinning="loading">
-      <template v-if="task">
-        <div class="task-workflow-shell">
-          <header class="task-workflow-header">
-            <div class="task-workflow-header__title-row">
-              <h1 class="task-workflow-header__title" :title="task.title">{{ task.title }}</h1>
-              <div class="task-workflow-header__actions">
-                <a-button class="task-workflow-home-btn" title="返回任务清单" @click="returnToBoard">
-                  ←
-                </a-button>
-                <a-button :loading="loading" @click="load">刷新</a-button>
-                <a-button class="workflow-primary-button" @click="openConsole()">打开执行窗口</a-button>
-                <a-select class="status-select" :value="task.status" @change="updateStatus">
-                  <a-select-option v-for="option in statusOptions" :key="option.value" :value="option.value">
-                    {{ option.label }}
-                  </a-select-option>
-                </a-select>
-                <a-button danger :loading="deleting" @click="deleteTask">删除</a-button>
-              </div>
-            </div>
-
-            <div class="task-workflow-header__meta">
-              <div class="task-workflow-header__field">
-                <span class="task-workflow-header__field-label">任务来源</span>
-                <span class="task-workflow-header__field-value">
-                  {{ task.work_item_type === 'defect' ? '缺陷' : '需求' }} #{{ task.work_item_id }}
-                </span>
-              </div>
-              <div class="task-workflow-header__field">
-                <span class="task-workflow-header__field-label">任务状态</span>
-                <span class="task-workflow-header__field-value">
-                  {{ statusOptions.find(item => item.value === task?.status)?.label || task.status }}
-                </span>
-              </div>
-              <div class="task-workflow-header__field">
-                <span class="task-workflow-header__field-label">执行状态</span>
-                <span class="task-workflow-header__field-value">{{ task.execution_status || '-' }}</span>
-              </div>
-              <div class="task-workflow-header__field">
-                <span class="task-workflow-header__field-label">Agent</span>
-                <span class="task-workflow-header__field-value">#{{ task.agent_id }}</span>
-              </div>
-              <div class="task-workflow-header__field">
-                <span class="task-workflow-header__field-label">执行 CLI</span>
-                <span class="task-workflow-header__field-value">{{ task.cli_type || task.steps[0]?.cli_type || '-' }}</span>
-              </div>
-              <div class="task-workflow-header__field">
-                <span class="task-workflow-header__field-label">步骤进度</span>
-                <span class="task-workflow-header__field-value">{{ completedCount }} / {{ task.steps.length }}</span>
-              </div>
-              <div class="task-workflow-header__field">
-                <span class="task-workflow-header__field-label">接口集合</span>
-                <span class="task-workflow-header__field-value">
-                  {{ task.api_collection_name || '-' }}<template v-if="task.api_collection_id"> #{{ task.api_collection_id }}</template>
-                </span>
-              </div>
-              <div class="task-workflow-header__field">
-                <span class="task-workflow-header__field-label">接口文件夹</span>
-                <span class="task-workflow-header__field-value">
-                  {{ task.api_folder_name || '-' }}<template v-if="task.api_folder_id"> #{{ task.api_folder_id }}</template>
-                </span>
-              </div>
-              <div class="task-workflow-header__field task-workflow-header__field--directory">
-                <span class="task-workflow-header__field-label">工作目录</span>
-                <span
-                  class="task-workflow-header__directory-list"
-                  :title="(task.work_dirs?.length ? task.work_dirs : [task.work_dir]).filter(Boolean).join('\n')"
-                >
-                  <span
-                    v-for="(workDir, index) in (task.work_dirs?.length ? task.work_dirs : [task.work_dir]).filter(Boolean)"
-                    :key="workDir"
-                    class="task-workflow-header__directory"
-                  >
-                    {{ index === 0 ? '主目录' : `关联目录 ${index}` }}：{{ workDir }}
-                  </span>
-                  <span v-if="!task.work_dir && !task.work_dirs?.length">未配置</span>
-                </span>
-              </div>
-            </div>
-          </header>
-
-          <div v-if="task.steps.length > 0" class="task-workflow-nodes" aria-label="工作流步骤">
-            <button
-              v-for="step in task.steps"
-              :key="step.uuid"
-              type="button"
-              class="task-workflow-node"
-              :class="{
-                'task-workflow-node--active': selectedStepKey === step.step_key,
-                'task-workflow-node--success': step.execution_status === 'success' || step.status === 'completed',
-                'task-workflow-node--running': step.execution_status === 'running',
-                'task-workflow-node--failed': step.execution_status === 'failed',
-              }"
-              @click="selectStep(step)"
-            >
-              <div class="task-workflow-node__row">
-                <span class="task-workflow-node__badge">{{ step.sort_order }}</span>
-                <span class="task-workflow-node__label" :title="step.name">{{ step.name }}</span>
-                <span
-                  class="task-workflow-node__status"
-                  :class="{
-                    'task-workflow-node__status--success': step.execution_status === 'success' || step.status === 'completed',
-                    'task-workflow-node__status--running': step.execution_status === 'running',
-                    'task-workflow-node__status--failed': step.execution_status === 'failed',
-                  }"
-                >
-                  {{ step.execution_status === 'success' || step.status === 'completed' ? '✓' : '●' }}
-                </span>
-              </div>
-            </button>
-          </div>
-
-          <section class="task-workflow-content">
-            <a-empty v-if="!selectedStep" description="该 Agent 没有配置工作流步骤" />
-            <div v-else class="step-tab-layout">
-              <aside class="step-tab-sidebar">
-                <button
-                  type="button"
-                  class="step-tab-button step-tab-button--prompt"
-                  :class="{ 'step-tab-button--active': selectedContentKey === 'prompt' }"
-                  @click="selectedContentKey = 'prompt'"
-                >
-                  提示词
-                </button>
-                <button
-                  v-for="document in selectedStep.documents || []"
-                  :key="documentContentKey(document)"
-                  type="button"
-                  class="step-tab-button"
-                  :class="{ 'step-tab-button--active': selectedContentKey === documentContentKey(document) }"
-                  :title="document.name"
-                  @click="selectedContentKey = documentContentKey(document)"
-                >
-                  {{ document.name }}
-                </button>
-
-                <div class="step-tab-actions">
-                  <div class="step-tab-actions__title">步骤操作</div>
-                  <div class="step-tab-actions__status">
-                    <span>当前状态</span>
-                    <a-tag :color="statusColor(selectedStep.execution_status)">
-                      {{ selectedStep.execution_status }}
-                    </a-tag>
-                  </div>
-                  <a-button block @click="openConsole(selectedStep.step_key)">查看对话</a-button>
-                  <a-button
-                    block
-                    type="primary"
-                    :loading="runningStep === selectedStep.step_key"
-                    :disabled="!task.work_dir || (runningStep !== undefined && runningStep !== selectedStep.step_key)"
-                    @click="runStep(selectedStep)"
-                  >
-                    {{ selectedStep.execution_status === 'success' ? '重新执行' : '执行步骤' }}
-                  </a-button>
-                  <div v-if="!task.work_dir" class="step-tab-actions__warning">
-                    未配置工作目录，无法执行
-                  </div>
-                </div>
-              </aside>
-
-              <div class="step-tab-content">
-                <div class="step-content-toolbar">
-                  <div>
-                    <strong>{{ selectedContentKey === 'prompt' ? selectedStep.name : selectedDocument?.name }}</strong>
-                    <span>{{ selectedContentKey === 'prompt' ? 'Prompt' : 'Markdown 文档' }}</span>
-                  </div>
-                  <a-tag>{{ selectedStep.cli_type || '默认 CLI' }}</a-tag>
-                </div>
-                <div class="step-markdown-view">
-                  <MarkdownPreview
-                    v-if="selectedContentKey === 'prompt'"
-                    :content="selectedStep.prompt_snapshot"
-                    empty-text="该步骤没有 Prompt"
-                  />
-                  <MarkdownPreview
-                    v-else
-                    :content="selectedDocument?.content || ''"
-                    empty-text="该文档暂无内容"
-                  />
-                </div>
-              </div>
-            </div>
-          </section>
-        </div>
-      </template>
-      <div v-else-if="!loading" class="task-result">
-        <a-result status="404" title="任务不存在">
-          <template #extra><a-button type="primary" @click="returnToBoard">返回任务看板</a-button></template>
-        </a-result>
-      </div>
-    </a-spin>
-
-    <TaskExecutionConsole
-      v-if="task"
-      v-model:open="consoleOpen"
-      :task-uuid="resolvedTaskUuid"
-      :steps="task.steps"
-      :focus-step-key="consoleStepKey"
-      :focus-session-uuid="consoleSessionUuid"
-      @refresh="load"
-    />
-
-    <CliSelectModal
-      v-model:open="cliModalOpen"
-      @confirm="onCliConfirm"
-    />
-  </div>
-</template>
 
 <style scoped>
 .task-detail-page {
-  min-height: calc(100vh - 56px);
-  margin: -24px;
-  padding: 16px;
-  box-sizing: border-box;
-  background: linear-gradient(180deg, #fdfdfb 0%, #f8faf5 100%);
-}
-
-.task-detail-page--embedded {
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  margin: 0;
-  padding: 12px;
-  overflow: auto;
-}
-
-.task-detail-page :deep(.ant-spin-nested-loading),
-.task-detail-page :deep(.ant-spin-container) {
-  min-height: calc(100vh - 88px);
-}
-
-.task-detail-page--embedded :deep(.ant-spin-nested-loading),
-.task-detail-page--embedded :deep(.ant-spin-container) {
-  height: 100%;
-  min-height: 0;
-}
-
-.task-workflow-shell {
   display: flex;
-  height: calc(100vh - 88px);
+  height: 100%;
   min-height: 0;
   flex-direction: column;
-  gap: 12px;
-  min-width: 0;
-}
-
-.task-detail-page--embedded .task-workflow-shell {
-  height: 100%;
-  min-height: 620px;
-}
-
-.task-workflow-header {
-  flex-shrink: 0;
-  padding: 20px 24px;
-  border: 1px solid #e8e8e0;
-  border-radius: 12px;
   background: #fff;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 }
 
-.task-workflow-header__title-row {
+.detail-header {
   display: flex;
+  min-height: 44px;
+  flex: 0 0 auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  min-width: 0;
+  gap: 4px;
+  padding: 8px 24px;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fff;
 }
 
-.task-workflow-header__title {
-  flex: 1;
+.detail-title {
+  display: flex;
   min-width: 0;
-  margin: 0;
+  flex: 1;
+  align-items: center;
+}
+
+.back-button {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  padding: 4px;
+  color: #262626;
+  background: transparent;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.back-button:hover {
+  background: #f5f5f5;
+}
+
+.detail-button,
+.delete-button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px;
+  color: #8c8c8c;
+  background: #fff;
+  cursor: pointer;
+}
+
+.detail-button img,
+.delete-button img {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.detail-button .detail-info-icon {
+  width: 11.3px;
+  height: 13.3px;
+}
+
+.detail-button:hover,
+.delete-button:hover {
+  color: #262626;
+  background: #f5f5f5;
+}
+
+.detail-header h1 {
+  min-width: 120px;
+  flex: 1;
   overflow: hidden;
-  color: #303133;
-  font-size: 22px;
-  line-height: 1.3;
+  margin: 0;
+  color: #262626;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.task-workflow-header__actions {
+.header-controls {
   display: flex;
-  flex-shrink: 0;
-  flex-wrap: wrap;
+  min-width: 0;
   align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.task-workflow-header__actions :deep(.ant-btn) {
-  height: 32px;
-  border-color: #e0e0d8;
-  border-radius: 7px;
-  color: #606266;
-  box-shadow: none;
-}
-
-.task-workflow-header__actions :deep(.ant-btn:hover) {
-  border-color: #9fb39a;
-  color: #3a7a3a;
-}
-
-.task-workflow-header__actions :deep(.ant-btn-dangerous) {
-  color: #c25555;
-}
-
-.task-workflow-header__actions :deep(.ant-btn-dangerous:hover) {
-  border-color: #d99b9b;
-  color: #b33c3c;
-}
-
-.task-workflow-header__actions .workflow-primary-button {
-  border-color: #cbd8c5;
-  background: #f3f8ef;
-  color: #3a7a3a;
-}
-
-.task-workflow-home-btn {
-  width: 32px;
-  padding: 0;
-  border-radius: 50% !important;
-  color: #909399 !important;
-  font-size: 18px;
+  gap: 4px;
 }
 
 .status-select {
-  width: 120px;
+  width: 92px;
 }
 
 .status-select :deep(.ant-select-selector) {
-  border-color: #e0e0d8 !important;
-  border-radius: 7px !important;
-  box-shadow: none !important;
-}
-
-.status-select:hover :deep(.ant-select-selector) {
-  border-color: #9fb39a !important;
-}
-
-.task-workflow-header__meta {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(100px, 1fr));
-  gap: 10px 20px;
-  margin-top: 10px;
-  padding: 12px 16px;
-  border: 1px solid #e8ecf1;
-  border-radius: 8px;
-  background: #f9fafb;
-}
-
-.task-workflow-header__field {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px 0;
-}
-
-.task-workflow-header__field--directory {
-  grid-column: span 2;
-}
-
-.task-workflow-header__directory-list {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.task-workflow-header__directory {
-  overflow: hidden;
-  color: #303133;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-workflow-header__field-label,
-.execution-setting__label {
-  color: #909399;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-}
-
-.task-workflow-header__field-value,
-.execution-setting__value {
-  overflow: hidden;
-  color: #303133;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-workflow-nodes {
-  display: flex;
-  flex-shrink: 0;
-  gap: 10px;
-  overflow-x: auto;
-  padding: 1px 0 2px;
-}
-
-.task-workflow-node {
-  display: flex;
-  min-width: 120px;
-  min-height: 46px;
-  flex: 1 0 120px;
-  align-items: center;
-  justify-content: center;
-  padding: 8px 10px;
-  box-sizing: border-box;
-  border: 1px solid #e8e8e0;
-  border-radius: 8px;
-  background: #fff;
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-  text-align: center;
-  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s, transform 0.2s;
-}
-
-.task-workflow-node:hover {
-  border-color: #b7c9a8;
-  transform: translateY(-1px);
-}
-
-.task-workflow-node--success {
-  border-color: #b7c9a8;
-  background: #f3f8ef;
-}
-
-.task-workflow-node--running {
-  border-color: #ead39e;
-  background: #fff9ec;
-}
-
-.task-workflow-node--failed {
-  border-color: #ecc8c5;
-  background: #fff5f4;
-}
-
-.task-workflow-node--active {
-  border-color: #3a7a3a;
-  background: #f3f8ef;
-  box-shadow: 0 6px 18px rgba(58, 122, 58, 0.14);
-}
-
-.task-workflow-node__row {
-  display: flex;
-  max-width: 100%;
-  align-items: center;
-  gap: 6px;
-  overflow: hidden;
-}
-
-.task-workflow-node__badge {
-  display: inline-flex;
-  width: 20px;
-  height: 20px;
-  flex: 0 0 20px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: #9fb39a;
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.task-workflow-node__label {
-  overflow: hidden;
-  color: #303133;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.3;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-workflow-node__status {
-  flex-shrink: 0;
-  color: #b5b8bd;
-  font-size: 12px;
-}
-
-.task-workflow-node__status--success {
-  color: #74b66f;
-  font-size: 15px;
-}
-
-.task-workflow-node__status--running {
-  color: #d5a442;
-}
-
-.task-workflow-node__status--failed {
-  color: #c85b55;
-}
-
-.task-workflow-content {
-  display: flex;
-  min-height: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: 12px;
-  overflow: hidden;
-  padding: 16px 20px 20px;
-  border: 1px solid #e8e8e0;
-  border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-}
-
-.step-tab-layout {
-  display: grid;
-  grid-template-columns: 164px minmax(0, 1fr);
-  min-height: 0;
-  flex: 1;
-  overflow: hidden;
-  border: 1px solid #e5e9e1;
-  border-radius: 9px;
-  background: #fff;
-}
-
-.step-tab-sidebar {
-  display: flex;
-  min-width: 0;
-  min-height: 0;
-  flex-direction: column;
-  gap: 7px;
-  overflow-y: auto;
-  padding: 10px;
-  border-right: 1px solid #e8ece5;
-  background: #f9faf8;
-}
-
-.step-tab-button {
-  width: 100%;
-  overflow: hidden;
-  padding: 9px 11px;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  background: transparent;
-  color: #606266;
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition: border-color 0.2s, background 0.2s, color 0.2s;
-}
-
-.step-tab-button:hover {
-  border-color: #d6e0d1;
-  background: #f3f7f0;
-  color: #3a7a3a;
-}
-
-.step-tab-button--active {
-  border-color: #afc4a7;
-  background: #eef5e9;
-  color: #315f31;
-  font-weight: 600;
-}
-
-.step-tab-button--prompt {
-  margin-bottom: 2px;
-}
-
-.step-tab-actions {
-  display: flex;
-  position: sticky;
-  z-index: 1;
-  bottom: -10px;
-  flex-direction: column;
-  flex-shrink: 0;
-  gap: 8px;
-  margin-top: auto;
-  padding: 12px 0 10px;
-  border-top: 1px solid #e2e7df;
-  background: #f9faf8;
-}
-
-.step-tab-actions__title {
-  color: #909399;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-}
-
-.step-tab-actions__status {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-width: 0;
-  color: #777d78;
-  font-size: 12px;
-}
-
-.step-tab-actions__status :deep(.ant-tag) {
-  margin-inline-end: 0;
-}
-
-.step-tab-actions :deep(.ant-btn) {
-  border-color: #dce3d8;
+  height: 28px;
+  border: 0;
   border-radius: 6px;
+  padding: 0 20px 0 4px;
   box-shadow: none;
-  font-size: 12px;
 }
 
-.step-tab-actions :deep(.ant-btn-primary) {
-  border-color: #6f9469;
-  background: #6f9469;
-}
-
-.step-tab-actions :deep(.ant-btn-primary:hover) {
-  border-color: #547b50;
-  background: #547b50;
-}
-
-.step-tab-actions__warning {
-  color: #b75a54;
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.step-tab-content {
-  display: flex;
-  min-width: 0;
-  min-height: 0;
-  flex-direction: column;
-}
-
-.step-content-toolbar {
-  display: flex;
-  min-height: 54px;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 9px 16px;
-  box-sizing: border-box;
-  border-bottom: 1px solid #e8ece5;
-  background: #fbfcfa;
-}
-
-.step-content-toolbar > div {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.step-content-toolbar strong {
-  overflow: hidden;
-  color: #303133;
+.status-select :deep(.ant-select-selection-item) {
+  color: #8c8c8c;
   font-size: 14px;
+  line-height: 28px;
+}
+
+.status-select :deep(.ant-select-arrow) {
+  right: 4px;
+  width: 16px;
+  height: 16px;
+  margin-top: -8px;
+  align-items: center;
+  justify-content: center;
+}
+
+.work-dir {
+  display: flex;
+  min-height: 28px;
+  max-width: 320px;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px;
+  border-radius: 6px;
+  color: #8c8c8c;
+  background: #f2f4f7;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.work-dir :deep(.anticon) {
+  font-size: 16px;
+}
+
+.work-dir span {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.step-content-toolbar span {
-  color: #909399;
-  font-size: 11px;
+.start-button {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  border: 1px solid #3157e2;
+  border-radius: 6px;
+  padding: 2px 8px;
+  border-color: #3157e2;
+  color: #fff;
+  background: #3157e2;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 22px;
 }
 
-.step-content-toolbar :deep(.ant-tag) {
-  margin-inline-end: 0;
-  border-radius: 5px;
+.start-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
-.step-markdown-view {
+.delete-button {
+  color: #595959;
+}
+
+.delete-button:hover {
+  color: #ef4444;
+  background: #fff1f2;
+}
+
+.detail-scroll {
+  display: flex;
   min-height: 0;
   flex: 1;
-  overflow: auto;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.pipeline-card {
+  flex: 0 0 auto;
+  padding: 16px 24px 12px 24px;
   background: #fff;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+  z-index: 1; 
 }
 
-.task-result {
-  min-height: calc(100vh - 88px);
-  padding-top: 80px;
-  border: 1px solid #e8e8e0;
-  border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+.pipeline-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 15px;
 }
 
-@media (max-width: 1180px) {
-  .task-workflow-header__meta {
-    grid-template-columns: repeat(3, minmax(100px, 1fr));
+.pipeline-card-label {
+  color: #8c8c8c;
+  font-size: 14px;
+}
+
+.pipeline-card-sep {
+  width: 1px;
+  height: 12px;
+  background: #f0f0f0;
+}
+
+.pipeline-card-name {
+  color: #262626;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.pipeline-card-progress {
+  color: #8c8c8c;
+  font-size: 14px;
+}
+
+.detail-content {
+  flex: 1 0 auto;
+  padding: 0 24px 24px;
+}
+
+.task-title {
+  margin: 28px 0 0;
+  color: #262626;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.task-desc {
+  margin-top: 12px;
+}
+
+.task-desc :deep(.task-desc-content) {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: #262626;
+  font-size: 14px;
+  line-height: 28px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+}
+
+.task-desc.expanded :deep(.task-desc-content) {
+  display: block;
+  -webkit-line-clamp: unset;
+}
+
+.task-desc :deep(.task-desc-content p) {
+  display: inline;
+  margin: 0;
+  color: inherit;
+  font-size: inherit;
+}
+
+.desc-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  border: 0;
+  padding: 0;
+  color: #1d5ec9;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.conversation-scope-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 24px 0 12px;
+  color: #8c8c8c;
+  font-size: 12px;
+  line-height: 19.2px;
+}
+
+.conversation-scope-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+.pipeline-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  padding: 80px 0;
+  color: #8c8c8c;
+}
+
+.pipeline-empty-icon {
+  width: 164px;
+  height: 45px;
+}
+
+.pipeline-empty-icon img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.pipeline-empty p {
+  margin: 16px 0 8px;
+  color: #262626;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.pipeline-empty span {
+  color: #8c8c8c;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.detail-loading,
+.detail-empty {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 限制详情图片尺寸，避免长图撑开页面；完整内容通过预览弹窗查看。 */
+.task-desc :deep(.task-desc-content img) {
+  max-width: 100px;
+  max-height: 60px;
+  object-fit: cover;
+  cursor: pointer;
+  border-radius: 3px;
+  border: 1px solid #e5e7eb;
+  margin: 0 2px;
+  vertical-align: middle;
+}
+
+.task-desc :deep(.task-desc-content img):hover {
+  border-color: #3157e2;
+  box-shadow: 0 0 0 2px rgba(49, 87, 226, 0.15);
+}
+
+@media (max-width: 760px) {
+
+  .work-dir,
+  .detail-button {
+    display: none;
   }
 }
 
-@media (max-width: 900px) {
-  .task-detail-page {
-    padding: 12px;
+@media (max-width: 720px) {
+  .pipeline-card {
+    padding: 12px 16px 8px;
   }
 
-  .task-workflow-header {
-    padding: 16px;
+  .detail-content {
+    padding: 0 16px 20px;
   }
 
-  .task-workflow-shell {
-    height: auto;
-    min-height: calc(100vh - 80px);
-  }
-
-  .task-detail-page--embedded .task-workflow-shell {
-    height: auto;
-    min-height: 100%;
-  }
-
-  .task-workflow-header__title-row {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .task-workflow-header__title {
-    width: 100%;
-    white-space: normal;
-  }
-
-  .task-workflow-header__actions {
-    justify-content: flex-start;
-  }
-
-  .task-workflow-header__meta {
-    grid-template-columns: 1fr;
-  }
-
-  .task-workflow-header__field--directory {
-    grid-column: auto;
-  }
-
-  .step-tab-layout {
-    grid-template-columns: 1fr;
-    min-height: 520px;
-  }
-
-  .step-tab-sidebar {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
-    border-right: 0;
-    border-bottom: 1px solid #e8ece5;
-  }
-
-  .step-tab-actions {
-    position: static;
-    grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: repeat(2, minmax(120px, 1fr));
-    align-items: center;
-  }
-
-  .step-tab-actions__title,
-  .step-tab-actions__warning {
-    grid-column: 1 / -1;
-  }
-
-  .step-markdown-view {
-    height: 520px;
-    flex: none;
-  }
-}
-
-@media (max-width: 640px) {
-  .task-detail-page {
-    margin: -24px;
-  }
-
-  .task-detail-page--embedded {
-    margin: 0;
-    padding: 8px;
-  }
-
-  .task-workflow-header__actions {
-    width: 100%;
-  }
-
-  .status-select {
-    width: 100%;
+  .task-title {
+    margin-top: 20px;
+    font-size: 24px;
+    line-height: 32px;
   }
 }
 </style>

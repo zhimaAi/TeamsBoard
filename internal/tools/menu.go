@@ -12,7 +12,7 @@ import (
 
 // MenuKeys are the left-navigation menu keys manageable by the tool center (in sidebar display order).
 // The tool center itself is fixed at the sidebar bottom and is not in this list.
-var MenuKeys = []string{"goteams", "workflows", "commands", "knowledge", "apis", "settings"}
+var MenuKeys = []string{"workflows", "tasks", "agents", "projects", "commands", "knowledge", "apis", "settings"}
 
 // MenuItem is a menu switch config item
 type MenuItem struct {

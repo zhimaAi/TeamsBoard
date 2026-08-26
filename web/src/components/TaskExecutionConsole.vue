@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import MarkdownIt from 'markdown-it'
 import apiClient from '@/api/client'
+import { getApiToken } from '@/api/token'
 import CliSelectModal from '@/components/CliSelectModal.vue'
 
 interface Step {
@@ -38,6 +39,7 @@ interface Session {
   duration_ms: number
   created_at: number
   updated_at: number
+  error_message?: string
 }
 
 interface ConversationGroup {
@@ -220,6 +222,17 @@ function cliDisplayName(cliType: string) {
     claude: 'Claude Code',
     codebuddy: 'CodeBuddy Code',
     codex: 'Codex CLI',
+    cursor: 'Cursor Agent',
+    opencode: 'OpenCode',
+    copilot: 'GitHub Copilot CLI',
+    grok: 'Grok CLI',
+    hermes: 'Hermes',
+    kimi: 'Kimi Code',
+    qoder: 'Qoder CLI',
+    'qoder-cn': 'Qoder CLI (CN)',
+    qwen: 'Qwen Code',
+    openclaw: 'OpenClaw',
+    pi: 'Pi Agent',
   }[cliType] || cliType.toUpperCase() || 'CLI'
 }
 
@@ -239,6 +252,14 @@ function sessionStatusText(session: Session) {
 
 function sessionStatusColor(session: Session) {
   return sessionHasPendingPermission(session.uuid) ? 'warning' : statusColor(session.status)
+}
+
+function sessionHasErrorEvent(sessionUuid: string) {
+  return (eventsBySession.value[sessionUuid] || []).some(event => event.type === 'error')
+}
+
+function sessionErrorHint(session?: Session) {
+  return session?.status === 'failed' ? session.error_message || '' : ''
 }
 
 function formatTime(timestamp: number) {
@@ -333,18 +354,21 @@ function subscribeConversation(sessionUuid: string) {
   for (const item of conversationSessions) subscribe(item.uuid)
 }
 
-function webSocketUrl() {
+// 浏览器 WebSocket 握手无法携带自定义 header，鉴权 token 通过 query 传递
+async function webSocketUrl() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.host}/api/local/ws`
+  const token = await getApiToken()
+  const query = token ? `?token=${encodeURIComponent(token)}` : ''
+  return `${protocol}//${window.location.host}/api/local/ws${query}`
 }
 
-function connectSocket() {
+async function connectSocket() {
   if (!props.open || socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) {
     return
   }
   closingSocket = false
   socketState.value = 'connecting'
-  socket = new WebSocket(webSocketUrl())
+  socket = new WebSocket(await webSocketUrl())
   socket.onopen = () => {
     socketState.value = 'connected'
     if (selectedSessionUuid.value) subscribeConversation(selectedSessionUuid.value)
@@ -613,13 +637,22 @@ onBeforeUnmount(closeSocket)
                 type="button"
                 class="session-button"
                 :class="{ active: selectedConversationUuid === conversation.uuid }"
+                :title="sessionErrorHint(conversation.latestSession) || undefined"
                 @click="selectSession(conversation.latestSession.uuid)"
               >
-                <span>
-                  对话 {{ conversationIndex + 1 }}
-                  <small>
-                    {{ conversation.sessions.length }} 轮 ·
-                    {{ formatTime(conversation.firstSession.started_at || conversation.firstSession.created_at) }}
+                <span class="session-button__main">
+                  <span class="session-button__title">
+                    对话 {{ conversationIndex + 1 }}
+                    <small>
+                      {{ conversation.sessions.length }} 轮 ·
+                      {{ formatTime(conversation.firstSession.started_at || conversation.firstSession.created_at) }}
+                    </small>
+                  </span>
+                  <small
+                    v-if="conversation.latestSession.status === 'failed' && conversation.latestSession.error_message"
+                    class="session-error-text"
+                  >
+                    {{ conversation.latestSession.error_message }}
                   </small>
                 </span>
                 <a-tag :color="sessionStatusColor(conversation.latestSession)" class="session-status">
@@ -758,6 +791,14 @@ onBeforeUnmount(closeSocket)
                   <span>本轮执行结束</span>
                 </div>
               </template>
+
+              <a-alert
+                v-if="conversationSession.error_message && !sessionHasErrorEvent(conversationSession.uuid)"
+                type="error"
+                show-icon
+                :message="conversationSession.error_message"
+                class="system-event"
+              />
 
               <div v-if="activeStatuses.includes(conversationSession.status)" class="typing-row">
                 <span /><span /><span />
@@ -900,6 +941,28 @@ onBeforeUnmount(closeSocket)
   font-size: 12px;
   background: transparent;
   border-radius: 7px;
+}
+
+.session-button__main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.session-button__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-error-text {
+  overflow: hidden;
+  color: #cf1322;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-button:hover,

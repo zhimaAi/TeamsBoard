@@ -7,21 +7,21 @@ import (
 // Task status transition table
 var taskStatusTransitions = map[string]map[string]bool{
 	protocol.TaskStatusPending: {
-		protocol.TaskStatusActive:     true,
-		protocol.TaskStatusDeveloping: true,
+		protocol.TaskStatusActive:  true,
+		protocol.TaskStatusBlocked: true,
 	},
 	protocol.TaskStatusActive: {
-		protocol.TaskStatusDeveloping: true,
-		protocol.TaskStatusDeveloped:  true,
-		protocol.TaskStatusPending:    true,
+		protocol.TaskStatusDone:    true,
+		protocol.TaskStatusBlocked: true,
+		protocol.TaskStatusPending: true,
 	},
-	protocol.TaskStatusDeveloping: {
-		protocol.TaskStatusDeveloped: true,
-		protocol.TaskStatusActive:    true,
+	protocol.TaskStatusBlocked: {
+		protocol.TaskStatusActive:  true,
+		protocol.TaskStatusDone:    true,
+		protocol.TaskStatusPending: true,
 	},
-	protocol.TaskStatusDeveloped: {
-		protocol.TaskStatusActive:     true,
-		protocol.TaskStatusDeveloping: true,
+	protocol.TaskStatusDone: {
+		protocol.TaskStatusActive: true,
 	},
 }
 
@@ -59,8 +59,8 @@ func ValidateTaskStatus(status string) bool {
 	switch status {
 	case protocol.TaskStatusActive,
 		protocol.TaskStatusPending,
-		protocol.TaskStatusDeveloping,
-		protocol.TaskStatusDeveloped:
+		protocol.TaskStatusDone,
+		protocol.TaskStatusBlocked:
 		return true
 	}
 	return false

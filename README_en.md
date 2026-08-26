@@ -1,6 +1,6 @@
 # TeamsBoard
 
-![TeamsBoard](imgs/head_image_zh.png)
+![TeamsBoard](assets/imgs/head_image_zh.png)
 
 > <p align="center"><a href="README.md">简体中文</a> | <strong>English</strong></p>
 
@@ -46,11 +46,11 @@ TeamsBoard is an all-in-one AI collaborative workbench for teams. It solves a co
 
 | Kanban | Conversation |
 |--------|-------------|
-| ![Kanban](imgs/image-20260825172159352.png) | ![Conversation](imgs/image-20260825172230944.png) |
+| ![Kanban](assets/imgs/image-20260825172159352.png) | ![Conversation](assets/imgs/image-20260825172230944.png) |
 
 | Task Detail | Expert Pipeline | Project |
 |-------------|----------------|---------|
-| ![Task Detail](imgs/image-20260825172313108.png) | ![Pipeline](imgs/image-20260825172400871.png) | ![Project](imgs/image-20260825172433446.png) |
+| ![Task Detail](assets/imgs/image-20260825172313108.png) | ![Pipeline](assets/imgs/image-20260825172400871.png) | ![Project](assets/imgs/image-20260825172433446.png) |
 
 ## Tech Stack
 
@@ -77,7 +77,7 @@ TeamsBoard provides installers for Windows (x64/arm64) and macOS (x64/arm).
 
 Open the client, navigate to **Expert Pipelines**, and you can create a new pipeline or use one of the three built-in pipelines. When using a built-in pipeline for the first time, you need to bind a local CLI to each Agent.
 
-![Pipeline Setup](imgs/image-20260825174754783.png)
+![Pipeline Setup](assets/imgs/image-20260825174754783.png)
 
 ### 3. Create a Local Task
 
@@ -85,17 +85,17 @@ TeamsBoard offers two ways to create a task:
 
 - **Classic Mode**: Manually create a task on the Kanban board. Select a working directory (code directory) when creating the task.
 
-  ![Create Task Classic](imgs/image-20260825175113707.png)
+  ![Create Task Classic](assets/imgs/image-20260825175113707.png)
 
 - **Conversation Mode**: Click "New Conversation" in the conversation interface to quickly create a task.
 
-  ![Create Task Conversation](imgs/image-20260825175347287.png)
+  ![Create Task Conversation](assets/imgs/image-20260825175347287.png)
 
 ### 4. View Progress and Results
 
 Use the conversation workspace to monitor Agent execution progress, view results, and communicate with Agents.
 
-![Task Progress](imgs/image-20260825175611051.png)
+![Task Progress](assets/imgs/image-20260825175611051.png)
 
 ## Supported CLIs
 

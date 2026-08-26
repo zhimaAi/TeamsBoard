@@ -34,10 +34,6 @@ func (h *Handler) ListFolders(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "collection_id 参数无效"})
 		return
 	}
-	if grant, scoped := capabilityGrant(c); scoped && collectionID != grant.APICollectionID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "集合不在当前任务授权范围内"})
-		return
-	}
 	rows, err := h.dbRef.Get().QueryContext(c.Request.Context(),
 		`SELECT id, collection_id, parent_id, name, description, sort_order, created_at, updated_at
 		 FROM gt_api_folders WHERE collection_id=? ORDER BY sort_order, id`, collectionID)
@@ -56,15 +52,6 @@ func (h *Handler) ListFolders(c *gin.Context) {
 			return
 		}
 		list = append(list, item)
-	}
-	if grant, scoped := capabilityGrant(c); scoped {
-		filtered := make([]Folder, 0, 1)
-		for _, folder := range list {
-			if folder.ID == grant.APIFolderID {
-				filtered = append(filtered, folder)
-			}
-		}
-		list = filtered
 	}
 	c.JSON(http.StatusOK, gin.H{"data": list})
 }
@@ -193,17 +180,6 @@ func (h *Handler) UpdateFolder(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
 		return
 	}
-	var taskCount int
-	if err := h.dbRef.Get().QueryRowContext(c.Request.Context(),
-		`SELECT COUNT(*) FROM gt_tasks WHERE api_folder_id = ?`, id,
-	).Scan(&taskCount); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "检查文件夹任务引用失败: " + err.Error()})
-		return
-	}
-	if taskCount > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "该文件夹已被任务引用，不能修改"})
-		return
-	}
 	var input struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
@@ -235,17 +211,6 @@ func (h *Handler) DeleteFolder(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
-		return
-	}
-	var taskCount int
-	if err := h.dbRef.Get().QueryRowContext(c.Request.Context(),
-		`SELECT COUNT(*) FROM gt_tasks WHERE api_folder_id = ?`, id,
-	).Scan(&taskCount); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "检查文件夹任务引用失败: " + err.Error()})
-		return
-	}
-	if taskCount > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "该文件夹已被任务引用，不能删除"})
 		return
 	}
 	tx, err := h.dbRef.Get().BeginTx(c.Request.Context(), nil)
@@ -384,7 +349,7 @@ func (h *Handler) requireStoredRequestInScope(c *gin.Context, requestID int64) b
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return false
 	}
-	return requireRequestInCapabilityScope(c, collectionID, folderID)
+	return true
 }
 
 // ParseCurl converts common curl commands into editable request drafts without executing the commands directly.

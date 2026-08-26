@@ -120,7 +120,7 @@ async function save() {
 function remove(item: Item) {
   Modal.confirm({
     title: `删除“${item.name}”`,
-    content: '只删除 GoTeams 中的配置，不会删除远程代码或 Compose 文件。',
+    content: '只删除 TeamsBoard 中的配置，不会删除远程代码或 Compose 文件。',
     okType: 'danger',
     async onOk() {
       await apiClient.delete(`${endpoint.value}/${item.id}`)

@@ -1,0 +1,3 @@
+node_modules/
+resources/backend/*
+!resources/backend/.gitkeep

@@ -29,6 +29,7 @@ watch([() => props.officialUrl, serverType], ([url, type]) => {
 }, { immediate: true })
 
 // Restore the last login method: select the corresponding option and, in custom mode, refill the last domain.
+// custom 地址由用户主动选择，不受当前官方配置域名约束，直接恢复记忆。
 const lastLogin = useLastLogin().getLastLogin()
 if (lastLogin) {
   serverType.value = lastLogin.serverType
@@ -105,7 +106,7 @@ function handleSubmit() {
         :disabled="loading"
         :placeholder="serverType === 'official'
           ? (officialUrl?.trim() ? '官方地址（来自 config.ini）' : '未配置官方地址，请选择自定义地址')
-          : '请输入自定义云端地址，例如：https://goteams.example.com'"
+          : '请输入自定义云端地址，例如：https://teamsboard.example.com'"
         size="large"
       >
         <template #prefix>

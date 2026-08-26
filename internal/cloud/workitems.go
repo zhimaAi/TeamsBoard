@@ -5,7 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
 )
+
+// uploadAssetRe matches src=/href= attributes whose value points to a cloud
+// relative upload path (e.g. /uploads/1/requirement/xxx.png). Such URLs cannot
+// be rendered by the local client because they are relative to the cloud site
+// root; they must be prefixed with the cloud origin (scheme://host).
+var uploadAssetRe = regexp.MustCompile(`(?i)(src|href)\s*=\s*("|')(/uploads[^"']*)("|')`)
 
 // WorkItem cloud work item
 type WorkItem struct {
@@ -23,56 +32,35 @@ type MyWorkResult struct {
 	List []map[string]interface{} `json:"list"`
 }
 
-// AgentSummary Agent summary information
-type AgentSummary struct {
-	ID              int64  `json:"id"`
-	Name            string `json:"name"`
-	Color           string `json:"color"`
-	CLIType         string `json:"cli_type"`
-	WorkflowVersion int    `json:"workflow_version"`
+// PipelineSummary Pipeline summary information
+type PipelineSummary struct {
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	Color   string `json:"color"`
+	CLIType string `json:"cli_type"`
+	Icon    string `json:"icon"` // Cloud avatar, a relative path like /uploads/...
 }
 
-// WorkflowStep Agent workflow step
-type WorkflowStep struct {
-	StepKey   string          `json:"step_key"`
-	Name      string          `json:"name"`
-	SortOrder int             `json:"sort_order"`
-	CLIType   string          `json:"cli_type"`
-	Prompt    string          `json:"prompt"`
-	Documents []AgentDocument `json:"step_documents"`
+// PipelineStep Pipeline workflow step
+type PipelineStep struct {
+	StepKey   string `json:"step_key"`
+	Name      string `json:"name"`
+	SortOrder int    `json:"sort_order"`
+	CLIType   string `json:"cli_type"`
+	Prompt    string `json:"prompt"`
 }
 
-// AgentDocument Agent custom document definition
-type AgentDocument struct {
-	ClientDocumentID string `json:"client_document_id"`
-	ID               string `json:"id"`
-	Key              string `json:"key"`
-	Name             string `json:"name"`
-	Placeholder      string `json:"placeholder"`
-	TitleTemplate    string `json:"title_template"`
-	DefaultContent   string `json:"default_content"`
+// PipelineSnapshot Pipeline complete snapshot (including workflow)
+type PipelineSnapshot struct {
+	ID      int64          `json:"id"`
+	Name    string         `json:"name"`
+	Color   string         `json:"color"`
+	CLIType string         `json:"cli_type"`
+	Icon    string         `json:"icon"` // Cloud avatar, a relative path like /uploads/...
+	Steps   []PipelineStep `json:"steps"`
 }
 
-// BuiltinPlaceholderDef Fixed built-in placeholder definition issued by the cloud.
-// Key is the stable contract shared between the client and the cloud; Token is the placeholder text that actually appears in the prompt word (excluding curly brackets).
-type BuiltinPlaceholderDef struct {
-	Key   string `json:"key"`
-	Token string `json:"token"`
-}
-
-// AgentSnapshot Agent complete snapshot (including workflow)
-type AgentSnapshot struct {
-	ID                  int64                   `json:"id"`
-	Name                string                  `json:"name"`
-	Color               string                  `json:"color"`
-	CLIType             string                  `json:"cli_type"`
-	WorkflowVersion     int                     `json:"workflow_version"`
-	Documents           []AgentDocument         `json:"documents"`
-	Steps               []WorkflowStep          `json:"steps"`
-	BuiltinPlaceholders []BuiltinPlaceholderDef `json:"builtin_placeholders"`
-}
-
-//ExecutionAuthorization execution authorization information
+// ExecutionAuthorization execution authorization information
 type ExecutionAuthorization struct {
 	Allowed bool   `json:"allowed"`
 	Reason  string `json:"reason"`
@@ -86,6 +74,7 @@ func (c *Client) GetWorkItems(ctx context.Context) ([]WorkItem, error) {
 	}
 	var direct []WorkItem
 	if err := json.Unmarshal(raw, &direct); err == nil {
+		c.normalizeWorkItems(direct)
 		return direct, nil
 	}
 	var result struct {
@@ -96,9 +85,69 @@ func (c *Client) GetWorkItems(ctx context.Context) ([]WorkItem, error) {
 		return nil, fmt.Errorf("解析工作项列表失败: %w", err)
 	}
 	if result.Items != nil {
+		c.normalizeWorkItems(result.Items)
 		return result.Items, nil
 	}
+	c.normalizeWorkItems(result.List)
 	return result.List, nil
+}
+
+// contentOrigin returns the cloud site origin (scheme://host) derived from the
+// configured API base URL. Upload assets are served from the cloud site root,
+// so a relative /uploads/... URL must be prefixed with this origin to be
+// reachable from the local client.
+func (c *Client) contentOrigin() string {
+	u, err := url.Parse(c.baseURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// normalizeWorkItems rewrites cloud-relative upload asset URLs inside each work
+// item description into absolute http/https URLs so they can be rendered by the
+// local client. Already-absolute URLs are left untouched (idempotent).
+func (c *Client) normalizeWorkItems(items []WorkItem) {
+	for i := range items {
+		items[i].Description = c.normalizeWorkItemContent(items[i].Description)
+	}
+}
+
+// normalizeWorkItemContent rewrites relative /uploads/... asset URLs (in src or
+// href attributes) in the given HTML fragment into absolute http/https URLs
+// using the cloud origin.
+func (c *Client) normalizeWorkItemContent(description string) string {
+	origin := c.contentOrigin()
+	if origin == "" || description == "" {
+		return description
+	}
+	// Escape "$" in the origin so it is not treated as a group reference in the
+	// replacement template.
+	escaped := strings.ReplaceAll(origin, "$", "$$")
+	return uploadAssetRe.ReplaceAllString(description, `${1}=${2}`+escaped+`${3}${4}`)
+}
+
+// normalizeAssetURL rewrites a cloud-relative asset URL (e.g. the pipeline/step
+// avatar returned as "/uploads/1/pipeline/xxx.png") into an absolute http/https
+// URL using the cloud site origin, so it can be rendered by the local client.
+// It mirrors normalizeWorkItemContent but operates on a plain URL string instead
+// of an HTML fragment. Empty values and already-absolute URLs are returned
+// unchanged, so the call is idempotent and safe to apply repeatedly.
+func (c *Client) normalizeAssetURL(rawURL string) string {
+	if rawURL == "" {
+		return rawURL
+	}
+	if strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://") {
+		return rawURL
+	}
+	origin := c.contentOrigin()
+	if origin == "" {
+		return rawURL
+	}
+	if strings.HasPrefix(rawURL, "/uploads") {
+		return origin + rawURL
+	}
+	return rawURL
 }
 
 // GetMyWork Gets all the work items that the currently logged in user is responsible for.
@@ -110,25 +159,40 @@ func (c *Client) GetMyWork(ctx context.Context) (*MyWorkResult, error) {
 	if result.List == nil {
 		result.List = []map[string]interface{}{}
 	}
+	c.normalizeMyWork(result.List)
 	return &result, nil
 }
 
-// GetAgents gets the list of Agents available to the current user from the cloud
-func (c *Client) GetAgents(ctx context.Context) ([]AgentSummary, error) {
+// normalizeMyWork rewrites cloud-relative upload asset URLs inside each work
+// item's description (stored as a generic map to preserve extended fields) into
+// absolute http/https URLs, mirroring the normalization applied to GetWorkItems.
+func (c *Client) normalizeMyWork(list []map[string]interface{}) {
+	for _, item := range list {
+		if item == nil {
+			continue
+		}
+		if desc, ok := item["description"].(string); ok && desc != "" {
+			item["description"] = c.normalizeWorkItemContent(desc)
+		}
+	}
+}
+
+// GetPipelines gets the list of pipelines available to the current user from the cloud
+func (c *Client) GetPipelines(ctx context.Context) ([]PipelineSummary, error) {
 	var raw json.RawMessage
-	if err := c.do(ctx, http.MethodGet, "/api/client/agents", nil, &raw); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/api/client/pipelines", nil, &raw); err != nil {
 		return nil, err
 	}
-	var direct []AgentSummary
+	var direct []PipelineSummary
 	if err := json.Unmarshal(raw, &direct); err == nil {
 		return direct, nil
 	}
 	var result struct {
-		Items []AgentSummary `json:"items"`
-		List  []AgentSummary `json:"list"`
+		Items []PipelineSummary `json:"items"`
+		List  []PipelineSummary `json:"list"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return nil, fmt.Errorf("解析 Agent 列表失败: %w", err)
+		return nil, fmt.Errorf("解析流水线列表失败: %w", err)
 	}
 	if result.Items != nil {
 		return result.Items, nil
@@ -136,47 +200,42 @@ func (c *Client) GetAgents(ctx context.Context) ([]AgentSummary, error) {
 	return result.List, nil
 }
 
-// GetAgentSnapshot Gets the complete Agent snapshot from the cloud
-func (c *Client) GetAgentSnapshot(ctx context.Context, agentID int64) (*AgentSnapshot, error) {
-	path := fmt.Sprintf("/api/client/agents/%d/snapshot", agentID)
+// GetPipelineSnapshot Gets the complete pipeline snapshot from the cloud
+func (c *Client) GetPipelineSnapshot(ctx context.Context, pipelineID int64) (*PipelineSnapshot, error) {
+	path := fmt.Sprintf("/api/client/pipelines/%d/snapshot", pipelineID)
 	var result struct {
-		ID                  int64                   `json:"id"`
-		Name                string                  `json:"name"`
-		Color               string                  `json:"color"`
-		CLIType             string                  `json:"cli_type"`
-		WorkflowVersion     int                     `json:"workflow_version"`
-		Agent               AgentSummary            `json:"agent"`
-		Documents           []AgentDocument         `json:"documents"`
-		BuiltinPlaceholders []BuiltinPlaceholderDef `json:"builtin_placeholders"`
-		Steps               []struct {
-			StepKey       string          `json:"step_key"`
-			Name          string          `json:"name"`
-			SortOrder     int             `json:"sort_order"`
-			CLIType       string          `json:"cli_type"`
-			Prompt        string          `json:"prompt"`
-			PromptContent string          `json:"prompt_content"`
-			StepDocuments []AgentDocument `json:"step_documents"`
+		ID       int64           `json:"id"`
+		Name     string          `json:"name"`
+		Color    string          `json:"color"`
+		CLIType  string          `json:"cli_type"`
+		Icon     string          `json:"icon"`
+		Pipeline PipelineSummary `json:"pipeline"`
+		Steps    []struct {
+			StepKey       string `json:"step_key"`
+			Name          string `json:"name"`
+			SortOrder     int    `json:"sort_order"`
+			CLIType       string `json:"cli_type"`
+			Prompt        string `json:"prompt"`
+			PromptContent string `json:"prompt_content"`
 		} `json:"steps"`
 	}
 	if err := c.do(ctx, http.MethodGet, path, nil, &result); err != nil {
 		return nil, err
 	}
-	snapshot := &AgentSnapshot{
-		ID:              result.ID,
-		Name:            result.Name,
-		Color:           result.Color,
-		CLIType:         result.CLIType,
-		WorkflowVersion: result.WorkflowVersion,
+	snapshot := &PipelineSnapshot{
+		ID:      result.ID,
+		Name:    result.Name,
+		Color:   result.Color,
+		CLIType: result.CLIType,
+		Icon:    c.normalizeAssetURL(result.Icon),
 	}
-	if result.Agent.ID != 0 {
-		snapshot.ID = result.Agent.ID
-		snapshot.Name = result.Agent.Name
-		snapshot.Color = result.Agent.Color
-		snapshot.CLIType = result.Agent.CLIType
-		snapshot.WorkflowVersion = result.Agent.WorkflowVersion
+	if result.Pipeline.ID != 0 {
+		snapshot.ID = result.Pipeline.ID
+		snapshot.Name = result.Pipeline.Name
+		snapshot.Color = result.Pipeline.Color
+		snapshot.CLIType = result.Pipeline.CLIType
+		snapshot.Icon = c.normalizeAssetURL(result.Pipeline.Icon)
 	}
-	snapshot.Documents = result.Documents
-	snapshot.BuiltinPlaceholders = result.BuiltinPlaceholders
 	for _, step := range result.Steps {
 		prompt := step.Prompt
 		if prompt == "" {
@@ -186,21 +245,20 @@ func (c *Client) GetAgentSnapshot(ctx context.Context, agentID int64) (*AgentSna
 		if cliType == "" {
 			cliType = step.CLIType
 		}
-		snapshot.Steps = append(snapshot.Steps, WorkflowStep{
+		snapshot.Steps = append(snapshot.Steps, PipelineStep{
 			StepKey:   step.StepKey,
 			Name:      step.Name,
 			SortOrder: step.SortOrder,
 			CLIType:   cliType,
 			Prompt:    prompt,
-			Documents: step.StepDocuments,
 		})
 	}
 	return snapshot, nil
 }
 
-// GetExecutionAuthorization checks Agent execution authorization
-func (c *Client) GetExecutionAuthorization(ctx context.Context, agentID int64) (*ExecutionAuthorization, error) {
-	path := fmt.Sprintf("/api/client/agents/%d/execution-authorization", agentID)
+// GetPipelineExecutionAuthorization checks pipeline execution authorization
+func (c *Client) GetPipelineExecutionAuthorization(ctx context.Context, pipelineID int64) (*ExecutionAuthorization, error) {
+	path := fmt.Sprintf("/api/client/pipelines/%d/execution-authorization", pipelineID)
 	var result ExecutionAuthorization
 	if err := c.do(ctx, http.MethodGet, path, nil, &result); err != nil {
 		return nil, err

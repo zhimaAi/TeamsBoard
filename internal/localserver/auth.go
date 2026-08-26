@@ -4,10 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -20,7 +20,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"goteams-client/internal/applog"
-	"goteams-client/internal/capability"
 	"goteams-client/internal/cloud"
 	"goteams-client/internal/config"
 	"goteams-client/internal/secrets"
@@ -133,8 +132,9 @@ func (s *Server) handleBrowserTicket(c *gin.Context) {
 		return
 	}
 
-	//Verify Ticket
-	if ticket != s.config.BrowserTicket {
+	// Consume the launch ticket atomically so it cannot be replayed by another
+	// process after the desktop window has established its session.
+	if !s.consumeBrowserTicket(ticket) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "无效的 ticket"})
 		return
 	}
@@ -172,103 +172,35 @@ func (s *Server) handleBrowserTicket(c *gin.Context) {
 	c.Redirect(http.StatusFound, "/")
 }
 
-// accountServerDir returns the per-server account container directory under the data
-// root, derived from the normalized server URL. Both official and custom logins follow
-// the same rule: the same server address maps to the same data/accounts_<key> directory.
-func (s *Server) accountServerDir(normalized string) string {
-	dataDir := s.config.DataDir
-	if dataDir == "" {
-		dataDir = s.config.BaseProfileDir
+func (s *Server) consumeBrowserTicket(candidate string) bool {
+	s.ticketMu.Lock()
+	defer s.ticketMu.Unlock()
+	if s.ticket == "" || len(candidate) != len(s.ticket) ||
+		subtle.ConstantTimeCompare([]byte(candidate), []byte(s.ticket)) != 1 {
+		return false
 	}
-	return filepath.Join(dataDir, "accounts_"+serverProfileKey(normalized))
+	s.ticket = ""
+	return true
 }
 
-// copyFile copies a single file to the target path, creating parent directories on demand.
-func copyFile(src, dst string) error {
-	source, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer source.Close()
-	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
-		return err
-	}
-	target, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer target.Close()
-	if _, err := io.Copy(target, source); err != nil {
-		return err
-	}
-	return nil
-}
-
-// migrateLegacyServerData migrates legacy data directories to the unified accounts_<key>
-// layout (both official and custom logins use the same per-domain rule):
-//   - data/accounts_cus_<key>/ -> data/accounts_<key>/ (old custom layout, renamed as a whole)
-//   - data_cus_<key>/secrets.json -> data/accounts_<key>/secrets.json (even older custom layout)
-//   - data/secrets.json (old official base profile keys) is COPIED into the target when the
-//     target is missing: the base copy must remain so the logged-out state can still use it.
-//
-// The function is idempotent and only migrates when the target does not exist yet.
-func (s *Server) migrateLegacyServerData(normalized string, official bool) {
-	if normalized == "" {
+func (s *Server) handleDesktopShutdown(c *gin.Context) {
+	if !isLoopbackRequest(c.Request.RemoteAddr) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "desktop shutdown only accepts loopback requests"})
 		return
 	}
-	key := serverProfileKey(normalized)
-	targetDir := s.accountServerDir(normalized)
-	dataDir := s.config.DataDir
-	if dataDir == "" {
-		dataDir = s.config.BaseProfileDir
-	}
-
-	// 1. Old custom layout: rename the whole directory (secrets.json + account data dirs).
-	oldCustom := filepath.Join(dataDir, "accounts_cus_"+key)
-	if _, err := os.Stat(oldCustom); err == nil {
-		if _, terr := os.Stat(targetDir); terr != nil {
-			if rerr := os.Rename(oldCustom, targetDir); rerr == nil {
-				applog.Info("已迁移旧自定义账号目录", "from", oldCustom, "to", targetDir)
-				return
-			} else {
-				applog.Warn("迁移旧自定义账号目录失败", "from", oldCustom, "error", rerr)
-			}
-		}
-	}
-
-	// 2. Old official base secrets: copy into the target when missing.
-	targetSecrets := filepath.Join(targetDir, "secrets.json")
-	if _, err := os.Stat(targetSecrets); err == nil {
+	token := c.GetHeader("X-GoTeams-Desktop-Token")
+	expected := s.config.DesktopToken
+	if expected == "" || len(token) != len(expected) ||
+		subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
+		c.JSON(http.StatusForbidden, gin.H{"error": "invalid desktop token"})
 		return
 	}
-	if official {
-		baseSecrets := filepath.Join(s.config.BaseProfileDir, "secrets.json")
-		if _, err := os.Stat(baseSecrets); err == nil {
-			if cerr := copyFile(baseSecrets, targetSecrets); cerr != nil {
-				applog.Warn("迁移旧官方密钥失败", "error", cerr)
-			} else {
-				applog.Info("已迁移旧官方密钥到账号目录", "key", key)
-			}
-			return
-		}
-	}
-
-	// 3. Even older top-level custom layout.
-	oldTop := filepath.Join(filepath.Dir(s.config.BaseProfileDir), "data_cus_"+key, "secrets.json")
-	if _, err := os.Stat(oldTop); err == nil {
-		if cerr := copyFile(oldTop, targetSecrets); cerr != nil {
-			applog.Warn("迁移旧自定义密钥失败", "error", cerr)
-		} else {
-			applog.Info("已迁移旧自定义密钥", "key", key)
-		}
-	}
+	c.Status(http.StatusAccepted)
+	go s.config.Shutdown()
 }
 
-// handleLogin logs in: the agent calls the cloud API and creates an account-isolated database.
-// Both official and custom logins derive the account container directory from the (normalized)
-// server URL as data/accounts_<key> (secrets.json + <userID>), so the same server address always
-// maps to the same directory. The local function library (data/base.db) is a general library shared
-// by all accounts, and keys/account data of different clouds are completely isolated from each other.
+// handleLogin creates only an optional cloud session. Local task and base data
+// remain in the fixed application databases for official and custom cloud login.
 func (s *Server) handleLogin(c *gin.Context) {
 	var body struct {
 		Username   string `json:"username"`
@@ -290,10 +222,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 		serverType = "official"
 	}
 
-	// 1. Select cloud client and local profile based on login target.
-	// Both official and custom logins derive the account container directory from the
-	// (normalized) server URL: data/accounts_<key>, so the same server address always
-	// maps to the same directory.
+	// 1. Select the cloud client. Both login modes keep the fixed local profile.
 	var client *cloud.Client
 	var profileDir string
 	var secretDir string
@@ -312,14 +241,12 @@ func (s *Server) handleLogin(c *gin.Context) {
 		}
 		normalized = norm
 		client = s.customCloudClient(normalized)
-		// The local function library (base.db) is a general library shared by all accounts;
-		// only the key backend and each account's data are isolated to data/accounts_<key>
-		// according to the server address, so different clouds never interfere with each other.
+		// The local function library and credential file remain application-scoped.
 		profileDir = s.config.BaseProfileDir
 		if profileDir == "" {
 			profileDir = s.config.DataDir
 		}
-		secretDir = s.accountServerDir(normalized)
+		secretDir = profileDir
 	default: // official
 		if s.config.CloudClient == nil || !s.config.CloudClient.IsConfigured() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "官方云端 API 地址未配置，请先设置 config.ini 中的 api_base_url 或使用自定义地址登录"})
@@ -330,8 +257,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 		if profileDir == "" {
 			profileDir = s.config.DataDir
 		}
-		// The official address is also normalized to derive the same account directory as a
-		// custom login that points to the same address.
+		// Persist the normalized official endpoint for restoring the correct client.
 		if s.config.CloudConfig != nil && s.config.CloudConfig.APIBaseURL != "" {
 			if norm, err := normalizeServerURL(s.config.CloudConfig.APIBaseURL); err == nil {
 				normalized = norm
@@ -341,7 +267,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "官方云端 API 地址无效，请检查 config.ini 中的 api_base_url"})
 			return
 		}
-		secretDir = s.accountServerDir(normalized)
+		secretDir = profileDir
 	}
 
 	// 2. Call the cloud to log in (any account is acceptable, as long as the password is correct)
@@ -355,10 +281,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
-	// Forward compatibility: migrate legacy data directories to the unified accounts_<key> layout.
-	s.migrateLegacyServerData(normalized, serverType != "custom")
-
-	// 3. Switch local Profile (generic base.db + key backend by target), then create an account session
+	// 3. Keep the fixed local Profile and create the optional cloud account session.
 	if err := s.switchProfile(c.Request.Context(), profileDir, secretDir); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "切换本地数据目录失败: " + err.Error()})
 		return
@@ -370,11 +293,6 @@ func (s *Server) handleLogin(c *gin.Context) {
 	}
 
 	opts := LoginOptions{
-		// Account data (cloud session library) container directory: unified per-server
-		// directory data/accounts_<key> (the same as the key backend), official and custom
-		// logins are derived by the same rule. base.db is always the universal library
-		// (BaseProfileDir) shared by all accounts.
-		DataDir:          secretDir,
 		PersistLastLogin: true, // Both official and custom logins persist the last login index, and automatically restore the session after restart.
 		ServerType:       serverType,
 		ServerURL:        normalized, // official and custom both record the normalized server address
@@ -398,6 +316,9 @@ func (s *Server) handleLogin(c *gin.Context) {
 
 	// 4. Set the current session of the server
 	s.SetSession(sessionInfo)
+	// Refresh the read-only cloud pipeline cache after both official and custom
+	// login. A cloud outage must not turn a successful login into a failure.
+	s.triggerCloudPipelineSync()
 
 	// 5. Device registration check (using DeviceMgr in the account session)
 	//
@@ -462,6 +383,8 @@ func (s *Server) handleLogin(c *gin.Context) {
 		DisplayName: loginResp.User.DisplayName,
 		Avatar:      loginResp.User.Avatar,
 		Role:        loginResp.User.Role,
+		ServerType:  serverType,
+		ServerURL:   normalized,
 	}
 
 	sessionMgr.mu.Lock()
@@ -520,48 +443,76 @@ func (s *Server) handleLogout(c *gin.Context) {
 
 // handleSessionStatus returns the current HttpOnly browser session status for restoring the UI when the page starts.
 // It does not return JWTs, device credentials, or other Secrets.
+// The local loopback service is trusted: local_authenticated is always true, and the cloud login state is
+// determined by the server-side account session (restored from the persistent login state on startup).
 func (s *Server) handleSessionStatus(c *gin.Context) {
-	session, ok := s.browserSessionFromCookie(c)
-	if !ok {
-		c.JSON(http.StatusOK, gin.H{
-			"local_authenticated": false,
-			"cloud_logged_in":     false,
-		})
-		return
-	}
-
-	// The cloud login state is determined by the server-side account session (restored
-	// from the persistent login state on startup). The browser session's profile info
-	// is only used to enrich the displayed user and must not gate the login state.
 	cur := s.currentSession()
+	if !s.sessionMatchesConfig(cur) {
+		// 官方会话域名与当前配置不一致（共享本地数据目录的其他实例登录写入），
+		// 视为未登录，避免不同远程域名之间串用登录态；custom 会话由
+		// sessionMatchesConfig 放行，不在此列。
+		s.ClearSession()
+		cur = nil
+	}
 	cloudLoggedIn := cur != nil
 	var user interface{}
 	if cloudLoggedIn {
-		// Fall back to the server-side session for any field the browser session
-		// is missing, so a valid login state is never reported as logged out just
-		// because the browser session lacks profile info.
-		userID := session.UserID
+		// 浏览器 session 档案更完整（头像、角色等）；缺失时回退账号会话，
+		// 保证即使没有浏览器 cookie，前端也能拿到可用的登录状态。
+		userID, userName, displayName, avatar, role, adminID := "", "", "", "", "", ""
+		if session, ok := s.browserSessionFromCookie(c); ok {
+			userID = session.UserID
+			userName = session.UserName
+			displayName = session.DisplayName
+			avatar = session.Avatar
+			role = session.Role
+			adminID = session.AdminID
+		}
 		if userID == "" {
 			userID = cur.UserID
 		}
-		userName := session.UserName
 		if userName == "" {
 			userName = cur.UserName
+		}
+		if displayName == "" {
+			displayName = userName
+		}
+		if adminID == "" {
+			adminID = cur.AdminID
 		}
 		user = gin.H{
 			"id":           userID,
 			"username":     userName,
-			"display_name": session.DisplayName,
-			"avatar":       session.Avatar,
-			"role":         session.Role,
-			"admin_id":     session.AdminID,
+			"display_name": displayName,
+			"avatar":       avatar,
+			"role":         role,
+			"admin_id":     adminID,
 		}
+		applog.Info("会话状态响应-已登录",
+			"user_id", userID,
+			"user_name", userName,
+		)
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"local_authenticated": true,
 		"cloud_logged_in":     cloudLoggedIn,
 		"user":                user,
+		// 无 Electron 注入（纯 Go 运行/浏览器直连 dev）时，前端需要从本接口
+		// 获取本次启动的 API token 用于后续请求；Electron 模式经 bridge 提供，不返回。
+		"api_token": apiTokenForSession(s),
 	})
+	applog.Info("会话状态响应",
+		"cloud_logged_in", cloudLoggedIn,
+	)
+}
+
+// apiTokenForSession 仅在 token 非由 Electron 注入时返回，避免 token 出现在
+// Electron 模式的握手响应中（该模式下前端通过 bridge 获取）。
+func apiTokenForSession(s *Server) string {
+	if s.config.APITokenFromEnv {
+		return ""
+	}
+	return s.config.APIToken
 }
 
 func (s *Server) browserSessionFromCookie(c *gin.Context) (*browserSession, bool) {
@@ -584,72 +535,25 @@ func (s *Server) browserSessionFromCookie(c *gin.Context) (*browserSession, bool
 	return session, true
 }
 
-// validateSession middleware: validate local browser session
+// validateSession 中间件：本地 loopback 服务可信，不要求浏览器 session cookie。
+// ticket 偶发失败不应导致前端误判未登录；有 cookie 时优先映射浏览器 session，
+// 缺失时回退账号会话（云登录态），保证本地功能能拿到用户信息。
+// 回退前校验会话域名与当前配置一致（仅官方会话），防止共享数据目录时串用其他实例的登录态。
 func (s *Server) validateSession() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		path := c.Request.URL.Path
-		// Public path (basic capabilities + local login-free function) does not require a local browser session
-		if isSessionExemptPath(path) {
-			c.Next()
-			return
+		if session, ok := s.browserSessionFromCookie(c); ok {
+			c.Set("session", session)
+		} else if cur := s.currentSession(); s.sessionMatchesConfig(cur) {
+			c.Set("session", &browserSession{
+				ID:        "account",
+				UserID:    cur.UserID,
+				UserName:  cur.UserName,
+				AdminID:   cur.AdminID,
+				CreatedAt: time.Now(),
+				ExpiresAt: time.Now().Add(sessionValidity),
+			})
 		}
-
-		if token := c.GetHeader("X-GoTeams-Local-Token"); token != "" {
-			requiredSkill := capabilitySkillForRequest(c.Request.Method, path)
-			grant, valid := s.config.Capabilities.Lookup(token)
-			if requiredSkill == "" || !valid || !grant.Allows(requiredSkill) || !isLoopbackRequest(c.Request.RemoteAddr) {
-				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "本地 Skill 能力令牌无效或无权访问该资源"})
-				return
-			}
-			c.Set(capability.GinContextGrantKey, grant)
-			c.Next()
-			return
-		}
-
-		session, ok := s.browserSessionFromCookie(c)
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "会话已过期"})
-			return
-		}
-
-		c.Set("session", session)
 		c.Next()
-	}
-}
-
-// isSessionExemptPath determines whether the path requires a local browser session.
-// Basic capabilities (health check/login/session/WebSocket/cloud configuration) and local login-free function
-// (Configuration Center / Interface Management / Command Center / Knowledge Base) does not require a session and can be accessed directly.
-func isSessionExemptPath(path string) bool {
-	if path == "/api/local/health" ||
-		path == "/api/local/auth/ticket" ||
-		path == "/api/local/auth/login" ||
-		path == "/api/local/auth/logout" ||
-		path == "/api/local/auth/session" ||
-		path == "/api/local/ws" ||
-		path == "/api/local/config/cloud" {
-		return true
-	}
-	// Local login-free function: general local Profile library for data reading and writing (data/base.db)
-	if strings.HasPrefix(path, "/api/local/config/") ||
-		strings.HasPrefix(path, "/api/local/apis/") ||
-		strings.HasPrefix(path, "/api/local/commands/") ||
-		strings.HasPrefix(path, "/api/local/knowledge/") {
-		return true
-	}
-	return false
-}
-
-func capabilitySkillForRequest(method, path string) string {
-	switch {
-	case strings.HasPrefix(path, "/api/local/apis/"):
-		return "goteams-api"
-	case strings.HasPrefix(path, "/api/local/tools/db/"):
-		return "goteams-db"
-	case method == http.MethodGet && path == "/api/local/config/database-profiles":
-		return "goteams-db"
-	default:
-		return ""
 	}
 }
 
@@ -663,10 +567,15 @@ func isLoopbackRequest(remoteAddr string) bool {
 }
 
 // RestoreSession restores the account session from the persistent account index (bootstrap storage) + JWT in the Profile library,
-// so the user does not need to log in again after restarting the program. Both official and custom logins persist their indexes:
-// - official: uses the default client; the key backend and account data fall into data/accounts_<key> derived from the official address;
-// - custom: rebuilds an independent client according to the persisted ServerURL and switches to the same data/accounts_<key> rule,
-// so the same server address always maps to the same directory, and the login state stays pointed at the right domain after restarting.
+// so the user does not need to log in again after restarting the program. Official
+// uses the default client; custom rebuilds a client from the persisted ServerURL.
+//
+// Domain consistency only constrains official logins: the session domain must match
+// the cloud address of the current configuration (http/https are considered the same
+// domain), so instances that share the local data directory but point to different
+// remote domains never take over each other's official login state. Custom logins
+// use the address chosen by the user and are restored regardless of the configured
+// domain.
 //
 // The cloud validity verification and renewal of JWT are completed internally by Login.
 func (s *Server) RestoreSession(ctx context.Context) {
@@ -674,9 +583,36 @@ func (s *Server) RestoreSession(ctx context.Context) {
 		return
 	}
 
-	//The account index is persisted in the boot storage (configDir) and is isolated from the Profile key.
-	last := readLastLogin(s.config.BootstrapStore)
+	// The account index is persisted in the boot storage (configDir) and is isolated from the Profile key.
+	// No official address configured means the target domain is unknown; skip restore so that
+	// the stale index of another instance cannot silently log this instance in.
+	configured := s.currentConfiguredServerURL()
+	if configured == "" {
+		applog.Info("[LocalServer] 未配置云端地址，跳过登录态恢复")
+		return
+	}
+
+	// 告知账号管理器官方地址：索引写入按"最后登录"语义互斥清理（官方登录
+	// 清除 custom 固定索引、custom 登录清除官方索引）。
+	if mgr, ok := s.config.AccountMgr.(interface{ SetOfficialServerURL(string) }); ok {
+		mgr.SetOfficialServerURL(configured)
+	}
+
+	// Read the last login index: the per-address key first, then the fixed
+	// custom index, and finally the legacy single index written by older versions.
+	last := readLastLogin(s.config.BootstrapStore, configured)
 	if last == nil || last.AdminID == "" {
+		return
+	}
+
+	// 域名一致性只约束官方登录：会话域名必须与当前配置的云端地址一致，防止
+	// 共享本地数据目录的多个实例互相串用登录态。custom 登录的地址由用户主动
+	// 选择，不受内置配置约束；legacy 索引（旧版本写入、无 ServerURL）视为旧版
+	// 官方登录，同样不比对，按当前配置地址恢复。
+	if last.ServerType != "custom" && last.ServerURL != "" && !sameServerDomain(last.ServerURL, configured) {
+		applog.Info("[LocalServer] 上次登录云端地址与当前配置不一致，跳过登录态恢复",
+			"last_server", last.ServerURL,
+			"configured", configured)
 		return
 	}
 
@@ -684,8 +620,8 @@ func (s *Server) RestoreSession(ctx context.Context) {
 	// ServerURL (official logins too). Old-version official indexes have no ServerURL,
 	// so fall back to the currently configured official address.
 	serverURL := strings.TrimSpace(last.ServerURL)
-	if serverURL == "" && s.config.CloudConfig != nil {
-		serverURL = s.config.CloudConfig.APIBaseURL
+	if serverURL == "" {
+		serverURL = configured
 	}
 	normalized := serverURL
 	if norm, err := normalizeServerURL(serverURL); err == nil {
@@ -706,13 +642,8 @@ func (s *Server) RestoreSession(ctx context.Context) {
 	}
 	secretDir := profileDir
 	if normalized != "" {
-		// Unified per-server directory data/accounts_<key> shared by official and custom logins.
-		secretDir = s.accountServerDir(normalized)
-		// Forward compatibility: migrate legacy data directories to the unified layout.
-		s.migrateLegacyServerData(normalized, last.ServerType != "custom")
 		opts = LoginOptions{
 			CloudClient:      client,
-			DataDir:          secretDir,
 			PersistLastLogin: true,
 			ServerType:       last.ServerType,
 			ServerURL:        normalized,
@@ -728,9 +659,17 @@ func (s *Server) RestoreSession(ctx context.Context) {
 	sessionInfo, err := s.config.AccountMgr.LoginAndCreateSession(ctx, last.AdminID, last.UserID, last.UserName, "", opts)
 	if err != nil {
 		applog.Warn("恢复登录态失败", "error", err)
+		// legacy 索引（旧版本写入、无 ServerURL）没有 per-address key 可被
+		// Login 清理，失败后补删固定 legacy key，避免每次启动重复失败恢复。
+		if last.ServerURL == "" {
+			if dErr := s.config.BootstrapStore.Delete(secrets.KeyLastLogin); dErr != nil {
+				applog.Warn("[LocalServer] 清除旧版登录索引失败", "error", dErr)
+			}
+		}
 		return
 	}
 	s.SetSession(sessionInfo)
+	s.triggerCloudPipelineSync()
 	s.lastLogin = last
 	// GetMe must use the session cloud client: user information comes from the custom cloud during custom login.
 	if client := s.currentCloudClient(); client != nil {
@@ -759,20 +698,126 @@ func (s *Server) RestoreSession(ctx context.Context) {
 		"admin", last.AdminID, "user", last.UserName, "server_type", last.ServerType)
 }
 
-// readLastLogin reads the last login information from SecretStore
-func readLastLogin(store secrets.Store) *lastLoginInfo {
+// readLastLogin reads the last login information from the boot storage.
+// The official index is stored per server address (LastLoginKey), so different
+// remote domains never share or overwrite each other's login state. When the
+// per-address index is missing, the fixed custom index (KeyLastLoginCustom,
+// written by custom logins whose address is chosen by the user and not bound
+// to the configuration) is tried next, and finally the legacy single index
+// (goteams:last_login) written by older versions.
+func readLastLogin(store secrets.Store, serverURL string) *lastLoginInfo {
 	if store == nil {
 		return nil
 	}
-	data, err := store.Get(secrets.KeyLastLogin)
+	data, err := store.Get(LastLoginKey(serverURL))
 	if err != nil || data == "" {
-		return nil
+		if data, err = store.Get(secrets.KeyLastLoginCustom); err != nil || data == "" {
+			if data, err = store.Get(secrets.KeyLastLogin); err != nil || data == "" {
+				return nil
+			}
+		}
 	}
 	var info lastLoginInfo
 	if err := json.Unmarshal([]byte(data), &info); err != nil {
 		return nil
 	}
 	return &info
+}
+
+// LastLoginKey derives the boot-storage key of the last-login index from the
+// normalized cloud address, so login states of different remote domains are
+// isolated even when they share the local data directory. Empty address keeps
+// the legacy single key for backward compatibility.
+func LastLoginKey(serverURL string) string {
+	if serverURL == "" {
+		return secrets.KeyLastLogin
+	}
+	return secrets.KeyLastLogin + "." + ServerProfileKey(serverURL)
+}
+
+// currentConfiguredServerURL returns the normalized cloud address of the current
+// configuration (empty when no official address is configured).
+func (s *Server) currentConfiguredServerURL() string {
+	if s.config.CloudConfig == nil || s.config.CloudConfig.APIBaseURL == "" {
+		return ""
+	}
+	norm, err := normalizeServerURL(s.config.CloudConfig.APIBaseURL)
+	if err != nil {
+		return ""
+	}
+	return norm
+}
+
+// sessionMatchesConfig reports whether the account session belongs to the cloud
+// address of the current configuration. The official session domain must match the
+// configured api_base_url (http/https are considered the same domain); a session
+// without a server address or with a mismatched domain is treated as a
+// cross-domain takeover and never kept. Custom sessions are exempt: the address
+// was chosen by the user, so the session itself is the target and is never
+// cleared by the configured domain.
+func (s *Server) sessionMatchesConfig(sess *SessionInfo) bool {
+	if sess == nil {
+		return false
+	}
+	if sess.ServerType == "custom" {
+		return sess.ServerURL != ""
+	}
+	configured := s.currentConfiguredServerURL()
+	if configured == "" {
+		return false
+	}
+	return sameServerDomain(sess.ServerURL, configured)
+}
+
+// sameServerDomain reports whether the two cloud addresses point to the same
+// server host. The protocol (http/https) and the default port are ignored, so
+// http://a.example.com and https://a.example.com are considered the same domain.
+func sameServerDomain(a, b string) bool {
+	da, err := serverDomainKey(a)
+	if err != nil {
+		return false
+	}
+	db, err := serverDomainKey(b)
+	if err != nil {
+		return false
+	}
+	return da == db
+}
+
+// serverDomainKey derives a comparable identity from a cloud address: lowercased
+// host plus explicit non-default port. The protocol itself is excluded, and a
+// port equal to the scheme default (http:80/https:443) is ignored, so
+// http://a.example.com and https://a.example.com are the same identity.
+func serverDomainKey(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", fmt.Errorf("地址不能为空")
+	}
+	if !strings.Contains(value, "://") {
+		value = "https://" + value
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Host == "" {
+		return "", fmt.Errorf("无法解析地址: %w", err)
+	}
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if port != "" {
+		switch strings.ToLower(u.Scheme) {
+		case "http":
+			if port == "80" {
+				port = ""
+			}
+		case "https":
+			if port == "443" {
+				port = ""
+			}
+		}
+	}
+	if port == "" {
+		return host, nil
+	}
+	return net.JoinHostPort(host, port), nil
 }
 
 // generateSessionID generates a random session ID
@@ -817,12 +862,12 @@ func (s *Server) customCloudClient(baseURL string) *cloud.Client {
 	return cloud.NewClient(cfg, s.config.SecretStore)
 }
 
-// serverProfileKey assigns a stable and file system-safe subdirectory key from the standardized cloud address.
+// ServerProfileKey assigns a stable and file system-safe subdirectory key from the standardized cloud address.
 // Used to isolate the local Profile and account data of each cloud address into a separate directory.
 // The http/https protocol is excluded from the derivation (only host + path participate), so the same
 // host always maps to the same directory regardless of which protocol is used.
 // Take the first 12 hexadecimal digits of SHA-256 of the address, with negligible collision probability and no special characters.
-func serverProfileKey(normalizedURL string) string {
+func ServerProfileKey(normalizedURL string) string {
 	key := normalizedURL
 	if u, err := url.Parse(normalizedURL); err == nil && u.Host != "" {
 		key = u.Host + u.Path
