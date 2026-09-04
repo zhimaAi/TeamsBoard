@@ -51,10 +51,9 @@ export async function request<T = unknown>(
   const url = buildUrl(path, params)
   console.log('[api] ' + method + ' ' + url)
 
-  const finalHeaders: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...headers,
-  }
+  const isFormData = body instanceof FormData
+  const finalHeaders: Record<string, string> = { ...headers }
+  if (!isFormData) finalHeaders['Content-Type'] = 'application/json'
   // /auth/* 是后端放行的握手/登录入口，不携带 token，避免引导请求依赖 token 就绪
   const needsToken = !path.startsWith('/auth/')
   if (needsToken) {
@@ -65,7 +64,7 @@ export async function request<T = unknown>(
   const response = await fetchWithTokenRetry(url, {
     method,
     headers: finalHeaders,
-    body: body ? JSON.stringify(body) : undefined,
+    body: body ? (isFormData ? body : JSON.stringify(body)) : undefined,
     credentials: 'same-origin',
     // 会话接口必须拿到实时状态；Electron 磁盘缓存曾缓存过本地后端的过期响应
     //（如 index.html），命中后请求根本不发出，导致登录态判断永远错误。
@@ -103,6 +102,30 @@ export async function request<T = unknown>(
   return result as unknown as T
 }
 
+async function requestBlob(path: string, params?: RequestOptions['params']): Promise<Blob> {
+  const url = buildUrl(path, params)
+  const headers: Record<string, string> = {}
+  const token = await getApiToken()
+  if (token) headers['X-GoTeams-Api-Token'] = token
+  const response = await fetchWithTokenRetry(url, {
+    method: 'GET',
+    headers,
+    credentials: 'same-origin',
+    cache: 'no-store',
+  })
+  if (!response.ok) {
+    let errorMessage = `HTTP ${response.status}: ${response.statusText}`
+    try {
+      const errorBody = await response.json()
+      errorMessage = errorBody.error || errorBody.message || errorMessage
+    } catch {
+      // ignore parse error
+    }
+    throw new ApiError(errorMessage, response.status)
+  }
+  return response.blob()
+}
+
 // 后端重启后 token 会失效（dev 模式常见）：收到 403 时清除缓存、重取 token 并重试一次。
 async function fetchWithTokenRetry(
   url: string,
@@ -125,6 +148,8 @@ async function fetchWithTokenRetry(
 export const apiClient = {
   get: <T = unknown>(path: string, params?: RequestOptions['params']) =>
     request<T>(path, { method: 'GET', params }),
+
+  getBlob: (path: string, params?: RequestOptions['params']) => requestBlob(path, params),
 
   post: <T = unknown>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body }),

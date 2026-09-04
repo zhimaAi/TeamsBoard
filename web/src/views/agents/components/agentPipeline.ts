@@ -1,11 +1,4 @@
 import type { Pipeline, PipelineStep } from '@/types/pipeline'
-import pipelineAvatar1 from '@/assets/avatars/pipeline-avatar-1.svg'
-import pipelineAvatar2 from '@/assets/avatars/pipeline-avatar-2.svg'
-import pipelineAvatar3 from '@/assets/avatars/pipeline-avatar-3.svg'
-import pipelineAvatar4 from '@/assets/avatars/pipeline-avatar-4.svg'
-import pipelineAvatar5 from '@/assets/avatars/pipeline-avatar-5.svg'
-import pipelineAvatar6 from '@/assets/avatars/pipeline-avatar-6.svg'
-import pipelineAvatar7 from '@/assets/avatars/pipeline-avatar-7.svg'
 
 export { AGENT_AVATARS, resolveAgentAvatar } from '@/config/agentAvatars'
 export { isPipelineCloud } from '@/utils/pipeline'
@@ -50,14 +43,15 @@ export interface ReusablePipelineStep extends PipelineStep {
   pipelineName: string
 }
 
+// 预设头像托管在 public/avatars 下：URL 即文件名、无构建 hash，dev 与生产地址一致（同 Agent 头像约定）
 export const PIPELINE_AVATARS = [
-  pipelineAvatar1,
-  pipelineAvatar2,
-  pipelineAvatar3,
-  pipelineAvatar4,
-  pipelineAvatar5,
-  pipelineAvatar6,
-  pipelineAvatar7,
+  '/avatars/pipeline-avatar-1.svg',
+  '/avatars/pipeline-avatar-2.svg',
+  '/avatars/pipeline-avatar-3.svg',
+  '/avatars/pipeline-avatar-4.svg',
+  '/avatars/pipeline-avatar-5.svg',
+  '/avatars/pipeline-avatar-6.svg',
+  '/avatars/pipeline-avatar-7.svg',
 ]
 
 export function stepModel(step: PipelineStep) {

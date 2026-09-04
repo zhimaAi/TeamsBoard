@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -94,7 +95,8 @@ func BuildTaskPrompt(ctx context.Context, db *sql.DB, taskUUID, stepUUID, questi
 	b.WriteString("## 本步骤要求\n\n")
 	b.WriteString(strings.TrimSpace(currentPrompt))
 	b.WriteString("\n\n## 任务数据目录\n\n")
-	fmt.Fprintf(&b, "- 任务专属目录：%s\n- 需求文件：%s\n", taskDir, taskMDPath)
+	fmt.Fprintf(&b, "- 任务专属目录：%s\n- 需求文件：%s\n- 用户附件目录：%s\n", taskDir, taskMDPath, filepath.Join(taskDir, "attachments"))
+	b.WriteString("- task.md 中的 attachments/... 是相对任务专属目录的附件引用；请按它在需求中出现的顺序和上下文读取。\n")
 	b.WriteString("- Agent 编排目录（按执行顺序）：\n")
 	for _, item := range stepDirs {
 		class := "后续步骤（尚未执行）"

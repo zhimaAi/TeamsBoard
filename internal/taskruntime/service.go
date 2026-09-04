@@ -19,7 +19,11 @@ import (
 	"github.com/google/uuid"
 )
 
-var ErrNotFound = errors.New("task not found")
+var (
+	ErrNotFound               = errors.New("task not found")
+	ErrTaskContextLocked      = errors.New("任务已开始，不能修改流水线、关联项目或任务目录")
+	ErrPipelineSnapshotLocked = errors.New("任务已经分配流水线，不能覆盖永久快照")
+)
 
 type SnapshotStep struct {
 	SourceStepID string `json:"source_step_id"`
@@ -42,6 +46,18 @@ type Snapshot struct {
 	Description      string         `json:"description"`
 	Avatar           string         `json:"avatar"`
 	Steps            []SnapshotStep `json:"steps"`
+}
+
+type UpdateInput struct {
+	Title                string
+	Content              string
+	Priority             string
+	PlannedStartDate     string
+	PlannedEndDate       string
+	ProjectUUID          string
+	SubprojectUUIDs      []string
+	WorkDirs             []string
+	SelectedPipelineUUID string
 }
 
 type CreateInput struct {
@@ -239,6 +255,177 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (taskUUID string, 
 	}
 	committed = true
 	return taskUUID, nil
+}
+
+func (s *Service) Update(ctx context.Context, taskUUID string, in UpdateInput) error {
+	if s.db == nil {
+		return fmt.Errorf("任务数据库未初始化")
+	}
+	in.Title = strings.TrimSpace(in.Title)
+	if in.Title == "" {
+		return fmt.Errorf("任务标题不能为空")
+	}
+
+	var status, taskMDPath, currentStep, snapshotUUID, selectedPipelineUUID, projectUUID, previousContent string
+	err := s.db.QueryRowContext(ctx, `SELECT status, task_md_path, current_step_uuid, pipeline_snapshot_uuid,
+		selected_pipeline_uuid, project_uuid, content_snapshot FROM gt_tasks WHERE uuid = ?`, taskUUID).
+		Scan(&status, &taskMDPath, &currentStep, &snapshotUUID, &selectedPipelineUUID, &projectUUID, &previousContent)
+	if err == sql.ErrNoRows {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+
+	pending := status == "pending" && currentStep == ""
+	nextProjectUUID := strings.TrimSpace(in.ProjectUUID)
+	nextPipelineUUID := strings.TrimSpace(in.SelectedPipelineUUID)
+	nextWorkDirs := in.WorkDirs
+	nextSubprojects := in.SubprojectUUIDs
+	if !pending {
+		if nextProjectUUID != "" && nextProjectUUID != projectUUID {
+			return ErrTaskContextLocked
+		}
+		if nextPipelineUUID != "" && nextPipelineUUID != selectedPipelineUUID {
+			return ErrTaskContextLocked
+		}
+		nextProjectUUID = projectUUID
+		nextPipelineUUID = selectedPipelineUUID
+		nextWorkDirs = nil
+		nextSubprojects = nil
+	}
+	if snapshotUUID != "" && nextPipelineUUID != selectedPipelineUUID {
+		if nextPipelineUUID == "" {
+			nextPipelineUUID = selectedPipelineUUID
+		} else {
+			return ErrPipelineSnapshotLocked
+		}
+	}
+
+	var workDirs, projectIDs []string
+	if pending {
+		workDirs, projectIDs, err = s.resolveWorkDirs(ctx, nextProjectUUID, nextSubprojects, nextWorkDirs)
+		if err != nil {
+			return err
+		}
+	}
+
+	// 任务详情编辑会提交用户可见的描述，其中不会暴露内部图片路径。若描述本身
+	// 没变，只更新标题、优先级等字段时，保留 task.md 的原始正文，避免丢掉
+	// 已按输入顺序插入的本地图片路径。
+	preserveInlineAttachmentPaths := strings.TrimSpace(in.Content) == strings.TrimSpace(previousContent)
+	if err = rewriteTaskMarkdown(taskMDPath, in.Title, in.Content, preserveInlineAttachmentPaths); err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("开启任务事务失败: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UnixMilli()
+	if pending {
+		if _, err = tx.ExecContext(ctx, `UPDATE gt_tasks
+			SET title=?, content_snapshot=?, priority=?, planned_start_date=?, planned_end_date=?,
+			    project_uuid=?, selected_pipeline_uuid=?, work_dir=?, updated_at=?
+			WHERE uuid=?`,
+			in.Title, in.Content, strings.TrimSpace(in.Priority), strings.TrimSpace(in.PlannedStartDate),
+			strings.TrimSpace(in.PlannedEndDate), nextProjectUUID, nextPipelineUUID, workDirs[0], now, taskUUID); err != nil {
+			return fmt.Errorf("更新任务失败: %w", err)
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM gt_task_project_links WHERE task_uuid=?`, taskUUID); err != nil {
+			return fmt.Errorf("清理任务项目关联失败: %w", err)
+		}
+		for i, projectID := range projectIDs {
+			relation := "subproject"
+			if i == 0 && projectID == nextProjectUUID {
+				relation = "primary"
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO gt_task_project_links(task_uuid, project_uuid, relation_type, sort_order, created_at) VALUES(?, ?, ?, ?, ?)`,
+				taskUUID, projectID, relation, i, now); err != nil {
+				return fmt.Errorf("保存任务项目关联失败: %w", err)
+			}
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM gt_task_work_dirs WHERE task_uuid=?`, taskUUID); err != nil {
+			return fmt.Errorf("清理任务目录失败: %w", err)
+		}
+		for i, dir := range workDirs {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO gt_task_work_dirs (task_uuid, path, sort_order, created_at) VALUES (?, ?, ?, ?)`,
+				taskUUID, dir, i, now); err != nil {
+				return fmt.Errorf("保存项目目录失败: %w", err)
+			}
+		}
+	} else {
+		if _, err = tx.ExecContext(ctx, `UPDATE gt_tasks
+			SET title=?, content_snapshot=?, priority=?, planned_start_date=?, planned_end_date=?, updated_at=?
+			WHERE uuid=?`,
+			in.Title, in.Content, strings.TrimSpace(in.Priority), strings.TrimSpace(in.PlannedStartDate),
+			strings.TrimSpace(in.PlannedEndDate), now, taskUUID); err != nil {
+			return fmt.Errorf("更新任务失败: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+func rewriteTaskMarkdown(path, title, content string, preserveInlineAttachmentPaths bool) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("任务文档路径无效")
+	}
+	existing, err := os.ReadFile(path)
+	pastedSection := ""
+	if err == nil {
+		pastedSection = extractPastedImagesSection(string(existing))
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("读取任务文档失败: %w", err)
+	}
+	updated := ""
+	if preserveInlineAttachmentPaths && hasInlineTaskAttachmentPath(string(existing)) {
+		updated = rewriteTaskMarkdownTitle(string(existing), title)
+	}
+	if updated == "" {
+		updated = renderTaskMarkdown(title, content)
+	}
+	if pastedSection != "" && !hasInlineTaskAttachmentPath(updated) {
+		updated = strings.TrimRight(updated, "\n") + "\n\n" + pastedSection
+		if !strings.HasSuffix(updated, "\n") {
+			updated += "\n"
+		}
+	}
+	if err = os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		return fmt.Errorf("写入 task.md 失败: %w", err)
+	}
+	return nil
+}
+
+func hasInlineTaskAttachmentPath(content string) bool {
+	normalized := strings.ReplaceAll(content, "\\", "/")
+	return strings.Contains(normalized, "/.goteams-attachments/")
+}
+
+func rewriteTaskMarkdownTitle(existing, title string) string {
+	if !strings.HasPrefix(existing, "# ") {
+		return ""
+	}
+	lineEnd := strings.IndexByte(existing, '\n')
+	if lineEnd < 0 {
+		return ""
+	}
+	body := strings.TrimPrefix(existing[lineEnd+1:], "\n")
+	updated := fmt.Sprintf("# %s\n\n%s", title, body)
+	if !strings.HasSuffix(updated, "\n") {
+		updated += "\n"
+	}
+	return updated
+}
+
+func extractPastedImagesSection(content string) string {
+	const marker = "## 已粘贴图片"
+	index := strings.Index(content, marker)
+	if index < 0 {
+		return ""
+	}
+	return strings.TrimSpace(content[index:])
 }
 
 // AssignPipeline creates the task's immutable, permanent execution snapshot.

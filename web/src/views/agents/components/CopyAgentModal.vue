@@ -1,56 +1,73 @@
 <template>
   <a-modal
     :open="open"
+    class="copy-agent-modal"
     title="选择 Agent"
-    width="720px"
-    :confirm-loading="saving"
-    wrap-class-name="copy-agent-modal"
+    width="730px"
+    centered
     @update:open="emit('update:open', $event)"
-    @ok="copy"
   >
-    <div class="copy-grid-wrapper">
-      <div class="copy-grid">
+
+    <div class="agent-list">
+      <div class="agent-list__scroll">
         <button
           v-for="(step, index) in sourceSteps"
           :key="`${step.pipelineName}-${step.uuid}`"
           type="button"
+          class="agent-list-item"
           :class="{ active: selectedStepUuid === step.uuid }"
           :aria-pressed="selectedStepUuid === step.uuid"
           @click="selectedStepUuid = step.uuid"
         >
-          <span class="agent-card__header">
-            <img
-              :src="resolveAgentAvatar(step, index)"
-              alt=""
-            />
-            <span class="agent-card__identity">
-              <strong>{{ step.name }}</strong>
-              <span class="agent-card__pipeline-name">{{ step.pipelineName }}</span>
+          <img
+            class="agent-list-item__avatar"
+            :src="resolveAgentAvatar(step, index)"
+            alt=""
+          />
+          <span class="agent-list-item__content">
+            <strong>{{ step.name }}</strong>
+            <span class="agent-list-item__description">
+              {{ step.description || step.prompt || step.prompt_snapshot || '该 Agent 暂未配置描述。' }}
             </span>
-          </span>
-          <span class="agent-card__prompt">
-            {{ step.prompt || step.prompt_snapshot || '该 Agent 暂未配置提示词。' }}
-          </span>
-          <span class="agent-card__tags">
-            <span>
-              <CodeOutlined />
-              {{ step.cli_type || '未配置 CLI' }}
-            </span>
-            <span>
-              <DeploymentUnitOutlined />
-              {{ stepModel(step) || '未配置模型' }}
+            <span class="agent-list-item__tags">
+              <span>
+                <CodeOutlined />
+                {{ step.cli_type || '未配置 CLI' }}
+              </span>
+              <span>
+                <DeploymentUnitOutlined />
+                {{ stepModel(step) || '未配置模型' }}
+              </span>
             </span>
           </span>
           <span
             v-if="selectedStepUuid === step.uuid"
-            class="agent-card__selected"
+            class="agent-list-item__selected"
             aria-hidden="true"
           >
             <CheckOutlined />
           </span>
         </button>
+
+        <a-empty
+          v-if="sourceSteps.length === 0"
+          description="暂无可选择的 Agent"
+        />
       </div>
     </div>
+
+    <template #footer>
+      <div class="copy-agent-modal__footer-actions">
+        <a-button @click="emit('update:open', false)">取消</a-button>
+        <a-button
+          type="primary"
+          :loading="saving"
+          @click="copy"
+        >
+          确定
+        </a-button>
+      </div>
+    </template>
   </a-modal>
 </template>
 
@@ -115,160 +132,213 @@ async function copy() {
 </script>
 
 <style scoped>
-.copy-grid-wrapper {
-  padding: 24px 0;
+.agent-list {
+  overflow: hidden;
+  border: 1px solid #d9d9d9;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 2px 24px rgba(0, 0, 0, 0.08);
 }
 
-.copy-grid {
-  display: grid;
-  max-height: 440px;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 16px 14px;
-  padding: 1px;
+.agent-list__scroll {
+  max-height: 627px;
   overflow-y: auto;
+  scrollbar-color: #d8dde5 transparent;
+  scrollbar-width: thin;
 }
 
-.copy-grid button {
+.agent-list-item {
   position: relative;
   display: flex;
-  min-width: 0;
-  min-height: 172px;
-  flex-direction: column;
-  align-items: stretch;
-  padding: 18px;
-  border: 1px solid #e5e7eb;
-  border-radius: 14px;
-  color: #344054;
+  width: 100%;
+  min-height: 125px;
+  align-items: center;
+  gap: 16px;
+  padding: 24px 56px 24px 24px;
+  border: 0;
+  border-bottom: 1px solid #f0f0f0;
+  color: #262626;
   background: #fff;
   cursor: pointer;
   text-align: left;
-  transition:
-    border-color 0.2s ease,
-    background-color 0.2s ease;
+  transition: background-color 0.2s ease;
 }
 
-.copy-grid button:hover {
-  border-color: #91caff;
-  background: #fafcff;
+.agent-list-item:last-of-type {
+  border-bottom: 0;
 }
 
-.copy-grid button.active {
-  border-color: #1677ff;
-  background: #f0f7ff;
+.agent-list-item:hover,
+.agent-list-item.active {
+  background: #f7f9ff;
 }
 
-.copy-grid button:focus-visible {
-  outline: 2px solid #1677ff;
-  outline-offset: 2px;
+.agent-list-item:focus-visible {
+  z-index: 1;
+  outline: 2px solid #3157e2;
+  outline-offset: -2px;
 }
 
-.copy-grid img {
-  width: 40px;
-  height: 40px;
+.agent-list-item__avatar {
+  display: block;
+  width: 48px;
+  height: 48px;
   flex: 0 0 auto;
   border-radius: 50%;
   object-fit: cover;
 }
 
-.agent-card__header {
+.agent-list-item__content {
   display: flex;
   min-width: 0;
-  align-items: center;
-  gap: 12px;
-  padding-right: 24px;
-}
-
-.agent-card__identity {
-  display: flex;
-  min-width: 0;
+  flex: 1;
   flex-direction: column;
 }
 
-.agent-card__identity strong,
-.agent-card__pipeline-name {
+.agent-list-item__content strong {
   overflow: hidden;
+  color: #1d1d1f;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-card__identity strong {
-  color: #1d2939;
-  font-size: 17px;
-  font-weight: 500;
-  line-height: 24px;
-}
-
-.agent-card__identity small {
-  color: #98a2b3;
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.agent-card__prompt {
-  display: -webkit-box;
-  min-height: 44px;
-  margin: 10px 0 12px;
+.agent-list-item__description {
+  margin-top: 2px;
   overflow: hidden;
-  color: #667085;
+  color: #8c8c8c;
   font-size: 14px;
-  line-height: 22px;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  line-height: 26px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.agent-card__tags {
+.agent-list-item__tags {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: auto;
-  flex-wrap: wrap;
+  margin-top: 5px;
+  overflow: hidden;
 }
 
-.agent-card__tags > span {
+.agent-list-item__tags > span {
   display: inline-flex;
-  max-width: 100%;
+  max-width: 50%;
+  height: 26px;
   align-items: center;
   gap: 5px;
-  padding: 3px 10px;
+  padding: 2px 10px;
   overflow: hidden;
-  border-radius: 999px;
-  color: #667085;
+  border-radius: 13px;
+  color: #595959;
   background: #f5f5f5;
   font-size: 12px;
-  line-height: 20px;
+  line-height: 22px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-card__tags :deep(.anticon) {
+.agent-list-item__tags :deep(.anticon) {
   flex: 0 0 auto;
-  color: #98a2b3;
+  color: #8c8c8c;
   font-size: 14px;
 }
 
-.agent-card__selected {
+.agent-list-item__selected {
   position: absolute;
-  top: 10px;
-  right: 10px;
+  top: 50%;
+  right: 24px;
   display: flex;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
   color: #fff;
-  background: #1677ff;
+  background: #3157e2;
   font-size: 14px;
+  transform: translateY(-50%);
 }
 
-@media (max-width: 640px) {
-  .copy-grid {
-    grid-template-columns: minmax(0, 1fr);
+.copy-agent-modal__footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+:deep(.copy-agent-modal) {
+  max-width: calc(100vw - 32px);
+  padding-bottom: 0;
+}
+
+:deep(.copy-agent-modal .ant-modal-content) {
+  overflow: hidden;
+  padding: 0;
+  border-radius: 24px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
+}
+
+:deep(.copy-agent-modal .ant-modal-header) {
+  margin-bottom: 0;
+  padding: 24px;
+  border-radius: 24px 24px 0 0;
+  background: #fff;
+}
+
+:deep(.copy-agent-modal .ant-modal-title) {
+  color: #262626;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 32px;
+}
+
+:deep(.copy-agent-modal .ant-modal-body) {
+  max-height: calc(100vh - 144px);
+  overflow-y: auto;
+  padding: 16px 48px 8px;
+}
+
+:deep(.copy-agent-modal .ant-modal-footer) {
+  margin-top: 0;
+  padding: 16px 48px;
+  border-top: 0;
+}
+
+:deep(.copy-agent-modal .ant-modal-footer .ant-btn) {
+  min-width: 65px;
+  height: 32px;
+  padding: 5px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+@media (max-width: 760px) {
+  :deep(.copy-agent-modal .ant-modal-header) {
+    padding: 20px 24px;
   }
 
-  .copy-grid button {
-    min-height: 164px;
+  :deep(.copy-agent-modal .ant-modal-title) {
+    font-size: 20px;
+    line-height: 28px;
+  }
+
+  :deep(.copy-agent-modal .ant-modal-body) {
+    padding: 16px 24px 24px;
+  }
+
+  :deep(.copy-agent-modal .ant-modal-footer) {
+    padding: 16px 24px;
+  }
+
+  .agent-list-item {
+    padding-right: 48px;
+  }
+
+  .agent-list-item__selected {
+    right: 16px;
   }
 }
 </style>

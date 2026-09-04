@@ -78,13 +78,13 @@ const routes: RouteRecordRaw[] = [
         path: 'agents',
         name: 'agents',
         component: () => import('@/views/agents/AgentPipelines.vue'),
-        meta: { title: 'Agent', menu: 'agents' },
+        meta: { title: '专家流水线', menu: 'agents', keepAlive: true },
       },
       {
         path: 'projects',
         name: 'projects',
         component: () => import('@/views/projects/Projects.vue'),
-        meta: { title: '项目', menu: 'projects' },
+        meta: { title: '项目', menu: 'projects', keepAlive: true },
       },
       // knowledge base
       {

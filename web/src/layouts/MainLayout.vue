@@ -56,7 +56,20 @@ onUnmounted(() => {
   <div class="app-layout">
     <AppSidebar />
     <main class="main-content" :class="mainContentClasses">
-      <RouterView />
+      <RouterView v-slot="{ Component, route: currentRoute }">
+        <KeepAlive>
+          <component
+            :is="Component"
+            v-if="currentRoute.meta.keepAlive"
+            :key="currentRoute.name ?? currentRoute.path"
+          />
+        </KeepAlive>
+        <component
+          :is="Component"
+          v-if="!currentRoute.meta.keepAlive"
+          :key="currentRoute.name ?? currentRoute.path"
+        />
+      </RouterView>
     </main>
   </div>
 </template>

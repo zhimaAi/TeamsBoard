@@ -328,9 +328,11 @@ func (s *Server) buildRouter() *gin.Engine {
 	tasksHandler := NewTasksHandler(s.currentSessionDB, s.currentOrchestrator, s.currentCloudClient, s.config.WSHub, s.config.TaskRoot)
 	tasksGroup := local.Group("/tasks")
 	tasksHandler.RegisterRoutes(tasksGroup)
-	pipelinesHandler := NewPipelinesHandler(s.currentSessionDB, s.currentCloudClient)
+	iconStore := NewIconStore(s.config.DataDir)
+	local.GET("/assets/icons/:filename", iconStore.Serve)
+	pipelinesHandler := NewPipelinesHandler(s.currentSessionDB, iconStore, s.currentCloudClient)
 	pipelinesHandler.RegisterRoutes(local.Group("/pipelines"))
-	NewProjectsHandler(s.currentSessionDB).RegisterRoutes(local.Group("/projects"))
+	NewProjectsHandler(s.currentSessionDB, iconStore).RegisterRoutes(local.Group("/projects"))
 	NewNotificationsHandler(s.currentSessionDB).RegisterRoutes(local.Group("/notifications"))
 	tasksHandler.RegisterTeamRoutes(loggedIn.Group("/api/local/team"))
 	pipelinesHandler.RegisterCloudRoutes(loggedIn.Group("/api/local/team"))
@@ -421,15 +423,16 @@ func (w *errorResponseWriter) capture(data []byte) {
 
 // requireAPIToken 强制除启动引导路径外的所有本地 API 请求携带本次启动的
 // 鉴权 token（header X-GoTeams-Api-Token，WS 在 handler 内校验 query）。
-// 浏览器无法为静态页面加载请求添加 header，因此非 /api/ 路径（页面与静态
-// 资源）放行；health 由 Electron 探测、auth/* 是登录与握手入口、
-// desktop/shutdown 已有独立 token，均放行。
+// 浏览器无法为静态页面和 img 请求添加 header，因此非 /api/ 路径（页面与静态
+// 资源）以及只读受管图标路径放行；health 由 Electron 探测、auth/* 是登录与
+// 握手入口、desktop/shutdown 已有独立 token，均放行。
 func (s *Server) requireAPIToken() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
 		if path == "/api/local/health" ||
 			path == "/api/local/desktop/shutdown" ||
 			path == "/api/local/ws" ||
+			(c.Request.Method == http.MethodGet && strings.HasPrefix(path, ManagedIconURLPrefix)) ||
 			strings.HasPrefix(path, "/api/local/auth/") ||
 			!strings.HasPrefix(path, "/api/") {
 			c.Next()

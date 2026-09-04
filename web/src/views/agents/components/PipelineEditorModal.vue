@@ -1,32 +1,57 @@
 <template>
   <a-modal
     :open="open"
+    class="pipeline-editor-modal"
     :title="pipeline ? '编辑流水线' : '新建流水线'"
-    width="640px"
-    :confirm-loading="saving"
-    @update:open="emit('update:open', $event)"
-    @ok="save"
+    width="730px"
+    centered
+    @update:open="handleOpenChange"
   >
-    <a-form layout="vertical">
-      <a-form-item
-        label="流水线名称（最多20个字）"
-        required
-      >
-        <a-input
-          v-model:value="form.name"
-          :maxlength="20"
-          show-count
-          placeholder="请输入流水线名称"
+
+    <button
+      class="pipeline-icon-preview"
+      type="button"
+      aria-label="上传流水线图标"
+      @click="openFilePicker"
+    >
+      <img
+        :src="previewIcon"
+        alt=""
+      />
+      <span class="pipeline-icon-preview__camera">
+        <img
+          :src="projectModalCameraIcon"
+          alt=""
+          aria-hidden="true"
         />
-      </a-form-item>
-      <a-form-item label="流水线头像">
+      </span>
+    </button>
+    <p class="pipeline-icon-hint">建议尺寸100×100px，大小不超过100KB</p>
+    <input
+      ref="fileInput"
+      class="pipeline-icon-file-input"
+      type="file"
+      :accept="ICON_FILE_ACCEPT"
+      @change="handleFileChange"
+    />
+
+    <a-form
+      class="pipeline-editor-form"
+      layout="vertical"
+    >
+      <a-form-item
+        class="pipeline-icon-form-item"
+        label="流水线默认头像"
+      >
         <div class="avatar-options">
           <button
             v-for="avatar in PIPELINE_AVATARS"
             :key="avatar"
             type="button"
-            :class="{ active: form.avatar === avatar }"
-            @click="form.avatar = avatar"
+            :class="{ active: !iconFile && form.avatar === avatar }"
+            :aria-pressed="!iconFile && form.avatar === avatar"
+            aria-label="选择预设流水线头像"
+            @click="selectPresetAvatar(avatar)"
           >
             <img
               :src="avatar"
@@ -35,44 +60,57 @@
           </button>
         </div>
       </a-form-item>
-      <a-form-item label="简介（最多200个字）">
+
+      <a-form-item class="pipeline-editor-form-item">
+        <template #label>
+          <span class="pipeline-modal-label">流水线名</span>
+          <span class="pipeline-modal-label-hint">(最多20个字)</span>
+        </template>
+        <a-input
+          v-model:value="form.name"
+          :maxlength="20"
+          :show-count="false"
+          placeholder="请输入"
+        />
+      </a-form-item>
+
+      <a-form-item class="pipeline-editor-form-item pipeline-intro-form-item">
+        <template #label>
+          <span class="pipeline-modal-label">简介</span>
+          <span class="pipeline-modal-label-hint pipeline-modal-label-hint--flush">（最多200个字）</span>
+        </template>
         <a-textarea
           v-model:value="form.description"
           :maxlength="200"
-          show-count
-          :rows="3"
+          :show-count="false"
           placeholder="描述流水线的用途与协作流程"
         />
       </a-form-item>
     </a-form>
+
     <template #footer>
-      <a-button
-        v-if="pipeline"
-        danger
-        class="delete-pipeline"
-        @click="remove"
-      >
-        <DeleteOutlined />删除
-      </a-button>
-      <a-button @click="emit('update:open', false)">取消</a-button>
-      <a-button
-        type="primary"
-        :loading="saving"
-        @click="save"
-      >
-        {{ pipeline ? '保存修改' : '确认创建' }}
-      </a-button>
+      <div class="pipeline-modal-footer-actions">
+        <a-button @click="handleOpenChange(false)">取消</a-button>
+        <a-button
+          type="primary"
+          :loading="saving"
+          @click="save"
+        >
+          {{ pipeline ? '保存修改' : '确认创建' }}
+        </a-button>
+      </div>
     </template>
   </a-modal>
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
-import { DeleteOutlined } from '@ant-design/icons-vue'
-import { message, Modal } from 'ant-design-vue'
+import { computed, reactive, ref, watch } from 'vue'
+import { message } from 'ant-design-vue'
 import apiClient from '@/api/client'
+import projectModalCameraIcon from '@/assets/icons/project-modal-camera.svg'
+import { ICON_FILE_ACCEPT, useIconFile } from '@/composables/useIconFile'
 import type { Pipeline } from '@/types/pipeline'
-import { PIPELINE_AVATARS, type DeleteResponse, type PipelineInput } from './agentPipeline'
+import { PIPELINE_AVATARS, type PipelineInput } from './agentPipeline'
 
 const props = defineProps<{
   open: boolean
@@ -81,27 +119,69 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   created: [pipeline: Pipeline]
-  deleted: []
   updated: [pipeline: Pipeline]
   'update:open': [open: boolean]
 }>()
 
 const saving = ref(false)
+const fileInput = ref<HTMLInputElement>()
 const form = reactive<PipelineInput>({
   name: '',
   description: '',
   avatar: PIPELINE_AVATARS[0],
 })
+const { file: iconFile, previewUrl, selectFile, reset: resetIconFile } = useIconFile()
+// 设计稿约束：流水线图标大小不超过 100KB，比共享图标校验（2MB）更严格，仅作用于本弹窗
+const MAX_PIPELINE_ICON_FILE_SIZE = 100 * 1024
+
+const previewIcon = computed(() => previewUrl.value || form.avatar || PIPELINE_AVATARS[0])
 
 watch(
   () => props.open,
   (open) => {
     if (!open) return
+    resetIconFile()
     form.name = props.pipeline?.name || ''
     form.description = props.pipeline?.description || ''
     form.avatar = props.pipeline?.avatar || PIPELINE_AVATARS[0]
   },
 )
+
+function openFilePicker() {
+  fileInput.value?.click()
+}
+
+function handleFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const nextFile = input.files?.[0]
+  input.value = ''
+  if (!nextFile) return
+
+  if (nextFile.size > MAX_PIPELINE_ICON_FILE_SIZE) {
+    message.warning('图片大小不能超过 100KB')
+    return
+  }
+
+  try {
+    selectFile(nextFile)
+  } catch (error) {
+    message.warning(error instanceof Error ? error.message : '图标选择失败')
+  }
+}
+
+function selectPresetAvatar(avatar: string) {
+  resetIconFile()
+  form.avatar = avatar
+}
+
+function buildPipelineFormData(payload: PipelineInput) {
+  const formData = new FormData()
+  formData.append('name', payload.name)
+  formData.append('description', payload.description)
+  formData.append('avatar', payload.avatar)
+  if (iconFile.value) formData.append('avatar_file', iconFile.value)
+  return formData
+}
 
 async function save() {
   const name = form.name.trim()
@@ -116,13 +196,14 @@ async function save() {
       description: form.description.trim(),
       avatar: form.avatar,
     }
+    const body = iconFile.value ? buildPipelineFormData(payload) : payload
     if (props.pipeline) {
-      const updated = await apiClient.put<Pipeline>(`/pipelines/${props.pipeline.uuid}`, payload)
+      const updated = await apiClient.put<Pipeline>(`/pipelines/${props.pipeline.uuid}`, body)
       emit('update:open', false)
       emit('updated', updated)
       message.success('流水线已更新')
     } else {
-      const created = await apiClient.post<Pipeline>('/pipelines', payload)
+      const created = await apiClient.post<Pipeline>('/pipelines', body)
       emit('update:open', false)
       emit('created', created)
       message.success('流水线已创建')
@@ -134,37 +215,106 @@ async function save() {
   }
 }
 
-function remove() {
-  if (!props.pipeline) return
-  Modal.confirm({
-    title: `删除流水线“${props.pipeline.name}”？`,
-    content: '不会影响已经创建任务中的执行快照。',
-    okType: 'danger',
-    onOk: async () => {
-      try {
-        await apiClient.delete<DeleteResponse>(`/pipelines/${props.pipeline!.uuid}`)
-        emit('update:open', false)
-        emit('deleted')
-      } catch (error) {
-        message.error(error instanceof Error ? error.message : '流水线删除失败')
-        throw error
-      }
-    },
-  })
+function handleOpenChange(open: boolean) {
+  if (!open) resetIconFile()
+  emit('update:open', open)
 }
 </script>
 
 <style scoped>
+.pipeline-icon-preview {
+  position: relative;
+  display: flex;
+  width: 60px;
+  height: 60px;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #f2f3f5;
+  cursor: pointer;
+}
+
+.pipeline-icon-preview > img {
+  display: block;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.pipeline-icon-preview__camera {
+  position: absolute;
+  right: -3px;
+  bottom: -4px;
+  display: flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0.75px solid #fff;
+  border-radius: 50%;
+  background: #262626;
+  box-shadow: 0 2px 4px rgba(221, 221, 221, 0.12);
+}
+
+.pipeline-icon-preview__camera img {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+
+.pipeline-icon-preview:focus-visible,
+.avatar-options button:focus-visible {
+  outline: 2px solid #3157e2;
+  outline-offset: 2px;
+}
+
+.pipeline-icon-hint {
+  margin: 10px 0 0;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 14px;
+  line-height: 22px;
+  text-align: center;
+}
+
+.pipeline-icon-file-input {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pipeline-editor-form {
+  margin-top: 24px;
+}
+
+.pipeline-icon-form-item,
+.pipeline-editor-form-item {
+  margin-bottom: 20px;
+}
+
+.pipeline-intro-form-item {
+  margin-bottom: 0;
+}
+
 .avatar-options {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 8px;
 }
 
 .avatar-options button {
-  width: 48px;
-  height: 48px;
-  padding: 2px;
+  display: flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 1px;
   border: 2px solid transparent;
   border-radius: 50%;
   background: #fff;
@@ -172,22 +322,134 @@ function remove() {
 }
 
 .avatar-options button.active {
-  border-color: #1677ff;
-}
-
-.avatar-options button:focus-visible {
-  outline: 2px solid #1677ff;
-  outline-offset: 2px;
+  border-color: #3157e2;
 }
 
 .avatar-options img {
-  width: 40px;
-  height: 40px;
+  display: block;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   object-fit: cover;
 }
 
-.delete-pipeline {
-  margin-right: auto;
+.pipeline-modal-footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+:deep(.pipeline-editor-modal) {
+  max-width: calc(100vw - 32px);
+  padding-bottom: 0;
+}
+
+:deep(.pipeline-editor-modal .ant-modal-content) {
+  overflow: hidden;
+  padding: 0;
+  border-radius: 24px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
+}
+
+:deep(.pipeline-editor-modal .ant-modal-header) {
+  margin-bottom: 0;
+  padding: 24px;
+  border-radius: 24px 24px 0 0;
+  background: #fff;
+}
+
+:deep(.pipeline-editor-modal .ant-modal-title) {
+  color: #262626;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 32px;
+}
+
+:deep(.pipeline-editor-modal .ant-modal-body) {
+  max-height: calc(100vh - 184px);
+  overflow-y: auto;
+  padding: 16px 48px 24px;
+}
+
+:deep(.pipeline-editor-modal .ant-modal-footer) {
+  margin-top: 0;
+  padding: 16px 48px;
+  border-top: 1px solid #d9d9d9;
+}
+
+:deep(.pipeline-editor-modal .ant-modal-footer .ant-btn) {
+  min-width: 65px;
+  height: 32px;
+  padding: 5px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+:deep(.pipeline-editor-form .ant-form-item-label) {
+  padding-bottom: 8px;
+}
+
+:deep(.pipeline-editor-form .ant-form-item-label > label) {
+  height: 22px;
+  color: #262626;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.pipeline-modal-label-hint {
+  margin-left: 4px;
+  color: #8c8c8c;
+  font-weight: 400;
+}
+
+.pipeline-modal-label-hint--flush {
+  margin-left: 0;
+}
+
+:deep(.pipeline-editor-form .ant-input) {
+  min-height: 40px;
+  padding: 8px 12px;
+  border-color: #d9d9d9 !important;
+  border-radius: 12px !important;
+  color: #262626;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+:deep(.pipeline-editor-form textarea.ant-input) {
+  height: 128px;
+  min-height: 128px;
+  resize: none;
+}
+
+:deep(.pipeline-editor-form .ant-input:hover) {
+  border-color: #3157e2 !important;
+}
+
+:deep(.pipeline-editor-form .ant-input:focus),
+:deep(.pipeline-editor-form .ant-input-focused) {
+  border-color: #3157e2 !important;
+  box-shadow: 0 0 0 2px rgba(49, 87, 226, 0.15) !important;
+}
+
+@media (max-width: 760px) {
+  :deep(.pipeline-editor-modal .ant-modal-header) {
+    padding: 20px 24px;
+  }
+
+  :deep(.pipeline-editor-modal .ant-modal-title) {
+    font-size: 20px;
+    line-height: 28px;
+  }
+
+  :deep(.pipeline-editor-modal .ant-modal-body) {
+    padding: 16px 24px 24px;
+  }
+
+  :deep(.pipeline-editor-modal .ant-modal-footer) {
+    padding: 16px 24px;
+  }
 }
 </style>

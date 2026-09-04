@@ -1,81 +1,120 @@
 <template>
-  <article class="step-card">
-    <div class="step-top">
+  <article
+    class="step-row"
+    :class="{
+      'step-row--batch': batchMode,
+      'step-row--selected': batchMode && selected,
+    }"
+  >
+    <a-checkbox
+      v-if="batchMode"
+      class="step-checkbox"
+      :checked="selected"
+      :aria-label="`选择 Agent ${step.name}`"
+      @change="emit('toggle')"
+    />
+    <div
+      class="step-timeline"
+      aria-hidden="true"
+    >
       <span class="step-number">{{ index + 1 }}</span>
       <img
-        :src="resolveAgentAvatar(step, index)"
+        class="step-line"
+        :src="pipelineStepLine"
         alt=""
       />
-      <div class="step-copy">
-        <strong>{{ step.name }}</strong>
-        <span class="step-status">{{ isCloudPipeline ? '云端同步' : '本地配置' }}</span>
-      </div>
-      <div
-        v-if="!isCloudPipeline"
-        class="step-orders"
-      >
-        <button
-          type="button"
-          class="action-btn"
-          aria-label="上移 Agent"
-          :disabled="index === 0"
-          @click="emit('move', -1)"
-        >
-          <ArrowUpOutlined />
-        </button>
-        <button
-          type="button"
-          class="action-btn"
-          aria-label="下移 Agent"
-          :disabled="index === total - 1"
-          @click="emit('move', 1)"
-        >
-          <ArrowDownOutlined />
-        </button>
-        <button
-          type="button"
-          class="action-btn action-btn-danger"
-          aria-label="移除 Agent"
-          @click="emit('remove')"
-        >
-          <DeleteOutlined />
-        </button>
-      </div>
     </div>
-    <p>{{ step.description || step.prompt || step.prompt_snapshot || '暂无描述' }}</p>
-    <div
-      v-if="!step.cli_type || !stepModel(step)"
-      class="missing"
-    >
-      <ExclamationOutlined />未设置{{
-        !step.cli_type && !stepModel(step)
-          ? ' CLI 与模型'
-          : !step.cli_type
-            ? ' CLI'
-            : '模型'
-      }}，请点击“{{ isCloudPipeline ? '配置' : '编辑' }}”完成配置
+    <div class="step-content">
+      <div class="step-body">
+        <div class="step-heading">
+          <img
+            :src="resolveAgentAvatar(step, index)"
+            alt=""
+          />
+          <strong>{{ step.name }}</strong>
+        </div>
+        <p class="step-description">
+          {{ step.description || step.prompt || step.prompt_snapshot || '暂无描述' }}
+        </p>
+        <div
+          v-if="!step.cli_type || !stepModel(step)"
+          class="missing"
+        >
+          <ExclamationOutlined />未设置{{
+            !step.cli_type && !stepModel(step)
+              ? ' CLI 与模型'
+              : !step.cli_type
+                ? ' CLI'
+                : '模型'
+          }}，请点击“{{ isCloudPipeline ? '配置' : '编辑' }}”完成配置
+        </div>
+      </div>
+      <footer>
+        <div class="tag-list">
+          <span
+            v-if="step.cli_type"
+            class="badge"
+          >
+            <img
+              :src="pipelineAgentCliIcon"
+              alt=""
+              aria-hidden="true"
+            />
+            {{ step.cli_type }}
+          </span>
+          <span
+            v-if="stepModel(step)"
+            class="badge"
+          >
+            <img
+              :src="pipelineAgentModelIcon"
+              alt=""
+              aria-hidden="true"
+            />
+            {{ stepModel(step) }}
+          </span>
+        </div>
+        <div class="step-actions">
+          <button
+            v-if="!isCloudPipeline"
+            type="button"
+            class="action-btn"
+            aria-label="上移 Agent"
+            :disabled="index === 0"
+            @click="emit('move', -1)"
+          >
+            <ArrowUpOutlined />
+          </button>
+          <button
+            v-if="!isCloudPipeline"
+            type="button"
+            class="action-btn"
+            aria-label="下移 Agent"
+            :disabled="index === total - 1"
+            @click="emit('move', 1)"
+          >
+            <ArrowDownOutlined />
+          </button>
+          <button
+            type="button"
+            class="action-btn action-btn-edit"
+            :aria-label="isCloudPipeline ? '配置 Agent' : '编辑 Agent'"
+            @click="emit('edit')"
+          >
+            <EditOutlined />
+          </button>
+          <button
+            v-if="!isCloudPipeline"
+            type="button"
+            class="action-btn action-btn-danger"
+            aria-label="移除 Agent"
+            @click="emit('remove')"
+          >
+            <DeleteOutlined />
+          </button>
+        </div>
+      </footer>
     </div>
-    <footer>
-      <span
-        v-if="step.cli_type"
-        class="badge"
-      >
-        ⌘ {{ step.cli_type }}
-      </span>
-      <span
-        v-if="stepModel(step)"
-        class="badge model"
-      >
-        ▣ {{ stepModel(step) }}
-      </span>
-      <button
-        type="button"
-        class="step-card-action"
-        @click="emit('edit')"
-      >
-        <EditOutlined />{{ isCloudPipeline ? '配置' : '编辑' }}
-      </button>
-    </footer>
   </article>
 </template>
 
@@ -88,6 +127,9 @@ import {
   ExclamationOutlined,
 } from '@ant-design/icons-vue'
 import type { PipelineStep } from '@/types/pipeline'
+import pipelineAgentCliIcon from '@/assets/icons/pipeline-agent-cli.svg'
+import pipelineAgentModelIcon from '@/assets/icons/pipeline-agent-model.svg'
+import pipelineStepLine from '@/assets/icons/pipeline-step-line.svg'
 import { resolveAgentAvatar, stepModel } from './agentPipeline'
 
 defineProps<{
@@ -95,78 +137,194 @@ defineProps<{
   index: number
   total: number
   isCloudPipeline: boolean
+  batchMode?: boolean
+  selected?: boolean
 }>()
 
 const emit = defineEmits<{
   edit: []
   move: [offset: number]
   remove: []
+  toggle: []
 }>()
 </script>
 
 <style scoped>
-.step-card {
-  padding: 14px;
-  border: 1px solid #e3e7ed;
-  border-radius: 10px;
-  background: #fff;
-  box-shadow: 0 2px 5px rgba(15, 23, 42, 0.025);
-  transition: border-color 0.18s, background-color 0.18s, box-shadow 0.18s;
-}
-
-.step-card:hover {
-  border-color: #0071e3;
-  box-shadow: 0 1px 4px rgba(0, 113, 227, 0.16);
-}
-
-.step-top {
+.step-row {
+  position: relative;
   display: flex;
+  gap: 16px;
+  overflow: hidden;
+  padding: 24px;
+  background: #fff;
+}
+
+.step-row--batch {
+  align-items: flex-start;
+  padding: 24px 8px;
+  border-radius: 12px;
+}
+
+.step-row--selected {
+  border-radius: 12px;
+  background: #f5f9ff;
+}
+
+.step-row::after {
+  position: absolute;
+  right: 24px;
+  bottom: 0;
+  left: 64px;
+  height: 1px;
+  background: #f0f0f0;
+  content: '';
+}
+
+.step-row--selected::after {
+  display: none;
+}
+
+.step-checkbox {
+  flex: 0 0 auto;
+  margin-top: 16px;
+}
+
+.step-checkbox :deep(.ant-checkbox-inner) {
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+  border-color: #d9d9d9;
+}
+
+.step-timeline {
+  display: flex;
+  width: 24px;
+  flex: 0 0 24px;
+  align-self: stretch;
+  flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 4px;
+  padding-top: 13px;
 }
 
 .step-number {
   display: flex;
-  width: 20px;
-  height: 20px;
-  flex: 0 0 20px;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
-  color: #fff;
-  background: #1677ff;
-  font-size: 10px;
+  overflow: hidden;
+  border-radius: 16px;
+  color: #595959;
+  background: #f0f0f0;
+  font-size: 14px;
+  line-height: 24px;
 }
 
-.step-top > img {
-  width: 32px;
-  height: 32px;
-  flex: 0 0 32px;
-  border-radius: 50%;
-  object-fit: cover;
+.step-line {
+  width: 8.19627px;
+  min-height: 1px;
+  flex: 1;
 }
 
-.step-copy {
+.step-content {
   display: flex;
   min-width: 0;
   flex: 1;
   flex-direction: column;
+  gap: 20px;
 }
 
-.step-top strong {
-  color: #111827;
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.step-status {
-  color: #98a2b3;
-  font-size: 11px;
-}
-
-.step-orders {
+.step-body {
   display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.step-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+.step-heading > img {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.step-heading strong {
+  overflow: hidden;
+  color: #1d1d1f;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.step-description {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: #595959;
+  font-size: 14px;
+  line-height: 26px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.step-row footer {
+  display: flex;
+  min-height: 26px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.tag-list,
+.step-actions {
+  display: flex;
+  align-items: center;
+}
+
+.tag-list {
+  min-width: 0;
+  gap: 8px;
+}
+
+.step-actions {
   flex: 0 0 auto;
+  gap: 8px;
+}
+
+.badge {
+  display: inline-flex;
+  height: 26px;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: #6e6e73;
+  background: rgba(0, 0, 0, 0.05);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 26px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge img {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
 }
 
 .action-btn {
@@ -179,20 +337,27 @@ const emit = defineEmits<{
   padding: 0;
   border: 0;
   border-radius: 6px;
-  color: #a6b0bd;
+  color: #595959;
   background: transparent;
   transition: color 0.18s, background-color 0.18s;
   cursor: pointer;
 }
 
 .action-btn:hover:not(:disabled) {
-  color: rgba(0, 0, 0, 0.88);
+  color: #262626;
   background: rgba(0, 0, 0, 0.06);
 }
 
 .action-btn:disabled {
-  color: #d6dbe2;
-  cursor: not-allowed;
+  visibility: hidden;
+}
+
+.action-btn-edit {
+  color: #3157e2;
+}
+
+.action-btn-edit:hover:not(:disabled) {
+  color: #3157e2;
 }
 
 .action-btn-danger:hover:not(:disabled) {
@@ -200,75 +365,25 @@ const emit = defineEmits<{
   background: #fff1f0;
 }
 
-.action-btn:focus-visible,
-.step-card-action:focus-visible {
-  outline: 2px solid #1677ff;
+.action-btn:focus-visible {
+  outline: 2px solid #3157e2;
   outline-offset: 2px;
-}
-
-.step-card > p {
-  display: -webkit-box;
-  overflow: hidden;
-  margin: 8px 0 0;
-  color: #5f6b7a;
-  font-size: 12px;
-  line-height: 20px;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }
 
 .missing {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin-top: 7px;
   padding: 5px 8px;
   border-radius: 6px;
   color: #b45309;
   background: #fff7e6;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 500;
-}
-
-.step-card footer {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 9px;
-}
-
-.badge {
-  padding: 2px 8px;
-  border-radius: 6px;
-  color: #667085;
-  background: #f4f5f7;
-  font-size: 10px;
-  font-weight: 500;
-  line-height: 16px;
-}
-
-.step-card-action {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-  padding: 3px 6px;
-  border: 0;
-  border-radius: 5px;
-  color: #98a2b3;
-  background: transparent;
-  transition: color 0.18s, background-color 0.18s;
-  cursor: pointer;
-  font-size: 10px;
-}
-
-.step-card-action:hover {
-  color: #1677ff;
-  background: #f3f6fa;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .step-card {
+  .action-btn {
     transition: none;
   }
 }

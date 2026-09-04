@@ -1,26 +1,76 @@
 <template>
   <div class="markdown-preview-shell">
     <a-empty v-if="!content.trim()" :description="emptyText" />
-    <article v-else class="markdown-preview" v-html="renderedContent"></article>
+    <article
+      v-else
+      ref="previewRef"
+      class="markdown-preview"
+      @click="handleAttachmentClick"
+      v-html="renderedContent"
+    ></article>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { message } from 'ant-design-vue'
 import MarkdownIt from 'markdown-it'
+import apiClient from '@/api/client'
 
 const props = withDefaults(defineProps<{
   content?: string
   emptyText?: string
+  taskUuid?: string
 }>(), {
   content: '',
   emptyText: '暂无 Markdown 内容',
+  taskUuid: '',
 })
+const emit = defineEmits<{
+  'attachments-loaded': []
+}>()
 
 const markdown = new MarkdownIt({
   breaks: true,
   linkify: true,
 })
+
+const previewRef = ref<HTMLElement>()
+const objectUrls = new Set<string>()
+let hydrationVersion = 0
+
+function taskAttachmentPath(value: string) {
+  const normalized = value.trim().replace(/\\/g, '/').replace(/[?#].*$/, '')
+  const match = normalized.match(/(?:^|\/)attachments\/([0-9a-f-]{36}\.[a-z0-9]{1,16})$/i)
+  return match ? `attachments/${match[1]}` : ''
+}
+
+const originalImageRenderer = markdown.renderer.rules.image
+markdown.renderer.rules.image = (tokens, index, options, env, self) => {
+  const token = tokens[index]
+  const path = env.taskUuid ? taskAttachmentPath(token.attrGet('src') || '') : ''
+  if (path) {
+    const sourceIndex = token.attrIndex('src')
+    if (sourceIndex >= 0) token.attrs?.splice(sourceIndex, 1)
+    token.attrSet('data-task-attachment-path', path)
+  }
+  return originalImageRenderer
+    ? originalImageRenderer(tokens, index, options, env, self)
+    : self.renderToken(tokens, index, options)
+}
+
+const originalLinkOpenRenderer = markdown.renderer.rules.link_open
+markdown.renderer.rules.link_open = (tokens, index, options, env, self) => {
+  const token = tokens[index]
+  const path = env.taskUuid ? taskAttachmentPath(token.attrGet('href') || '') : ''
+  if (path) {
+    token.attrSet('href', '#')
+    token.attrSet('data-task-attachment-path', path)
+  }
+  return originalLinkOpenRenderer
+    ? originalLinkOpenRenderer(tokens, index, options, env, self)
+    : self.renderToken(tokens, index, options)
+}
 
 // 渲染前归一化：统一换行符、折叠连续空行、去行尾空格，避免脏换行产生多余间距
 function normalizeMarkdown(text: string) {
@@ -32,8 +82,76 @@ function normalizeMarkdown(text: string) {
 }
 
 const renderedContent = computed(() =>
-  markdown.render(normalizeMarkdown(props.content || '')),
+  markdown.render(normalizeMarkdown(props.content || ''), { taskUuid: props.taskUuid }),
 )
+
+watch(
+  () => [renderedContent.value, props.taskUuid] as const,
+  () => void hydrateAttachmentImages(),
+  { immediate: true },
+)
+
+async function hydrateAttachmentImages() {
+  const version = ++hydrationVersion
+  releaseObjectUrls()
+  await nextTick()
+  if (!props.taskUuid || version !== hydrationVersion) return
+  const images = [...(previewRef.value?.querySelectorAll<HTMLImageElement>('img[data-task-attachment-path]') || [])]
+  await Promise.all(
+    images.map(async (image) => {
+      const path = image.dataset.taskAttachmentPath
+      if (!path) return
+      try {
+        const blob = await apiClient.getBlob(
+          `/tasks/${encodeURIComponent(props.taskUuid)}/files/raw`,
+          { path },
+        )
+        if (version !== hydrationVersion || !image.isConnected) return
+        const objectUrl = URL.createObjectURL(blob)
+        objectUrls.add(objectUrl)
+        image.src = objectUrl
+      } catch {
+        if (version !== hydrationVersion || !image.isConnected) return
+        image.classList.add('attachment-load-failed')
+        image.title = '附件加载失败'
+      }
+    }),
+  )
+  if (version === hydrationVersion) emit('attachments-loaded')
+}
+
+async function handleAttachmentClick(event: MouseEvent) {
+  const target = event.target
+  if (!(target instanceof Element)) return
+  const anchor = target.closest<HTMLAnchorElement>('a[data-task-attachment-path]')
+  const path = anchor?.dataset.taskAttachmentPath
+  if (!anchor || !path || !props.taskUuid) return
+  event.preventDefault()
+  try {
+    const blob = await apiClient.getBlob(
+      `/tasks/${encodeURIComponent(props.taskUuid)}/files/raw`,
+      { path },
+    )
+    const objectUrl = URL.createObjectURL(blob)
+    const download = document.createElement('a')
+    download.href = objectUrl
+    download.download = anchor.textContent?.trim() || path.split('/').at(-1) || 'attachment'
+    download.click()
+    URL.revokeObjectURL(objectUrl)
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '附件下载失败')
+  }
+}
+
+function releaseObjectUrls() {
+  for (const objectUrl of objectUrls) URL.revokeObjectURL(objectUrl)
+  objectUrls.clear()
+}
+
+onBeforeUnmount(() => {
+  hydrationVersion += 1
+  releaseObjectUrls()
+})
 </script>
 
 <style scoped>
@@ -173,6 +291,12 @@ const renderedContent = computed(() =>
 
 .markdown-preview :deep(img) {
   max-width: 100%;
+}
+
+.markdown-preview :deep(img.attachment-load-failed) {
+  min-width: 120px;
+  min-height: 64px;
+  border: 1px dashed #d9d9d9;
 }
 
 @media (max-width: 640px) {

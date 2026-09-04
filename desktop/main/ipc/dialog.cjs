@@ -1,9 +1,11 @@
 'use strict'
 
+const fs = require('node:fs/promises')
 const path = require('node:path')
-const { BrowserWindow, dialog, ipcMain } = require('electron')
+const { BrowserWindow, dialog, ipcMain, shell } = require('electron')
 const channels = require('../../shared/channels.cjs')
 const { isTrustedURL } = require('../security.cjs')
+const { normalizeDirectoryPath } = require('./path-validation.cjs')
 
 function registerDialogIPC(allowedOrigins) {
   /** @param {Electron.IpcMainInvokeEvent} event @param {{ defaultPath?: string, multiple?: boolean }} options */
@@ -32,7 +34,28 @@ function registerDialogIPC(allowedOrigins) {
     return result.canceled ? [] : result.filePaths
   })
 
-  return () => ipcMain.removeHandler(channels.SELECT_DIRECTORIES)
+  ipcMain.handle(channels.OPEN_DIRECTORY, async (event, directoryPath) => {
+    if (!event.senderFrame || !isTrustedURL(event.senderFrame.url, allowedOrigins)) {
+      throw new Error('Untrusted open-directory request')
+    }
+
+    const requestedPath = normalizeDirectoryPath(directoryPath)
+    const realPath = await fs.realpath(requestedPath)
+    const info = await fs.stat(realPath)
+    if (!info.isDirectory()) {
+      throw new Error('Requested path is not a directory')
+    }
+    const openError = await shell.openPath(realPath)
+    if (openError) {
+      throw new Error(`Failed to open directory: ${openError}`)
+    }
+    return { opened: true }
+  })
+
+  return () => {
+    ipcMain.removeHandler(channels.SELECT_DIRECTORIES)
+    ipcMain.removeHandler(channels.OPEN_DIRECTORY)
+  }
 }
 
 module.exports = { registerDialogIPC }

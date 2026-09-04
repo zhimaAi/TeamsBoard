@@ -1,6 +1,6 @@
 {
   "name": "goteams-client-desktop",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "TeamsBoard Electron desktop shell",
   "author": "TeamsBoard",

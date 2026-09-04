@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -59,6 +60,12 @@ type StepInput struct {
 	Prompt      string `json:"prompt"`
 	CLIType     string `json:"cli_type"`
 	ModelName   string `json:"model_name"`
+}
+
+type BatchStepExecutionInput struct {
+	StepUUIDs []string `json:"step_uuids"`
+	CLIType   string   `json:"cli_type"`
+	ModelName string   `json:"model_name"`
 }
 
 type CloudPipeline struct {
@@ -160,6 +167,86 @@ func (s *Service) Create(ctx context.Context, input PipelineInput) (*Pipeline, e
 		return nil, fmt.Errorf("创建流水线失败: %w", err)
 	}
 	return s.Get(ctx, id)
+}
+
+var pipelineNumberSuffix = regexp.MustCompile(`\s+[0-9]+$`)
+
+// Copy creates a local, independently editable copy of either a local or a
+// cloud pipeline. The generated suffix follows the product rule: strip an
+// existing numeric suffix, count pipelines with the same base name, then use
+// count + 1.
+func (s *Service) Copy(ctx context.Context, pipelineUUID string) (*Pipeline, error) {
+	source, err := s.Get(ctx, strings.TrimSpace(pipelineUUID))
+	if err != nil {
+		return nil, err
+	}
+	baseName := pipelineBaseName(source.Name)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("开启复制事务失败: %w", err)
+	}
+	defer tx.Rollback()
+
+	matchingNames := 0
+	rows, err := tx.QueryContext(ctx, `SELECT name FROM gt_pipelines WHERE source_type = 'local'`)
+	if err != nil {
+		return nil, fmt.Errorf("读取流水线名称失败: %w", err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("读取流水线名称失败: %w", err)
+		}
+		if pipelineBaseName(name) == baseName {
+			matchingNames++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("遍历流水线名称失败: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("关闭流水线名称查询失败: %w", err)
+	}
+	for _, item := range DefaultStore().List() {
+		if pipelineBaseName(item.Name) == baseName {
+			matchingNames++
+		}
+	}
+
+	now := time.Now().UnixMilli()
+	copiedUUID := uuid.NewString()
+	copiedName := fmt.Sprintf("%s %d", baseName, matchingNames+1)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO gt_pipelines (uuid, name, description, avatar, source_type, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'local', ?, ?)`, copiedUUID, copiedName, source.Description, source.Avatar, now, now); err != nil {
+		return nil, fmt.Errorf("复制流水线失败: %w", err)
+	}
+	for _, step := range source.Steps {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO gt_pipeline_steps
+			(uuid, pipeline_uuid, sort_order, name, description, avatar, prompt, cli_type, model_name, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			uuid.NewString(), copiedUUID, step.SortOrder, step.Name, step.Description, step.Avatar,
+			step.Prompt, step.CLIType, step.ModelName, now, now); err != nil {
+			return nil, fmt.Errorf("复制 Agent 编排失败: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("提交复制事务失败: %w", err)
+	}
+	return s.Get(ctx, copiedUUID)
+}
+
+func pipelineBaseName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	baseName := strings.TrimSpace(pipelineNumberSuffix.ReplaceAllString(trimmed, ""))
+	if baseName == "" {
+		return trimmed
+	}
+	return baseName
 }
 
 func (s *Service) Update(ctx context.Context, pipelineUUID string, input PipelineInput) (*Pipeline, error) {
@@ -292,6 +379,107 @@ func (s *Service) UpdateStep(ctx context.Context, pipelineUUID, stepUUID string,
 		return nil, ErrStepNotFound
 	}
 	return s.getStep(ctx, pipelineUUID, stepUUID)
+}
+
+// BatchUpdateStepExecution validates every target before applying the same CLI
+// and model to all selected steps. Local pipelines use one SQLite transaction;
+// cloud pipelines use the MemStore's atomic write lock.
+func (s *Service) BatchUpdateStepExecution(ctx context.Context, pipelineUUID string, input BatchStepExecutionInput) (*Pipeline, error) {
+	pipelineUUID = strings.TrimSpace(pipelineUUID)
+	input.CLIType = strings.TrimSpace(input.CLIType)
+	input.ModelName = strings.TrimSpace(input.ModelName)
+	if pipelineUUID == "" {
+		return nil, ErrNotFound
+	}
+	if input.CLIType == "" {
+		return nil, fmt.Errorf("CLI 不能为空")
+	}
+	if input.ModelName == "" {
+		return nil, fmt.Errorf("模型不能为空")
+	}
+	if len(input.StepUUIDs) == 0 {
+		return nil, fmt.Errorf("请至少选择一个 Agent")
+	}
+
+	stepUUIDs := make([]string, 0, len(input.StepUUIDs))
+	selected := make(map[string]struct{}, len(input.StepUUIDs))
+	for _, rawUUID := range input.StepUUIDs {
+		stepUUID := strings.TrimSpace(rawUUID)
+		if stepUUID == "" {
+			return nil, fmt.Errorf("Agent UUID 不能为空")
+		}
+		if _, exists := selected[stepUUID]; exists {
+			return nil, fmt.Errorf("Agent UUID 不能重复")
+		}
+		selected[stepUUID] = struct{}{}
+		stepUUIDs = append(stepUUIDs, stepUUID)
+	}
+
+	if _, ok := DefaultStore().Get(pipelineUUID); ok {
+		return DefaultStore().BatchUpdateStepExecution(pipelineUUID, stepUUIDs, input.CLIType, input.ModelName)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("开启批量配置事务失败: %w", err)
+	}
+	defer tx.Rollback()
+
+	var pipelineExists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM gt_pipelines WHERE uuid = ? AND source_type = 'local'`, pipelineUUID).Scan(&pipelineExists); err != nil {
+		return nil, fmt.Errorf("读取流水线失败: %w", err)
+	}
+	if pipelineExists == 0 {
+		return nil, ErrNotFound
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT uuid FROM gt_pipeline_steps WHERE pipeline_uuid = ?`, pipelineUUID)
+	if err != nil {
+		return nil, fmt.Errorf("读取 Agent 编排失败: %w", err)
+	}
+	available := make(map[string]struct{})
+	for rows.Next() {
+		var stepUUID string
+		if err := rows.Scan(&stepUUID); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("读取 Agent 编排失败: %w", err)
+		}
+		available[stepUUID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("遍历 Agent 编排失败: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("关闭 Agent 编排查询失败: %w", err)
+	}
+	for _, stepUUID := range stepUUIDs {
+		if _, exists := available[stepUUID]; !exists {
+			return nil, fmt.Errorf("Agent 不属于当前流水线: %s", stepUUID)
+		}
+	}
+
+	now := time.Now().UnixMilli()
+	for _, stepUUID := range stepUUIDs {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE gt_pipeline_steps SET cli_type = ?, model_name = ?, updated_at = ?
+			WHERE uuid = ? AND pipeline_uuid = ?`, input.CLIType, input.ModelName, now, stepUUID, pipelineUUID)
+		if err != nil {
+			return nil, fmt.Errorf("批量配置 Agent 失败: %w", err)
+		}
+		if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+			if err != nil {
+				return nil, fmt.Errorf("读取批量配置结果失败: %w", err)
+			}
+			return nil, fmt.Errorf("Agent 已不存在: %s", stepUUID)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE gt_pipelines SET updated_at = ? WHERE uuid = ?`, now, pipelineUUID); err != nil {
+		return nil, fmt.Errorf("更新流水线时间失败: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("提交批量配置事务失败: %w", err)
+	}
+	return s.Get(ctx, pipelineUUID)
 }
 
 func (s *Service) DeleteStep(ctx context.Context, pipelineUUID, stepUUID string) error {

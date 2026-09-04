@@ -35,11 +35,11 @@ const TOOL_ITEMS: ToolItem[] = [
   },
   {
     key: 'agents',
-    label: 'Agent',
+    label: '专家流水线',
     tag: 'agent',
     icon: 'agent',
     description: '本地流水线与 Agent 编排',
-    detail: '维护本地流水线、Agent 编排顺序、基础提示词以及每一步的 CLI 和模型配置。',
+    detail: '维护本地专家流水线、编排顺序、基础提示词以及每一步的 CLI 和模型配置。',
   },
   {
     key: 'projects',

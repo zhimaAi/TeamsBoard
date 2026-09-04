@@ -8,6 +8,7 @@ const { DesktopPreferences } = require('./desktop-preferences.cjs')
 const { registerDialogIPC } = require('./ipc/dialog.cjs')
 const { registerApiTokenIPC } = require('./ipc/api-token.cjs')
 const { registerTrayIPC } = require('./ipc/tray.cjs')
+const { installApplicationMenu } = require('./application-menu.cjs')
 const { TrayManager } = require('./tray-manager.cjs')
 const { createMainWindow } = require('./window-manager.cjs')
 
@@ -17,7 +18,7 @@ const rendererURL = process.env.GOTEAMS_DESKTOP_RENDERER_URL || ''
 // API 响应已由后端 Cache-Control: no-store 与前端 fetch cache: 'no-store' 保证实时性；
 // 图片、文件等静态资源恢复走 Chromium 磁盘缓存。
 configureAppIdentity(app)
-Menu.setApplicationMenu(null)
+installApplicationMenu(Menu)
 const singleInstance = app.requestSingleInstanceLock()
 
 let mainWindow = null

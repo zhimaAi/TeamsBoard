@@ -4,7 +4,10 @@ export function isDesktopRuntime(): boolean {
 
 export type DesktopCloseBehavior = 'hide' | 'quit'
 
-async function pickDirectories(defaultPath: string | undefined, multiple: boolean): Promise<string[]> {
+async function pickDirectories(
+  defaultPath: string | undefined,
+  multiple: boolean,
+): Promise<string[]> {
   const bridge = window.goteamsDesktop
   if (!bridge) {
     throw new Error('当前环境不支持选择本地文件夹，请使用 TeamsBoard 桌面客户端')
@@ -21,6 +24,14 @@ export async function selectDirectories(defaultPath?: string): Promise<string[]>
   return pickDirectories(defaultPath, true)
 }
 
+export async function openDirectory(directoryPath: string): Promise<void> {
+  const bridge = window.goteamsDesktop
+  if (!bridge) {
+    throw new Error('当前环境不支持打开本地文件夹，请使用 TeamsBoard 桌面客户端')
+  }
+  await bridge.openDirectory(directoryPath)
+}
+
 export async function getDesktopCloseBehavior(): Promise<DesktopCloseBehavior> {
   const bridge = window.goteamsDesktop
   if (!bridge) {
@@ -29,7 +40,9 @@ export async function getDesktopCloseBehavior(): Promise<DesktopCloseBehavior> {
   return (await bridge.getCloseBehavior()).closeBehavior
 }
 
-export async function setDesktopCloseBehavior(closeBehavior: DesktopCloseBehavior): Promise<DesktopCloseBehavior> {
+export async function setDesktopCloseBehavior(
+  closeBehavior: DesktopCloseBehavior,
+): Promise<DesktopCloseBehavior> {
   const bridge = window.goteamsDesktop
   if (!bridge) {
     throw new Error('当前环境不支持桌面客户端设置')

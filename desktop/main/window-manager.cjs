@@ -30,7 +30,9 @@ function createMainWindow({ baseURL, browserTicket, rendererURL }) {
   })
 
   installNavigationPolicy(win, allowedOrigins)
-  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(permission === 'clipboard-sanitized-write')
+  })
 
   if (isDev) {
     // 开发模式自动打开 DevTools，并支持按 F12 切换

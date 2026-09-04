@@ -20,16 +20,36 @@
             <span v-else>{{ initials(currentStep?.name) }}</span>
           </span>
           <h2>{{ currentStep?.name || '当前步骤' }}</h2>
-          <span>产出的文档</span>
+          <button
+            type="button"
+            class="open-directory-button"
+            :disabled="!taskDirectory || openingDirectory"
+            :aria-label="openingDirectory ? '正在打开文件夹' : '在文件夹中打开'"
+            :title="openingDirectory ? '正在打开文件夹' : '在文件夹中打开'"
+            @click="openTaskDirectory"
+          >
+            <LoadingOutlined
+              v-if="openingDirectory"
+              spin
+            />
+            <img
+              v-else
+              :src="openDirectoryIcon"
+              alt=""
+              aria-hidden="true"
+            />
+          </button>
         </div>
-        <button
-          type="button"
-          class="close-button"
-          aria-label="关闭产出文档"
-          @click="requestClose"
-        >
-          <CloseOutlined />
-        </button>
+        <div class="documents-header-actions">
+          <button
+            type="button"
+            class="close-button"
+            aria-label="关闭产出文档"
+            @click="requestClose"
+          >
+            <CloseOutlined />
+          </button>
+        </div>
       </header>
 
       <div class="documents-workspace">
@@ -89,11 +109,13 @@
                 <span
                   class="file-node-name"
                   :title="title"
-                >{{ title }}</span>
+                  >{{ title }}</span
+                >
                 <span
                   v-if="meta"
                   class="file-node-meta"
-                >{{ meta }}</span>
+                  >{{ meta }}</span
+                >
               </div>
             </template>
           </a-tree>
@@ -179,33 +201,16 @@ import {
   FileOutlined,
   FileTextOutlined,
   FolderOutlined,
+  LoadingOutlined,
   ReloadOutlined,
 } from '@ant-design/icons-vue'
 import apiClient from '@/api/client'
+import openDirectoryIcon from '@/assets/icons/task-documents-open-directory.svg'
+import { isDesktopRuntime, openDirectory } from '@/composables/useDesktop'
+import { copyText } from '@/utils/clipboard'
+import type { TaskFileContentResponse, TaskFileNode, TaskFilesResponse } from '@/types/task-files'
 import type { PipelineStep } from '@/types/pipeline'
 import { initials } from './utils'
-
-interface TaskFileNode {
-  name: string
-  path: string
-  is_dir: boolean
-  file_type?: string
-  size?: number
-  children?: TaskFileNode[]
-}
-
-interface TaskFilesResponse {
-  task_dir: string
-  tree: TaskFileNode[]
-}
-
-interface TaskFileContentResponse {
-  path: string
-  file_type: string
-  size: number
-  encoding?: string
-  content: string
-}
 
 interface FileTreeNode {
   key: string
@@ -239,6 +244,8 @@ const savedContent = ref('')
 const treeLoading = ref(false)
 const contentLoading = ref(false)
 const saving = ref(false)
+const openingDirectory = ref(false)
+const taskDirectory = ref('')
 const treeError = ref('')
 const contentError = ref('')
 let treeLoadVersion = 0
@@ -286,12 +293,14 @@ async function loadTree() {
   contentLoadVersion += 1
   treeLoading.value = true
   treeError.value = ''
+  taskDirectory.value = ''
   clearSelection()
   try {
     const result = await apiClient.get<TaskFilesResponse>(
       `/tasks/${encodeURIComponent(props.taskUuid)}/files`,
     )
     if (requestVersion !== treeLoadVersion) return
+    taskDirectory.value = result.task_dir || ''
     const nextMap = new Map<string, FileTreeNode>()
     treeData.value = (result.tree || []).map((node) => mapTreeNode(node, nextMap))
     fileMap.value = nextMap
@@ -314,7 +323,11 @@ function mapTreeNode(node: TaskFileNode, target: Map<string, FileTreeNode>): Fil
     name: node.name,
     isDir: node.is_dir,
     fileType: normalizedFileType(node.file_type),
-    meta: node.is_dir ? (children.length ? String(children.length) : '') : formatFileSize(node.size),
+    meta: node.is_dir
+      ? children.length
+        ? String(children.length)
+        : ''
+      : formatFileSize(node.size),
     source: node,
     children: node.is_dir ? children : undefined,
   }
@@ -423,6 +436,28 @@ function clearSelection() {
   contentError.value = ''
 }
 
+async function openTaskDirectory() {
+  if (!taskDirectory.value || openingDirectory.value) return
+  if (!isDesktopRuntime()) {
+    try {
+      await copyText(taskDirectory.value)
+      message.info('浏览器环境无法直接打开文件夹，任务工作空间路径已复制')
+    } catch {
+      message.warning(`浏览器环境无法直接打开文件夹：${taskDirectory.value}`)
+    }
+    return
+  }
+
+  openingDirectory.value = true
+  try {
+    await openDirectory(taskDirectory.value)
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '打开任务工作空间失败')
+  } finally {
+    openingDirectory.value = false
+  }
+}
+
 function resetState() {
   treeLoadVersion += 1
   contentLoadVersion += 1
@@ -430,6 +465,8 @@ function resetState() {
   fileMap.value = new Map()
   treeLoading.value = false
   saving.value = false
+  openingDirectory.value = false
+  taskDirectory.value = ''
   treeError.value = ''
   clearSelection()
 }
@@ -499,6 +536,44 @@ function formatFileSize(size?: number) {
   border-bottom: 1px solid #d9d9d9;
   padding: 26px 32px;
 }
+.documents-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+}
+.open-directory-button {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  padding: 4px;
+  color: #bfbfbf;
+  background: transparent;
+  cursor: pointer;
+}
+.open-directory-button img,
+.open-directory-button :deep(.anticon) {
+  display: block;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+.open-directory-button:not(:disabled):hover {
+  background: #e4e6eb;
+}
+.open-directory-button:focus-visible {
+  outline: 2px solid #3157e2;
+  outline-offset: 2px;
+}
+.open-directory-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
 .documents-heading {
   display: flex;
   min-width: 0;
@@ -532,12 +607,6 @@ function formatFileSize(size?: number) {
   font-weight: 600;
   line-height: 32px;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.documents-heading > span:last-child {
-  color: #8c8c8c;
-  font-size: 16px;
-  line-height: 24px;
   white-space: nowrap;
 }
 .close-button {
@@ -697,7 +766,7 @@ function formatFileSize(size?: number) {
   border: 0;
   padding: 0;
   color: #262626;
-  font-family: "PingFang SC", sans-serif;
+  font-family: 'PingFang SC', sans-serif;
   font-size: 14px;
   line-height: 26px;
   box-shadow: none;
@@ -743,9 +812,6 @@ function formatFileSize(size?: number) {
   .documents-heading h2 {
     font-size: 20px;
     line-height: 28px;
-  }
-  .documents-heading > span:last-child {
-    display: none;
   }
   .documents-workspace {
     flex-direction: column;

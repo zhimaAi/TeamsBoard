@@ -13,10 +13,10 @@ files:
   - package.json
 
 win:
-  icon: build/icon.png
+  icon: build/icon.ico
   target:
     - nsis
-  artifactName: "TeamsBoard-${version}-windows-${arch}.${ext}"
+  artifactName: "TeamsBoard-windows-${arch}.${ext}"
   extraResources:
     - from: resources/backend
       to: backend
@@ -28,7 +28,7 @@ mac:
   target:
     - dmg
   category: public.app-category.developer-tools
-  artifactName: "TeamsBoard-${version}-macos-${arch}.${ext}"
+  artifactName: "TeamsBoard-macos-${arch}.${ext}"
   extraResources:
     - from: resources/backend
       to: backend
