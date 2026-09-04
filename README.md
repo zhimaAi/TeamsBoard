@@ -73,10 +73,10 @@ TeamsBoard provides installers for Windows (x64/arm64) and macOS (x64/arm).
 
 | Platform | Download |
 |----------|----------|
-| Windows x64 | [Download](https://goteams-cn.oss-cn-hangzhou.aliyuncs.com/client/v0.1.4/TeamsBoard-0.1.4-windows-x64.exe) |
-| Windows arm64 | [Download](https://goteams-cn.oss-cn-hangzhou.aliyuncs.com/client/v0.1.4/TeamsBoard-0.1.4-windows-arm64.exe) |
-| macOS x64 | [Download](https://goteams-cn.oss-cn-hangzhou.aliyuncs.com/client/v0.1.4/TeamsBoard-0.1.4-macos-x64.dmg) |
-| macOS arm64 | [Download](https://goteams-cn.oss-cn-hangzhou.aliyuncs.com/client/v0.1.4/TeamsBoard-0.1.4-windows-arm64.exe) |
+| Windows x64 | [Download](https://github.com/zhimaAi/TeamsBoard/releases/latest/download/TeamsBoard-windows-x64.exe) |
+| Windows arm64 | [Download](https://github.com/zhimaAi/TeamsBoard/releases/latest/download/TeamsBoard-windows-arm64.exe) |
+| macOS x64 | [Download](https://github.com/zhimaAi/TeamsBoard/releases/latest/download/TeamsBoard-macos-x64.dmg) |
+| macOS arm64 | [Download](https://github.com/zhimaAi/TeamsBoard/releases/latest/download/TeamsBoard-macos-arm64.dmg) |
 
 ### 2. Create a Pipeline and Bind a Local CLI
 
