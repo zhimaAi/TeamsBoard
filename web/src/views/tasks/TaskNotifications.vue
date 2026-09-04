@@ -40,9 +40,7 @@
             <span class="task-status">待创建</span>
           </div>
         </div>
-        <div
-          class="task-step-region"
-        >
+        <div class="task-step-region">
           <AgentStepStrip
             v-if="newConversationSteps.length"
             :steps="newConversationSteps"
@@ -75,9 +73,7 @@
             >
           </div>
         </div>
-        <div
-          class="task-step-region"
-        >
+        <div class="task-step-region">
           <AgentStepStrip
             v-if="hasPipelineSnapshot"
             :steps="sortedSteps"
@@ -102,9 +98,7 @@
         <div class="overview-skeleton-head">
           <span class="overview-skeleton-title" />
         </div>
-        <div
-          class="overview-skeleton-steps"
-        >
+        <div class="overview-skeleton-steps">
           <span
             v-for="index in 3"
             :key="index"
@@ -330,6 +324,7 @@
             <p>发送首条消息后将自动创建任务并开始执行</p>
           </div>
           <ChatComposer
+            ref="newConversationComposerRef"
             v-model="newConversationQuestion"
             :can-ask="true"
             :submitting="submitting"
@@ -401,18 +396,27 @@
                 :steps="sortedSteps"
                 :highlight-uuid="highlightUuid"
                 :selected-step-name="selectedStep?.name || ''"
+                :task-uuid="selectedTaskUuid"
                 @copy="copyResult"
               />
             </div>
             <ChatComposer
+              ref="composerRef"
               v-model="question"
               :can-ask="canAsk"
               :submitting="submitting"
+              :running="Boolean(activeSelectedProgress)"
+              :stopping="stoppingSessionUuid === activeSelectedProgress?.session_uuid"
+              :cli-type="composerCliType"
+              :model-name="composerModelName"
               :placeholder="composerPlaceholder"
               :context-text="composerContextText"
               :task-uuid="selectedTaskUuid"
               :current-step="selectedStep"
+              :steps="sortedSteps"
+              :executing-step-uuid="effectiveCurrentStepUuid"
               @submit="submitQuestion"
+              @stop="stopSelectedConversation"
               @prompt-saved="loadSelectedTask"
             />
           </template>
@@ -498,6 +502,13 @@
       :status="taskStatus"
       :rendered-description="renderedDescription"
       @preview-image="showImagePreview"
+      @saved="handleTaskSaved"
+    />
+    <StopExecutionConfirmModal
+      :open="stopConfirmOpen"
+      :loading="Boolean(stoppingSessionUuid)"
+      @close="closeStopConfirm"
+      @confirm="confirmStopConversation"
     />
     <TaskImagePreviewModal
       v-model:open="previewImageVisible"
@@ -524,7 +535,7 @@ import {
 } from '@ant-design/icons-vue'
 import MarkdownIt from 'markdown-it'
 import apiClient, { ApiError } from '@/api/client'
-import conversationMenuIcon from '@/assets/icons/task-conversation-menu.svg'
+import conversationMenuIcon from '@/assets/icons/common-more-actions.svg'
 import contextArchiveIcon from '@/assets/icons/task-context-archive.svg'
 import contextDetailIcon from '@/assets/icons/task-context-detail.svg'
 import contextReadIcon from '@/assets/icons/task-context-read.svg'
@@ -535,11 +546,20 @@ import ChatComposer from '@/components/task-progress/ChatComposer.vue'
 import NextStepButton from '@/components/task-progress/NextStepButton.vue'
 import PipelineFlowIcon from '@/components/task-progress/PipelineFlowIcon.vue'
 import StepMessageList from '@/components/task-progress/StepMessageList.vue'
-import { isUserMessage, resultText } from '@/components/task-progress/utils'
+import StopExecutionConfirmModal from '@/components/task-progress/StopExecutionConfirmModal.vue'
+import { copyText } from '@/utils/clipboard'
+import { isStopConfirmSuppressed, suppressStopConfirm } from '@/utils/stopConfirm'
 import { selectDirectory } from '@/composables/useDesktop'
 import { useLocalWS, useLocalWSStatus } from '@/composables/useLocalWebSocket'
 import { usePipelineStore } from '@/stores/pipeline'
-import type { Pipeline, TaskNotification, TaskProgress } from '@/types/pipeline'
+import type {
+  CompleteStepResponse,
+  Pipeline,
+  TaskNotification,
+  TaskProgress,
+} from '@/types/pipeline'
+import type { ChatComposerSubmission } from '@/types/task-attachments'
+import { isUserMessage, resultText, userMessageText } from '@/components/task-progress/utils'
 import type { TaskWithDetails } from '@/types/task-detail'
 import {
   deleteTaskView,
@@ -597,7 +617,11 @@ const progress = ref<TaskProgress[]>([])
 const taskViewCache = new Map<string, TaskViewCache>()
 const submitting = ref(false)
 const completing = ref(false)
+const stoppingSessionUuid = ref('')
+const stopConfirmOpen = ref(false)
+const stopConfirmSessionUuid = ref('')
 const question = ref('')
+const composerRef = ref<InstanceType<typeof ChatComposer>>()
 const highlightUuid = ref('')
 const pipelineExpanded = ref(true)
 const taskLayoutRef = ref<HTMLElement>()
@@ -611,6 +635,8 @@ const pipelineMenuOpen = ref(false)
 const newConversationPipeline = ref<Pipeline>()
 const newConversationQuestion = ref('')
 const newConversationWorkDir = ref('')
+const newConversationComposerRef = ref<InstanceType<typeof ChatComposer>>()
+const newConversationSubmission = ref<ChatComposerSubmission>()
 const pipelineConfigModalOpen = ref(false)
 
 const contextTaskUuid = ref('')
@@ -677,7 +703,7 @@ const conversations = computed<TaskConversation[]>(() => {
         title: latest.task_title || latest.title || `任务 ${taskUuid.slice(0, 8)}`,
         items,
         latest,
-        unread: items.some((item) => !Boolean(item.is_read)),
+        unread: items.some((item) => !item.is_read),
       }
     })
     .sort((a, b) => b.latest.created_at - a.latest.created_at)
@@ -723,6 +749,26 @@ const selectedStepIndex = computed(() =>
 const selectedProgress = computed(() =>
   progress.value.filter((item) => item.task_step_uuid === selectedStepUuid.value),
 )
+const latestSelectedAgentProgress = computed(() =>
+  [...selectedProgress.value].reverse().find((item) => !isUserMessage(item)),
+)
+const activeSelectedProgress = computed(() =>
+  [...selectedProgress.value]
+    .reverse()
+    .find(
+      (item) => !isUserMessage(item) && (item.status === 'created' || item.status === 'running'),
+    ),
+)
+const composerCliType = computed(
+  () => latestSelectedAgentProgress.value?.cli_type || selectedStep.value?.cli_type || '',
+)
+const composerModelName = computed(
+  () =>
+    latestSelectedAgentProgress.value?.model ||
+    selectedStep.value?.model_name ||
+    selectedStep.value?.model ||
+    '',
+)
 const initialTaskLoading = computed(() => taskLoading.value && !task.value)
 const taskRefreshing = computed(() => taskLoading.value && Boolean(task.value))
 const selectedIsCurrent = computed(() => selectedStepUuid.value === effectiveCurrentStepUuid.value)
@@ -737,14 +783,7 @@ const selectedStepReached = computed(() =>
       selectedProgress.value.length > 0),
   ),
 )
-const hasRunningSelectedConversation = computed(() =>
-  progress.value.some(
-    (item) =>
-      item.task_step_uuid === selectedStepUuid.value &&
-      !isUserMessage(item) &&
-      (item.status === 'created' || item.status === 'running'),
-  ),
-)
+const hasRunningSelectedConversation = computed(() => Boolean(activeSelectedProgress.value))
 const currentStepLocked = computed(
   () =>
     !task.value ||
@@ -801,6 +840,10 @@ const renderedDescription = computed(() => {
   if (/<[a-z][\s\S]*>/i.test(text)) return text
   return md.render(text)
 })
+
+function handleTaskSaved() {
+  void loadSelectedTask()
+}
 
 function statusValue(status?: string) {
   if (['todo', 'pending'].includes(status || '')) return 'pending'
@@ -1099,7 +1142,7 @@ async function initialize() {
 async function setTaskRead(taskUuid: string, isRead: boolean) {
   const conversation = conversations.value.find((item) => item.task_uuid === taskUuid)
   if (!conversation) return
-  const previouslyUnread = conversation.items.filter((item) => !Boolean(item.is_read))
+  const previouslyUnread = conversation.items.filter((item) => !item.is_read)
   conversation.items.forEach((item) => {
     item.is_read = isRead
   })
@@ -1134,7 +1177,7 @@ async function selectStep(uuid: string) {
   if (last) flashTarget(last.uuid)
 }
 
-async function locateTarget(behavior: ScrollBehavior = 'auto') {
+async function locateTarget(behavior: 'auto' | 'smooth' = 'auto') {
   await nextTick()
   const requested = selectedProgressUuid.value
     ? progress.value.find((item) => item.uuid === selectedProgressUuid.value)
@@ -1161,17 +1204,60 @@ function flashTarget(uuid: string) {
   }, 1200)
 }
 
-async function submitQuestion() {
-  const text = question.value.trim()
+function stopSelectedConversation() {
+  const sessionUuid = activeSelectedProgress.value?.session_uuid
+  if (!sessionUuid || stoppingSessionUuid.value) {
+    if (!sessionUuid) message.warning('未找到可停止的运行会话，请刷新后重试')
+    return
+  }
+  if (isStopConfirmSuppressed()) {
+    void stopConversation(sessionUuid)
+    return
+  }
+  stopConfirmSessionUuid.value = sessionUuid
+  stopConfirmOpen.value = true
+}
+
+function closeStopConfirm() {
+  stopConfirmOpen.value = false
+  stopConfirmSessionUuid.value = ''
+}
+
+function confirmStopConversation(suppressFutureConfirm: boolean) {
+  const sessionUuid = stopConfirmSessionUuid.value
+  if (suppressFutureConfirm) suppressStopConfirm()
+  if (sessionUuid) void stopConversation(sessionUuid)
+}
+
+async function stopConversation(sessionUuid: string) {
+  stoppingSessionUuid.value = sessionUuid
+  try {
+    await apiClient.post(`/tasks/sessions/${encodeURIComponent(sessionUuid)}/stop`, {})
+    message.success('当前运行已停止')
+    await Promise.all([loadNotifications(true), loadSelectedTask()])
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '停止运行失败')
+  } finally {
+    stoppingSessionUuid.value = ''
+    closeStopConfirm()
+  }
+}
+
+async function submitQuestion(submission: ChatComposerSubmission) {
+  const text = submission.content.trim()
   const step = selectedStep.value
   if (!text || !step || !canAsk.value || submitting.value) return
   submitting.value = true
   try {
     await apiClient.post(`/tasks/${selectedTaskUuid.value}/steps/${step.uuid}/questions`, {
       question: text,
+      display_question: submission.display_content?.trim() || text,
       request_id: crypto.randomUUID(),
+      cli_type: submission.config.cli_type,
+      model_name: submission.config.model_name,
     })
     question.value = ''
+    composerRef.value?.resetAfterSubmit()
     selectedProgressUuid.value = ''
     message.success('消息已发送，继续选中 Agent 对话')
     await setTaskRead(selectedTaskUuid.value, true)
@@ -1188,10 +1274,22 @@ async function completeStep() {
   if (!step || !canComplete.value || completing.value) return
   completing.value = true
   try {
-    await apiClient.post(`/tasks/${selectedTaskUuid.value}/steps/${step.uuid}/complete`, {})
+    const autoStart = !['stopped', 'interrupted'].includes(
+      latestSelectedAgentProgress.value?.status || '',
+    )
+    const result = await apiClient.post<CompleteStepResponse>(
+      `/tasks/${selectedTaskUuid.value}/steps/${step.uuid}/complete`,
+      { auto_start: autoStart },
+    )
     const wasLastStep = sortedSteps.value.at(-1)?.uuid === step.uuid
     selectedProgressUuid.value = ''
-    message.success(wasLastStep ? '任务已完成' : '已进入下一步并自动启动执行')
+    if (wasLastStep) {
+      message.success('任务已完成')
+    } else if (result.start_error) {
+      message.warning(`已进入下一步，但自动启动失败：${result.start_error}`)
+    } else {
+      message.success(result.auto_started ? '已进入下一步并自动启动执行' : '已进入下一步')
+    }
     await setTaskRead(selectedTaskUuid.value, true)
     await Promise.all([loadNotifications(true), loadSelectedTask()])
     const nextCurrent = task.value?.current_step_uuid
@@ -1208,7 +1306,7 @@ async function completeStep() {
 
 async function copyResult(item: TaskProgress) {
   try {
-    await navigator.clipboard.writeText(resultText(item))
+    await copyText(isUserMessage(item) ? userMessageText(item) : resultText(item))
     message.success('已复制')
   } catch {
     message.warning('复制失败')
@@ -1309,6 +1407,8 @@ function clearNewConversation() {
   newConversationPipeline.value = undefined
   newConversationQuestion.value = ''
   newConversationWorkDir.value = ''
+  newConversationSubmission.value = undefined
+  newConversationComposerRef.value?.resetAfterSubmit()
   pipelineConfigModalOpen.value = false
 }
 
@@ -1317,6 +1417,8 @@ function startNewConversation(pipeline: Pipeline) {
   pipelineMenuOpen.value = false
   selectedTaskUuid.value = ''
   clearSelectedTask()
+  newConversationSubmission.value = undefined
+  newConversationComposerRef.value?.resetAfterSubmit()
   newConversationPipeline.value = pipeline
   newConversationQuestion.value = ''
   newConversationWorkDir.value = ''
@@ -1346,10 +1448,16 @@ function createStepConfigs(pipeline: Pipeline) {
   }))
 }
 
-async function submitNewConversation(pipelineOverride?: Pipeline) {
-  const text = newConversationQuestion.value.trim()
+async function submitNewConversation(
+  submission?: ChatComposerSubmission,
+  pipelineOverride?: Pipeline,
+) {
+  if (submission) newConversationSubmission.value = submission
+  const currentSubmission = submission || newConversationSubmission.value
+  const promptText = currentSubmission?.content.trim() || ''
+  const displayText = currentSubmission?.display_content?.trim() || promptText
   const pipeline = pipelineOverride || newConversationPipeline.value
-  if (!text || !pipeline || submitting.value) return
+  if (!displayText || !pipeline || submitting.value) return
   if (!newConversationWorkDir.value.trim()) {
     message.warning('请先选择工作目录')
     return
@@ -1357,8 +1465,8 @@ async function submitNewConversation(pipelineOverride?: Pipeline) {
   submitting.value = true
   try {
     const createdTask = await apiClient.post<CreatedTaskResponse>('/tasks', {
-      title: createTaskTitle(text),
-      description: text,
+      title: createTaskTitle(displayText) || '图片任务',
+      description: promptText,
       pipeline_uuid: pipeline.uuid,
       step_configs: createStepConfigs(pipeline),
       work_dir: newConversationWorkDir.value.trim(),
@@ -1369,7 +1477,7 @@ async function submitNewConversation(pipelineOverride?: Pipeline) {
       createdTask.notification ||
       ({
         task_uuid: createdTask.uuid,
-        task_title: createdTask.title || createTaskTitle(text),
+        task_title: createdTask.title || createTaskTitle(displayText) || '图片任务',
         step_name: createdTask.steps?.[0]?.name || pipeline.steps?.[0]?.name || 'Agent 编排',
         session_uuid: '',
         status: 'created',
@@ -1400,6 +1508,8 @@ async function submitNewConversation(pipelineOverride?: Pipeline) {
     newConversationPipeline.value = undefined
     newConversationQuestion.value = ''
     newConversationWorkDir.value = ''
+    newConversationSubmission.value = undefined
+    newConversationComposerRef.value?.resetAfterSubmit()
     await Promise.all([
       persistNotificationSnapshot(),
       persistViewState(),
@@ -1422,7 +1532,7 @@ async function submitNewConversation(pipelineOverride?: Pipeline) {
 function handleCreationPipelineSelected(pipeline: Pipeline) {
   newConversationPipeline.value = pipeline
   pipelineConfigModalOpen.value = false
-  void submitNewConversation(pipeline)
+  void submitNewConversation(undefined, pipeline)
 }
 
 function getPipelinePopupContainer(trigger: HTMLElement) {
@@ -1508,7 +1618,8 @@ function handleSidebarResizeKeydown(event: KeyboardEvent) {
   else if (event.key === 'End') setSidebarWidth(sidebarMaxWidth.value)
   else {
     setSidebarWidth(
-      sidebarWidth.value + (event.key === 'ArrowLeft' ? -SIDEBAR_KEYBOARD_STEP : SIDEBAR_KEYBOARD_STEP),
+      sidebarWidth.value +
+        (event.key === 'ArrowLeft' ? -SIDEBAR_KEYBOARD_STEP : SIDEBAR_KEYBOARD_STEP),
     )
   }
   persistSidebarWidth()
@@ -1560,17 +1671,14 @@ watch(wsConnected, (connected) => {
   }
 })
 
-watch(
-  pipelines,
-  (items) => {
-    if (
-      newConversationPipeline.value &&
-      !items.some((item) => item.uuid === newConversationPipeline.value?.uuid)
-    ) {
-      newConversationPipeline.value = undefined
-    }
-  },
-)
+watch(pipelines, (items) => {
+  if (
+    newConversationPipeline.value &&
+    !items.some((item) => item.uuid === newConversationPipeline.value?.uuid)
+  ) {
+    newConversationPipeline.value = undefined
+  }
+})
 
 onMounted(() => {
   document.addEventListener('click', closeContextMenu)

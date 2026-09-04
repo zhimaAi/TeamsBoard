@@ -1,32 +1,57 @@
 <template>
   <a-modal
     :open="open"
+    class="agent-editor-modal"
     :title="step ? '编辑 Agent' : '新建 Agent'"
-    width="680px"
-    :confirm-loading="saving"
-    @update:open="emit('update:open', $event)"
-    @ok="save"
+    width="730px"
+    centered
+    @update:open="handleOpenChange"
   >
+
     <div
       v-if="cloudLocked"
       class="cloud-lock"
     >
       <CloudDownloadOutlined />该 Agent 来自团队流水线同步，名称、头像与提示词由云端管理，仅可配置 CLI 与模型
     </div>
-    <a-form layout="vertical">
-      <a-form-item
-        label="Agent 名称（最多20个字）"
-        required
-      >
-        <a-input
-          v-model:value="form.name"
-          :disabled="cloudLocked"
-          :maxlength="20"
-          show-count
-          placeholder="请输入 Agent 名称"
+
+    <button
+      class="agent-avatar-preview"
+      type="button"
+      :disabled="cloudLocked"
+      aria-label="上传 Agent 头像"
+      @click="openFilePicker"
+    >
+      <img
+        :src="previewAvatar"
+        alt=""
+      />
+      <span class="agent-avatar-preview__camera">
+        <img
+          :src="projectModalCameraIcon"
+          alt=""
+          aria-hidden="true"
         />
-      </a-form-item>
-      <a-form-item label="头像">
+      </span>
+    </button>
+    <p class="agent-avatar-hint">建议尺寸100×100px，大小不超过100KB</p>
+    <input
+      ref="fileInput"
+      class="agent-avatar-file-input"
+      type="file"
+      :accept="ICON_FILE_ACCEPT"
+      :disabled="cloudLocked"
+      @change="handleFileChange"
+    />
+
+    <a-form
+      class="agent-editor-form"
+      layout="vertical"
+    >
+      <a-form-item
+        class="agent-avatar-form-item"
+        label="Agent默认头像"
+      >
         <div
           class="avatar-options"
           :class="{ locked: cloudLocked }"
@@ -36,8 +61,10 @@
             :key="avatar"
             type="button"
             :disabled="cloudLocked"
-            :class="{ active: form.avatar === avatar }"
-            @click="form.avatar = avatar"
+            :class="{ active: !avatarFile && form.avatar === avatar }"
+            :aria-pressed="!avatarFile && form.avatar === avatar"
+            aria-label="选择预设 Agent 头像"
+            @click="selectPresetAvatar(avatar)"
           >
             <img
               :src="avatar"
@@ -46,18 +73,46 @@
           </button>
         </div>
       </a-form-item>
-      <a-form-item label="指令（提示词）">
+
+      <a-form-item
+        class="agent-editor-form-item"
+      >
+        <template #label>
+          <span class="agent-modal-label">Agent 名称</span>
+          <span class="agent-modal-label-hint">(最多20个字)</span>
+        </template>
+        <a-input
+          v-model:value="form.name"
+          :disabled="cloudLocked"
+          :maxlength="20"
+          :show-count="false"
+          placeholder="请输入"
+        />
+      </a-form-item>
+
+      <a-form-item
+        class="agent-editor-form-item"
+      >
+        <template #label>
+          <span class="agent-modal-label">指令</span>
+          <span class="agent-modal-label-hint agent-modal-label-hint--flush">（提示词）</span>
+        </template>
         <a-textarea
           v-model:value="form.prompt"
           :disabled="cloudLocked"
-          :rows="5"
+          :maxlength="2000"
           placeholder="请设置 Agent 的提示词，定义其行为和能力"
         />
       </a-form-item>
+
       <a-form-item
-        label="编程工具 CLI（必填，自动检测本机运行状态）"
+        class="agent-editor-form-item cli-form-item"
         required
       >
+        <template #label>
+          <span class="agent-modal-label">编程工具 CLI</span>
+          <span class="agent-modal-label-hint">（自动检测本机运行状态）</span>
+        </template>
         <div class="cli-row">
           <a-select
             v-model:value="form.cli_type"
@@ -75,10 +130,16 @@
             </a-select-option>
           </a-select>
           <a-button
+            class="cli-reload-button"
             :loading="cliLoading"
             @click="detectCli()"
           >
-            <ReloadOutlined />重新检测
+            <img
+              :src="agentCliReloadIcon"
+              alt=""
+              aria-hidden="true"
+              class="cli-reload-button__icon"
+            />重新检测
           </a-button>
         </div>
         <p
@@ -88,19 +149,24 @@
           {{
             form.cli_type
               ? `${cliOptions.find((item) => item.type === form.cli_type)?.name || form.cli_type}（本机已检测到运行）`
-              : '请选择本机已检测到运行的 CLI'
+              : '请选择本机已检测到运行的 CLI（必填）'
           }}
         </p>
       </a-form-item>
+
       <a-form-item
-        label="模型（必填，随 CLI 提供方联动）"
-        required
+        class="agent-editor-form-item model-form-item"
       >
+        <template #label>
+          <span class="agent-modal-label">模型</span>
+          <span class="agent-modal-label-hint">（随 CLI 提供方联动，默认使用提供方默认模型）</span>
+        </template>
         <a-select
           v-model:value="form.model"
           :loading="modelLoading"
           :disabled="!form.cli_type"
           show-search
+          :placeholder="form.cli_type ? '请选择模型' : '请先选择 CLI'"
         >
           <a-select-option
             v-for="model in modelOptions"
@@ -112,14 +178,30 @@
         </a-select>
       </a-form-item>
     </a-form>
+
+    <template #footer>
+      <div class="agent-modal-footer-actions">
+        <a-button @click="handleOpenChange(false)">取消</a-button>
+        <a-button
+          type="primary"
+          :loading="saving"
+          @click="save"
+        >
+          确定
+        </a-button>
+      </div>
+    </template>
   </a-modal>
 </template>
 
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { CloudDownloadOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { CloudDownloadOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import apiClient from '@/api/client'
+import agentCliReloadIcon from '@/assets/icons/agent-cli-reload.svg'
+import projectModalCameraIcon from '@/assets/icons/project-modal-camera.svg'
+import { ICON_FILE_ACCEPT, useIconFile } from '@/composables/useIconFile'
 import type { PipelineStep } from '@/types/pipeline'
 import {
   AGENT_AVATARS,
@@ -147,6 +229,7 @@ const cliLoading = ref(false)
 const modelLoading = ref(false)
 const cliOptions = ref<DiscoveredCLI[]>([])
 const modelOptions = ref<string[]>([])
+const fileInput = ref<HTMLInputElement>()
 const form = reactive({
   name: '',
   description: '',
@@ -155,14 +238,21 @@ const form = reactive({
   cli_type: '',
   model: '',
 })
+const { file: avatarFile, previewUrl, selectFile, reset: resetAvatarFile } = useIconFile()
+// 设计稿约束：Agent 头像大小不超过 100KB，比共享图标校验（2MB）更严格，仅作用于本弹窗
+const MAX_AVATAR_FILE_SIZE = 100 * 1024
 let modelRequestId = 0
 
 const cloudLocked = computed(() => props.isCloudPipeline && Boolean(props.step))
+const previewAvatar = computed(
+  () => previewUrl.value || form.avatar || props.currentAvatar || AGENT_AVATARS[0],
+)
 
 watch(
   () => props.open,
   (open) => {
     if (!open) return
+    resetAvatarFile()
     void initialiseForm()
   },
 )
@@ -180,6 +270,33 @@ async function initialiseForm() {
   await loadModels(form.cli_type, form.model)
 }
 
+function openFilePicker() {
+  if (!cloudLocked.value) fileInput.value?.click()
+}
+
+function handleFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const nextFile = input.files?.[0]
+  input.value = ''
+  if (!nextFile) return
+
+  if (nextFile.size > MAX_AVATAR_FILE_SIZE) {
+    message.warning('图片大小不能超过 100KB')
+    return
+  }
+
+  try {
+    selectFile(nextFile)
+  } catch (error) {
+    message.warning(error instanceof Error ? error.message : '头像选择失败')
+  }
+}
+
+function selectPresetAvatar(avatar: string) {
+  resetAvatarFile()
+  form.avatar = avatar
+}
+
 async function detectCli(showSuccess = true) {
   cliLoading.value = true
   try {
@@ -192,7 +309,7 @@ async function detectCli(showSuccess = true) {
   } finally {
     cliLoading.value = false
   }
-  // 模型列表与 CLI 状态联动刷新，避免"重新检测"后仍展示旧模型
+  // 模型列表与 CLI 状态联动刷新，避免“重新检测”后仍展示旧模型
   if (form.cli_type) {
     await loadModels(form.cli_type, form.model)
   }
@@ -220,43 +337,62 @@ async function loadModels(cliType: string, keepModel = '') {
   }
 }
 
+function buildStepPayload(): StepInput {
+  return {
+    name: form.name.trim(),
+    description: form.description.trim(),
+    avatar: form.avatar,
+    prompt: form.prompt.trim(),
+    cli_type: form.cli_type,
+    model_name: form.model.trim(),
+  }
+}
+
+function buildStepFormData(payload: StepInput) {
+  const formData = new FormData()
+  formData.append('name', payload.name)
+  formData.append('description', payload.description)
+  formData.append('avatar', payload.avatar)
+  formData.append('prompt', payload.prompt)
+  formData.append('cli_type', payload.cli_type)
+  formData.append('model_name', payload.model_name)
+  if (avatarFile.value) formData.append('avatar_file', avatarFile.value)
+  return formData
+}
+
 async function save() {
   if (!props.pipelineUuid) return
   if (!form.name.trim()) return message.warning('请输入 Agent 名称')
   if (form.name.trim().length > 20) return message.warning('Agent 名称最多20个字')
-  if (!form.cli_type || !form.model.trim())
+  if (!form.prompt.trim()) return message.warning('请输入 Agent 提示词')
+  if (!form.cli_type || !form.model.trim()) {
     return message.warning('请选择本机可用 CLI 和模型')
+  }
 
   saving.value = true
   try {
-    const payload: StepInput = {
-      name: form.name.trim(),
-      description: form.description.trim(),
-      avatar: form.avatar,
-      prompt: form.prompt.trim(),
-      cli_type: form.cli_type,
-      model_name: form.model.trim(),
-    }
+    const payload = buildStepPayload()
+    const path = props.step
+      ? `/pipelines/${props.pipelineUuid}/steps/${props.step.uuid}`
+      : `/pipelines/${props.pipelineUuid}/steps`
     if (cloudLocked.value && props.step) {
       const executionPayload: CloudStepExecutionInput = {
         cli_type: payload.cli_type,
         model_name: payload.model_name,
       }
-      await apiClient.put<PipelineStep>(
-        `/pipelines/${props.pipelineUuid}/steps/${props.step.uuid}`,
-        executionPayload,
-      )
+      await apiClient.put<PipelineStep>(path, executionPayload)
+    } else if (avatarFile.value) {
+      const multipartPayload = buildStepFormData(payload)
+      if (props.step) await apiClient.put<PipelineStep>(path, multipartPayload)
+      else await apiClient.post<PipelineStep>(path, multipartPayload)
     } else if (props.step) {
-      await apiClient.put<PipelineStep>(
-        `/pipelines/${props.pipelineUuid}/steps/${props.step.uuid}`,
-        payload,
-      )
+      await apiClient.put<PipelineStep>(path, payload)
     } else {
-      await apiClient.post<PipelineStep>(`/pipelines/${props.pipelineUuid}/steps`, payload)
+      await apiClient.post<PipelineStep>(path, payload)
     }
-    emit('update:open', false)
-    emit('saved')
     message.success(props.step ? 'Agent 已更新' : 'Agent 已添加')
+    emit('saved')
+    handleOpenChange(false)
   } catch (error) {
     message.error(error instanceof Error ? error.message : 'Agent 保存失败')
   } finally {
@@ -264,6 +400,10 @@ async function save() {
   }
 }
 
+function handleOpenChange(open: boolean) {
+  if (!open) resetAvatarFile()
+  emit('update:open', open)
+}
 </script>
 
 <style scoped>
@@ -271,24 +411,112 @@ async function save() {
   display: flex;
   align-items: center;
   gap: 7px;
-  margin-bottom: 18px;
+  margin-bottom: 16px;
   padding: 9px 12px;
-  border-radius: 6px;
+  border-radius: 8px;
   color: #b45309;
   background: #fff7e6;
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.agent-avatar-preview {
+  position: relative;
+  display: flex;
+  width: 60px;
+  height: 60px;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #f2f3f5;
+  cursor: pointer;
+}
+
+.agent-avatar-preview:disabled {
+  cursor: not-allowed;
+}
+
+.agent-avatar-preview > img {
+  display: block;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.agent-avatar-preview__camera {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  display: flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0.75px solid #fff;
+  border-radius: 50%;
+  background: #262626;
+  box-shadow: 0 2px 4px rgba(221, 221, 221, 0.12);
+}
+
+.agent-avatar-preview__camera img {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+
+.agent-avatar-preview:focus-visible,
+.avatar-options button:focus-visible {
+  outline: 2px solid #3157e2;
+  outline-offset: 2px;
+}
+
+.agent-avatar-hint {
+  margin: 10px 0 0;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 14px;
+  line-height: 22px;
+  text-align: center;
+}
+
+.agent-avatar-file-input {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.agent-editor-form {
+  margin-top: 24px;
+}
+
+.agent-avatar-form-item,
+.agent-editor-form-item {
+  margin-bottom: 20px;
+}
+
+.model-form-item {
+  margin-bottom: 0;
 }
 
 .avatar-options {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 8px;
 }
 
 .avatar-options button {
-  width: 48px;
-  height: 48px;
-  padding: 2px;
+  display: flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 1px;
   border: 2px solid transparent;
   border-radius: 50%;
   background: #fff;
@@ -296,17 +524,17 @@ async function save() {
 }
 
 .avatar-options button.active {
-  border-color: #1677ff;
+  border-color: #3157e2;
 }
 
-.avatar-options button:focus-visible {
-  outline: 2px solid #1677ff;
-  outline-offset: 2px;
+.avatar-options button:disabled {
+  cursor: not-allowed;
 }
 
 .avatar-options img {
-  width: 40px;
-  height: 40px;
+  display: block;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   object-fit: cover;
 }
@@ -317,20 +545,190 @@ async function save() {
 
 .cli-row {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 16px;
 }
 
 .cli-row :deep(.ant-select) {
+  min-width: 0;
   flex: 1;
 }
 
+.cli-reload-button {
+  flex: 0 0 auto;
+}
+
 .cli-hint {
-  margin: 5px 0 0;
-  color: #b45309;
-  font-size: 11px;
+  margin: 2px 0 0;
+  color: #ed744a;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .cli-hint.ok {
   color: #15803d;
+}
+
+.agent-modal-footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+:deep(.agent-editor-modal) {
+  max-width: calc(100vw - 32px);
+  padding-bottom: 0;
+}
+
+:deep(.agent-editor-modal .ant-modal-content) {
+  overflow: hidden;
+  padding: 0;
+  border-radius: 24px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
+}
+
+:deep(.agent-editor-modal .ant-modal-header) {
+  margin-bottom: 0;
+  padding: 24px;
+  border-radius: 24px 24px 0 0;
+  background: #fff;
+}
+
+:deep(.agent-editor-modal .ant-modal-title) {
+  color: #262626;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 32px;
+}
+
+:deep(.agent-editor-modal .ant-modal-body) {
+  max-height: calc(100vh - 184px);
+  overflow-y: auto;
+  padding: 16px 48px 24px;
+}
+
+:deep(.agent-editor-modal .ant-modal-footer) {
+  margin-top: 0;
+  padding: 16px 48px;
+  border-top: 1px solid #d9d9d9;
+}
+
+:deep(.agent-editor-modal .ant-modal-footer .ant-btn) {
+  min-width: 65px;
+  height: 32px;
+  padding: 5px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+:deep(.agent-editor-form .ant-form-item-label) {
+  padding-bottom: 8px;
+}
+
+:deep(.agent-editor-form .ant-form-item-label > label) {
+  height: 22px;
+  color: #262626;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+:deep(.agent-editor-form .ant-form-item-label > label.ant-form-item-required::before) {
+  color: #fb363f;
+}
+
+.agent-modal-label-hint {
+  margin-left: 4px;
+  color: #8c8c8c;
+  font-weight: 400;
+}
+
+.agent-modal-label-hint--flush {
+  margin-left: 0;
+}
+
+:deep(.agent-editor-form .ant-input),
+:deep(.agent-editor-form .ant-input-affix-wrapper),
+:deep(.agent-editor-form .ant-select-selector) {
+  min-height: 40px;
+  border-color: #d9d9d9 !important;
+  border-radius: 12px !important;
+  color: #262626;
+  font-size: 14px;
+}
+
+:deep(.agent-editor-form .ant-input) {
+  padding: 8px 12px;
+  line-height: 22px;
+}
+
+:deep(.agent-editor-form textarea.ant-input) {
+  height: 128px;
+  min-height: 128px;
+  resize: none;
+}
+
+:deep(.agent-editor-form .ant-select-selector) {
+  padding: 4px 12px !important;
+}
+
+:deep(.agent-editor-form .ant-select-selection-item),
+:deep(.agent-editor-form .ant-select-selection-placeholder) {
+  line-height: 30px !important;
+}
+
+:deep(.agent-editor-form .ant-input:hover),
+:deep(.agent-editor-form .ant-select:not(.ant-select-disabled):hover .ant-select-selector) {
+  border-color: #3157e2 !important;
+}
+
+:deep(.agent-editor-form .ant-input:focus),
+:deep(.agent-editor-form .ant-input-focused),
+:deep(.agent-editor-form .ant-select-focused .ant-select-selector) {
+  border-color: #3157e2 !important;
+  box-shadow: 0 0 0 2px rgba(49, 87, 226, 0.15) !important;
+}
+
+/* 与表单其他控件（输入框/下拉框）尺寸对齐：40px 高、14px 字号，避免 ant-btn 默认行高把按钮撑高 */
+:deep(.ant-btn.cli-reload-button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 12px;
+  color: #595959;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.cli-reload-button__icon {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+@media (max-width: 760px) {
+  :deep(.agent-editor-modal .ant-modal-header) {
+    padding: 20px 24px;
+  }
+
+  :deep(.agent-editor-modal .ant-modal-title) {
+    font-size: 20px;
+    line-height: 28px;
+  }
+
+  :deep(.agent-editor-modal .ant-modal-body) {
+    padding: 16px 24px 24px;
+  }
+
+  :deep(.agent-editor-modal .ant-modal-footer) {
+    padding: 16px 24px;
+  }
+
+  .cli-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 </style>

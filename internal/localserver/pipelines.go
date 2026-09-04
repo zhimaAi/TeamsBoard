@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,11 +19,12 @@ import (
 
 type PipelinesHandler struct {
 	db          func() *sql.DB
+	iconStore   *IconStore
 	cloudClient func() *cloud.Client
 }
 
-func NewPipelinesHandler(db func() *sql.DB, cloudClients ...func() *cloud.Client) *PipelinesHandler {
-	h := &PipelinesHandler{db: db}
+func NewPipelinesHandler(db func() *sql.DB, iconStore *IconStore, cloudClients ...func() *cloud.Client) *PipelinesHandler {
+	h := &PipelinesHandler{db: db, iconStore: iconStore}
 	if len(cloudClients) > 0 {
 		h.cloudClient = cloudClients[0]
 	}
@@ -90,10 +92,12 @@ func (h *PipelinesHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("", h.list)
 	r.POST("", h.create)
 	r.GET("/:uuid", h.get)
+	r.POST("/:uuid/copy", h.copy)
 	r.PUT("/:uuid", h.update)
 	r.DELETE("/:uuid", h.delete)
 	r.POST("/:uuid/steps", h.addStep)
 	r.PUT("/:uuid/steps/reorder", h.reorderSteps)
+	r.PUT("/:uuid/steps/execution-config", h.batchUpdateStepExecution)
 	r.PUT("/:uuid/steps/:step_uuid", h.updateStep)
 	r.DELETE("/:uuid/steps/:step_uuid", h.deleteStep)
 }
@@ -133,37 +137,68 @@ func (h *PipelinesHandler) get(c *gin.Context) {
 }
 
 func (h *PipelinesHandler) create(c *gin.Context) {
-	var input pipeline.PipelineInput
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	input, newAvatarURL, err := h.bindPipelineInput(c)
+	if err != nil {
+		pipelineAvatarError(c, err)
 		return
 	}
 	svc, ok := h.service(c)
 	if !ok {
+		if newAvatarURL != "" && h.iconStore != nil {
+			_ = h.iconStore.Remove(newAvatarURL)
+		}
 		return
 	}
 	item, err := svc.Create(c.Request.Context(), input)
 	if err != nil {
+		if newAvatarURL != "" && h.iconStore != nil {
+			_ = h.iconStore.Remove(newAvatarURL)
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusCreated, item)
 }
 
-func (h *PipelinesHandler) update(c *gin.Context) {
-	var input pipeline.PipelineInput
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
+func (h *PipelinesHandler) copy(c *gin.Context) {
 	svc, ok := h.service(c)
 	if !ok {
 		return
 	}
-	item, err := svc.Update(c.Request.Context(), c.Param("uuid"), input)
+	item, err := svc.Copy(c.Request.Context(), c.Param("uuid"))
 	if err != nil {
 		pipelineError(c, err)
 		return
+	}
+	c.JSON(http.StatusCreated, item)
+}
+
+func (h *PipelinesHandler) update(c *gin.Context) {
+	svc, ok := h.service(c)
+	if !ok {
+		return
+	}
+	pipelineUUID := c.Param("uuid")
+	previousPipeline, previousErr := svc.Get(c.Request.Context(), pipelineUUID)
+	if isMultipartRequest(c) && (previousErr != nil || previousPipeline.SourceType != "local") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "仅本地流水线支持上传图标"})
+		return
+	}
+	input, newAvatarURL, err := h.bindPipelineInput(c)
+	if err != nil {
+		pipelineAvatarError(c, err)
+		return
+	}
+	item, err := svc.Update(c.Request.Context(), pipelineUUID, input)
+	if err != nil {
+		if newAvatarURL != "" && h.iconStore != nil {
+			_ = h.iconStore.Remove(newAvatarURL)
+		}
+		pipelineError(c, err)
+		return
+	}
+	if previousPipeline != nil && previousPipeline.Avatar != item.Avatar {
+		h.removeIconIfUnused(c.Request.Context(), previousPipeline.Avatar)
 	}
 	c.JSON(http.StatusOK, item)
 }
@@ -173,33 +208,45 @@ func (h *PipelinesHandler) delete(c *gin.Context) {
 	if !ok {
 		return
 	}
+	item, err := svc.Get(c.Request.Context(), c.Param("uuid"))
+	if err != nil {
+		pipelineError(c, err)
+		return
+	}
 	if err := svc.Delete(c.Request.Context(), c.Param("uuid")); err != nil {
 		pipelineError(c, err)
 		return
+	}
+	h.removeIconIfUnused(c.Request.Context(), item.Avatar)
+	for _, step := range item.Steps {
+		h.removeIconIfUnused(c.Request.Context(), step.Avatar)
 	}
 	c.JSON(http.StatusOK, gin.H{"deleted": true})
 }
 
 func (h *PipelinesHandler) addStep(c *gin.Context) {
-	var input pipeline.StepInput
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
 	svc, ok := h.service(c)
 	if !ok {
 		return
 	}
+	input, newAvatarURL, err := h.bindStepInput(c)
+	if err != nil {
+		pipelineAvatarError(c, err)
+		return
+	}
 	item, err := svc.AddStep(c.Request.Context(), c.Param("uuid"), input)
 	if err != nil {
+		if newAvatarURL != "" && h.iconStore != nil {
+			_ = h.iconStore.Remove(newAvatarURL)
+		}
 		pipelineError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, item)
 }
 
-func (h *PipelinesHandler) updateStep(c *gin.Context) {
-	var input pipeline.StepInput
+func (h *PipelinesHandler) batchUpdateStepExecution(c *gin.Context) {
+	var input pipeline.BatchStepExecutionInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -208,10 +255,47 @@ func (h *PipelinesHandler) updateStep(c *gin.Context) {
 	if !ok {
 		return
 	}
-	item, err := svc.UpdateStep(c.Request.Context(), c.Param("uuid"), c.Param("step_uuid"), input)
+	item, err := svc.BatchUpdateStepExecution(c.Request.Context(), c.Param("uuid"), input)
 	if err != nil {
 		pipelineError(c, err)
 		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
+func (h *PipelinesHandler) updateStep(c *gin.Context) {
+	svc, ok := h.service(c)
+	if !ok {
+		return
+	}
+	pipelineUUID := c.Param("uuid")
+	stepUUID := c.Param("step_uuid")
+	previousPipeline, previousErr := svc.Get(c.Request.Context(), pipelineUUID)
+	if isMultipartRequest(c) && (previousErr != nil || previousPipeline.SourceType != "local") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "仅本地 Agent 支持上传头像"})
+		return
+	}
+	previousStep := findPipelineStep(previousPipeline, stepUUID)
+	if isMultipartRequest(c) && previousStep == nil {
+		pipelineError(c, pipeline.ErrStepNotFound)
+		return
+	}
+
+	input, newAvatarURL, err := h.bindStepInput(c)
+	if err != nil {
+		pipelineAvatarError(c, err)
+		return
+	}
+	item, err := svc.UpdateStep(c.Request.Context(), pipelineUUID, stepUUID, input)
+	if err != nil {
+		if newAvatarURL != "" && h.iconStore != nil {
+			_ = h.iconStore.Remove(newAvatarURL)
+		}
+		pipelineError(c, err)
+		return
+	}
+	if previousStep != nil && previousStep.Avatar != item.Avatar {
+		h.removeIconIfUnused(c.Request.Context(), previousStep.Avatar)
 	}
 	c.JSON(http.StatusOK, item)
 }
@@ -221,11 +305,159 @@ func (h *PipelinesHandler) deleteStep(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := svc.DeleteStep(c.Request.Context(), c.Param("uuid"), c.Param("step_uuid")); err != nil {
+	pipelineUUID := c.Param("uuid")
+	stepUUID := c.Param("step_uuid")
+	item, err := svc.Get(c.Request.Context(), pipelineUUID)
+	if err != nil {
 		pipelineError(c, err)
 		return
 	}
+	previousStep := findPipelineStep(item, stepUUID)
+	if previousStep == nil {
+		pipelineError(c, pipeline.ErrStepNotFound)
+		return
+	}
+	if err := svc.DeleteStep(c.Request.Context(), pipelineUUID, stepUUID); err != nil {
+		pipelineError(c, err)
+		return
+	}
+	h.removeIconIfUnused(c.Request.Context(), previousStep.Avatar)
 	c.JSON(http.StatusOK, gin.H{"deleted": true})
+}
+
+// 流水线复制会复用头像 URL；只有最后一个数据库引用消失时才删除受管文件，
+// 避免删除或换头像时破坏副本仍在使用的头像。
+func (h *PipelinesHandler) removeIconIfUnused(ctx context.Context, rawURL string) {
+	if h.iconStore == nil {
+		return
+	}
+	if _, managed := managedIconFilename(rawURL); !managed {
+		return
+	}
+	if h.db == nil {
+		return
+	}
+	db := h.db()
+	if db == nil {
+		return
+	}
+	var references int
+	err := db.QueryRowContext(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM gt_pipelines WHERE avatar = ?) +
+			(SELECT COUNT(*) FROM gt_pipeline_steps WHERE avatar = ?)`,
+		rawURL, rawURL).Scan(&references)
+	if err != nil {
+		applog.Warn("[LocalServer] 检查受管头像引用失败", "error", err)
+		return
+	}
+	if references > 0 {
+		return
+	}
+	if err := h.iconStore.Remove(rawURL); err != nil {
+		applog.Warn("[LocalServer] 删除未引用受管头像失败", "error", err)
+	}
+}
+
+func (h *PipelinesHandler) bindPipelineInput(c *gin.Context) (pipeline.PipelineInput, string, error) {
+	var input pipeline.PipelineInput
+	if !isMultipartRequest(c) {
+		if err := c.ShouldBindJSON(&input); err != nil {
+			return input, "", err
+		}
+		return input, "", nil
+	}
+	if h.iconStore == nil {
+		return input, "", fmt.Errorf("本地头像存储尚未初始化")
+	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxIconUploadRequestSize)
+	input = pipeline.PipelineInput{
+		Name:        c.PostForm("name"),
+		Description: c.PostForm("description"),
+		Avatar:      c.PostForm("avatar"),
+	}
+	header, err := c.FormFile("avatar_file")
+	if err != nil {
+		if errors.Is(err, http.ErrMissingFile) {
+			return input, "", nil
+		}
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) || strings.Contains(strings.ToLower(err.Error()), "request body too large") {
+			return input, "", ErrIconTooLarge
+		}
+		return input, "", fmt.Errorf("读取上传图标失败: %w", err)
+	}
+	avatarURL, err := h.iconStore.Save(header)
+	if err != nil {
+		return input, "", err
+	}
+	input.Avatar = avatarURL
+	return input, avatarURL, nil
+}
+
+func (h *PipelinesHandler) bindStepInput(c *gin.Context) (pipeline.StepInput, string, error) {
+	var input pipeline.StepInput
+	if !isMultipartRequest(c) {
+		if err := c.ShouldBindJSON(&input); err != nil {
+			return input, "", err
+		}
+		return input, "", nil
+	}
+	if h.iconStore == nil {
+		return input, "", fmt.Errorf("本地头像存储尚未初始化")
+	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxIconUploadRequestSize)
+	input = pipeline.StepInput{
+		Name:        c.PostForm("name"),
+		Description: c.PostForm("description"),
+		Avatar:      c.PostForm("avatar"),
+		Prompt:      c.PostForm("prompt"),
+		CLIType:     c.PostForm("cli_type"),
+		ModelName:   c.PostForm("model_name"),
+	}
+	header, err := c.FormFile("avatar_file")
+	if err != nil {
+		if errors.Is(err, http.ErrMissingFile) {
+			return input, "", nil
+		}
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) || strings.Contains(strings.ToLower(err.Error()), "request body too large") {
+			return input, "", ErrIconTooLarge
+		}
+		return input, "", fmt.Errorf("读取上传头像失败: %w", err)
+	}
+	avatarURL, err := h.iconStore.Save(header)
+	if err != nil {
+		return input, "", err
+	}
+	input.Avatar = avatarURL
+	return input, avatarURL, nil
+}
+
+func isMultipartRequest(c *gin.Context) bool {
+	return strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data")
+}
+
+func findPipelineStep(item *pipeline.Pipeline, stepUUID string) *pipeline.Step {
+	if item == nil {
+		return nil
+	}
+	for index := range item.Steps {
+		if item.Steps[index].UUID == stepUUID {
+			return &item.Steps[index]
+		}
+	}
+	return nil
+}
+
+func pipelineAvatarError(c *gin.Context, err error) {
+	if errors.Is(err, ErrIconTooLarge) {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 }
 
 func (h *PipelinesHandler) reorderSteps(c *gin.Context) {

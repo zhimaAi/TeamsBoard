@@ -112,6 +112,7 @@ func (h *TasksHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("", h.listTasks)
 	r.GET("/:uuid", h.getTask)
 	r.POST("", h.createTask)
+	r.PUT("/:uuid", h.updateTask)
 	r.PUT("/:uuid/status", h.updateTaskStatus)
 	r.POST("/:uuid/start", h.startTask)
 	r.POST("/:uuid/assign-pipeline", h.assignAndStartTask)
@@ -123,7 +124,9 @@ func (h *TasksHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.PUT("/:uuid/steps/:step_uuid/prompt", h.updateStepPrompt)
 	r.GET("/:uuid/files", h.listTaskFiles)
 	r.GET("/:uuid/files/content", h.getTaskFileContent)
+	r.GET("/:uuid/files/raw", h.getTaskAttachmentContent)
 	r.POST("/:uuid/files/content", h.saveTaskFileContent)
+	r.POST("/:uuid/files/attachments", h.uploadTaskAttachment)
 	r.GET("/:uuid/sessions", h.listTaskSessions)
 	r.POST("/sessions/:uuid/messages", h.continueSession)
 	r.POST("/sessions/:uuid/stop", h.stopSession)
@@ -845,6 +848,7 @@ func (h *TasksHandler) loadTaskWorkDirs(taskUUID, legacyWorkDir string) ([]strin
 
 // createTask creates a task
 func (h *TasksHandler) createTask(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxTaskCreateRequestSize)
 	var body struct {
 		Title              string                `json:"title"`
 		Description        string                `json:"description"`
@@ -863,8 +867,14 @@ func (h *TasksHandler) createTask(c *gin.Context) {
 		WorkItemID         json.RawMessage       `json:"work_item_id"`
 		WorkspaceID        int64                 `json:"workspace_id"`
 		CreateNotification bool                  `json:"create_notification"`
+		Attachments        []taskAttachmentInput `json:"attachments"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "任务内容或粘贴图片过大"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -970,6 +980,11 @@ func (h *TasksHandler) createTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "创建任务失败: " + err.Error()})
 		return
 	}
+	if err := h.appendDraftTaskAttachments(c.Request.Context(), taskUUID, body.Description, body.Attachments); err != nil {
+		_ = taskruntime.NewService(h.taskDB(), h.taskRoot).Delete(c.Request.Context(), taskUUID)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "保存附件失败: " + err.Error()})
+		return
+	}
 	sessionUUID := ""
 	if requestedStatus == "active" {
 		snapshot := preparedSnapshot
@@ -1050,6 +1065,76 @@ func (h *TasksHandler) createTask(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"uuid": taskUUID})
+}
+
+func (h *TasksHandler) updateTask(c *gin.Context) {
+	taskUUID := c.Param("uuid")
+	var body struct {
+		Title             string   `json:"title"`
+		Description       string   `json:"description"`
+		Content           string   `json:"content"`
+		PipelineUUID      string   `json:"pipeline_uuid"`
+		ProjectUUID       string   `json:"project_uuid"`
+		SubprojectUUIDs   []string `json:"subproject_uuids"`
+		ChildProjectUUIDs []string `json:"child_project_uuids"`
+		WorkDir           string   `json:"work_dir"`
+		WorkDirs          []string `json:"work_dirs"`
+		Priority          string   `json:"priority"`
+		PlannedStartDate  string   `json:"planned_start_date"`
+		PlannedEndDate    string   `json:"planned_end_date"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	content := body.Content
+	if strings.TrimSpace(content) == "" {
+		content = body.Description
+	}
+	workDirs := body.WorkDirs
+	if len(workDirs) == 0 && strings.TrimSpace(body.WorkDir) != "" {
+		workDirs = []string{body.WorkDir}
+	}
+	subprojects := body.SubprojectUUIDs
+	if len(subprojects) == 0 {
+		subprojects = body.ChildProjectUUIDs
+	}
+	if strings.TrimSpace(body.PipelineUUID) != "" {
+		if _, err := pipeline.NewService(h.taskDB()).Get(c.Request.Context(), strings.TrimSpace(body.PipelineUUID)); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	err := taskruntime.NewService(h.taskDB(), h.taskRoot).Update(c.Request.Context(), taskUUID, taskruntime.UpdateInput{
+		Title:                body.Title,
+		Content:              content,
+		Priority:             body.Priority,
+		PlannedStartDate:     body.PlannedStartDate,
+		PlannedEndDate:       body.PlannedEndDate,
+		ProjectUUID:          body.ProjectUUID,
+		SubprojectUUIDs:      subprojects,
+		WorkDirs:             workDirs,
+		SelectedPipelineUUID: strings.TrimSpace(body.PipelineUUID),
+	})
+	if err != nil {
+		status := http.StatusBadRequest
+		switch {
+		case errors.Is(err, taskruntime.ErrNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, taskruntime.ErrTaskContextLocked), errors.Is(err, taskruntime.ErrPipelineSnapshotLocked):
+			status = http.StatusConflict
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	h.pushTaskSync(taskUUID)
+	h.notifyTaskChanged(taskUUID)
+	task, loadErr := h.loadTaskDetail(c.Request.Context(), taskUUID)
+	if loadErr != nil {
+		c.JSON(http.StatusOK, gin.H{"uuid": taskUUID})
+		return
+	}
+	c.JSON(http.StatusOK, task)
 }
 
 // buildTaskCreatedNotification builds the "task created and started" notification
@@ -1295,8 +1380,12 @@ func (h *TasksHandler) startTaskExecution(ctx context.Context, taskUUID, request
 
 func (h *TasksHandler) askStepQuestion(c *gin.Context) {
 	var body struct {
-		Question  string `json:"question"`
-		RequestID string `json:"request_id"`
+		Question        string `json:"question"`
+		DisplayQuestion string `json:"display_question"`
+		RequestID       string `json:"request_id"`
+		CLIType         string `json:"cli_type"`
+		Model           string `json:"model"`
+		ModelName       string `json:"model_name"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1306,8 +1395,17 @@ func (h *TasksHandler) askStepQuestion(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "问题内容不能为空"})
 		return
 	}
+	displayQuestion := body.DisplayQuestion
+	if strings.TrimSpace(displayQuestion) == "" {
+		displayQuestion = body.Question
+	}
+	prompt, err := h.resolveTaskAttachmentReferences(c.Request.Context(), c.Param("uuid"), body.Question)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	var parentSessionUUID string
-	err := h.taskDB().QueryRowContext(c.Request.Context(), `SELECT uuid FROM gt_cli_sessions
+	err = h.taskDB().QueryRowContext(c.Request.Context(), `SELECT uuid FROM gt_cli_sessions
 		WHERE task_uuid = ? AND step_uuid = ? AND status IN ('success','failed','stopped','interrupted')
 		ORDER BY run_no DESC LIMIT 1`, c.Param("uuid"), c.Param("step_uuid")).Scan(&parentSessionUUID)
 	if err == sql.ErrNoRows {
@@ -1318,8 +1416,17 @@ func (h *TasksHandler) askStepQuestion(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	modelName := strings.TrimSpace(body.ModelName)
+	if modelName == "" {
+		modelName = strings.TrimSpace(body.Model)
+	}
 	sessionUUID, err := h.orchestrator().ContinueConversation(c.Request.Context(), workflow.ContinueConversationOptions{
-		ParentSessionUUID: parentSessionUUID, Prompt: body.Question, RequestID: body.RequestID,
+		ParentSessionUUID: parentSessionUUID,
+		Prompt:            prompt,
+		DisplayPrompt:     displayQuestion,
+		RequestID:         body.RequestID,
+		CLIType:           body.CLIType,
+		Model:             modelName,
 	})
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
@@ -1331,6 +1438,15 @@ func (h *TasksHandler) askStepQuestion(c *gin.Context) {
 }
 
 func (h *TasksHandler) completeStep(c *gin.Context) {
+	var body struct {
+		AutoStart *bool `json:"auto_start"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	autoStart := body.AutoStart == nil || *body.AutoStart
+
 	result, err := taskruntime.NewService(h.taskDB(), h.taskRoot).CompleteStep(c.Request.Context(), c.Param("uuid"), c.Param("step_uuid"))
 	if err != nil {
 		status := http.StatusConflict
@@ -1343,8 +1459,8 @@ func (h *TasksHandler) completeStep(c *gin.Context) {
 	_ = markTaskNotificationsRead(c.Request.Context(), h.taskDB(), c.Param("uuid"), true)
 	h.pushTaskSync(c.Param("uuid"))
 	h.notifyTaskChanged(c.Param("uuid"))
-	response := gin.H{"task_done": result.TaskDone, "next_step_uuid": result.NextStepUUID}
-	if result.NextStepUUID != "" {
+	response := gin.H{"task_done": result.TaskDone, "next_step_uuid": result.NextStepUUID, "auto_started": false}
+	if result.NextStepUUID != "" && autoStart {
 		sessionUUID, runErr := h.orchestrator().RunStep(c.Request.Context(), workflow.RunStepOptions{
 			TaskUUID: c.Param("uuid"), StepUUID: result.NextStepUUID, RecordType: "initial_run",
 		})
@@ -1352,6 +1468,7 @@ func (h *TasksHandler) completeStep(c *gin.Context) {
 			response["start_error"] = runErr.Error()
 		} else {
 			response["session_uuid"] = sessionUUID
+			response["auto_started"] = true
 		}
 	}
 	c.JSON(http.StatusOK, response)
@@ -1523,10 +1640,9 @@ func (h *TasksHandler) runStep(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"session_uuid": sessionUUID})
 }
 
-// updateStepPrompt saves the prompt snapshot and invalidates the execution
-// progress from this step onward. A step that had already entered execution is
-// restarted with a fresh CLI round; a future, never-executed step remains
-// pending and does not interrupt the current step.
+// updateStepPrompt saves the prompt snapshot. Editing the current executing
+// step still invalidates that step's progress and restarts a fresh CLI round.
+// Editing any other step only writes prompt_snapshot.
 func (h *TasksHandler) updateStepPrompt(c *gin.Context) {
 	taskUUID := c.Param("uuid")
 	stepUUID := c.Param("step_uuid")
@@ -1544,8 +1660,8 @@ func (h *TasksHandler) updateStepPrompt(c *gin.Context) {
 	}
 
 	// 1. Verify task and step exist, and capture the state before resetting it.
-	var stepStatus, stepExecutionStatus string
-	var stepOrder, currentStepOrder int
+	var stepStatus, stepExecutionStatus, currentStepUUID string
+	var stepOrder int
 	var taskExists bool
 	err := h.taskDB().QueryRow(`SELECT COUNT(*)>0 FROM gt_tasks WHERE uuid=?`, taskUUID).Scan(&taskExists)
 	if err != nil || !taskExists {
@@ -1565,11 +1681,7 @@ func (h *TasksHandler) updateStepPrompt(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询步骤失败: " + err.Error()})
 		return
 	}
-	if err = h.taskDB().QueryRow(`SELECT COALESCE((
-		SELECT current_step.step_order
-		FROM gt_task_steps current_step
-		WHERE current_step.uuid = t.current_step_uuid AND current_step.task_uuid = t.uuid
-	), -1) FROM gt_tasks t WHERE t.uuid=?`, taskUUID).Scan(&currentStepOrder); err != nil {
+	if err = h.taskDB().QueryRow(`SELECT COALESCE(current_step_uuid, '') FROM gt_tasks WHERE uuid=?`, taskUUID).Scan(&currentStepUUID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询当前步骤失败: " + err.Error()})
 		return
 	}
@@ -1582,19 +1694,27 @@ func (h *TasksHandler) updateStepPrompt(c *gin.Context) {
 	reqCtx := context.WithoutCancel(c.Request.Context())
 	applog.Info("[updateStepPrompt] 开始修改步骤提示词", "task_uuid", taskUUID, "step_uuid", stepUUID)
 
+	if stepUUID != currentStepUUID {
+		if _, err = h.taskDB().Exec(`UPDATE gt_task_steps SET prompt_snapshot=?, updated_at=? WHERE uuid=? AND task_uuid=?`,
+			body.PromptSnapshot, now, stepUUID, taskUUID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "更新提示词快照失败: " + err.Error()})
+			return
+		}
+		h.pushTaskSync(taskUUID)
+		h.notifyTaskChanged(taskUUID)
+		c.JSON(http.StatusOK, gin.H{"prompt_updated": true, "prompt_only": true})
+		return
+	}
+
 	// active/completed are the business states for a step that has entered the
 	// execution chain. execution_status also covers historical failed/stopped
 	// attempts that may have already been rolled back to pending.
-	affectedContainsCurrent := currentStepOrder >= stepOrder
-	shouldAutoStart := affectedContainsCurrent &&
-		(stepStatus == "active" || stepStatus == "completed" || stepExecutionStatus != "idle")
+	shouldAutoStart := stepStatus == "active" || stepStatus == "completed" || stepExecutionStatus != "idle"
 
-	// 2. When the changed range contains the current step, stop the active CLI
-	// before deleting its progress. Editing a future pending step must not stop
-	// the earlier current step.
+	// 2. Stop the active CLI before deleting the current step's progress.
 	// 停止失败时不能继续：残留的 stop_requested 会话会阻塞后续会话启动，
 	// 若继续修改步骤状态会出现「步骤已回退但无会话执行」的卡死状态，故直接返回让用户重试。
-	if orch := h.orchestrator(); orch != nil && affectedContainsCurrent {
+	if orch := h.orchestrator(); orch != nil {
 		stopStart := time.Now()
 		if stopErr := orch.StopTaskSessions(reqCtx, taskUUID); stopErr != nil {
 			applog.Warn("[updateStepPrompt] 终止任务会话失败", "task_uuid", taskUUID, "error", stopErr, "cost_ms", time.Since(stopStart).Milliseconds())
@@ -1691,12 +1811,21 @@ func (h *TasksHandler) updateStepPrompt(c *gin.Context) {
 
 // taskFileEntry represents a file or directory entry in the task file tree.
 type taskFileEntry struct {
-	Name     string          `json:"name"`
-	Path     string          `json:"path"`
-	IsDir    bool            `json:"is_dir"`
-	FileType string          `json:"file_type,omitempty"`
-	Size     int64           `json:"size,omitempty"`
-	Children []taskFileEntry `json:"children,omitempty"`
+	Name          string          `json:"name"`
+	Path          string          `json:"path"`
+	AbsolutePath  string          `json:"absolute_path"`
+	IsDir         bool            `json:"is_dir"`
+	FileType      string          `json:"file_type,omitempty"`
+	Size          int64           `json:"size,omitempty"`
+	OwnerStepUUID string          `json:"owner_step_uuid,omitempty"`
+	OwnerStepName string          `json:"owner_step_name,omitempty"`
+	Children      []taskFileEntry `json:"children,omitempty"`
+}
+
+type taskFileOwner struct {
+	StepUUID string
+	StepName string
+	StepDir  string
 }
 
 // listTaskFiles returns the tree structure of files and folders under the task directory.
@@ -1724,7 +1853,12 @@ func (h *TasksHandler) listTaskFiles(c *gin.Context) {
 		return
 	}
 
-	tree, err := buildFileTree(root, root, "")
+	owners, err := h.loadTaskFileOwners(c.Request.Context(), taskUUID, root)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取 Agent 文档目录失败: " + err.Error()})
+		return
+	}
+	tree, err := buildFileTree(root, root, "", owners)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取文件树失败: " + err.Error()})
 		return
@@ -1733,8 +1867,32 @@ func (h *TasksHandler) listTaskFiles(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"task_dir": root, "tree": tree})
 }
 
+func (h *TasksHandler) loadTaskFileOwners(ctx context.Context, taskUUID, root string) ([]taskFileOwner, error) {
+	rows, err := h.taskDB().QueryContext(ctx, `SELECT uuid, name, step_dir FROM gt_task_steps WHERE task_uuid = ?`, taskUUID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	owners := make([]taskFileOwner, 0)
+	for rows.Next() {
+		var owner taskFileOwner
+		if err := rows.Scan(&owner.StepUUID, &owner.StepName, &owner.StepDir); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(owner.StepDir) == "" {
+			continue
+		}
+		owner.StepDir, err = filepath.Abs(strings.TrimSpace(owner.StepDir))
+		if err != nil || !pathWithinDirectory(root, owner.StepDir) {
+			continue
+		}
+		owners = append(owners, owner)
+	}
+	return owners, rows.Err()
+}
+
 // buildFileTree recursively builds a file tree entry.
-func buildFileTree(root, currentDir, relativePath string) ([]taskFileEntry, error) {
+func buildFileTree(root, currentDir, relativePath string, owners []taskFileOwner) ([]taskFileEntry, error) {
 	entries, err := os.ReadDir(currentDir)
 	if err != nil {
 		return nil, err
@@ -1742,22 +1900,40 @@ func buildFileTree(root, currentDir, relativePath string) ([]taskFileEntry, erro
 
 	result := make([]taskFileEntry, 0, len(entries))
 	for _, entry := range entries {
+		if entry.Name() == legacyTaskAttachmentDirectory {
+			continue
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
 		relPath := filepath.Join(relativePath, entry.Name())
+		absolutePath := filepath.Join(currentDir, entry.Name())
+		if !pathWithinDirectory(root, absolutePath) {
+			continue
+		}
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
 		node := taskFileEntry{
-			Name:  entry.Name(),
-			Path:  relPath,
-			IsDir: entry.IsDir(),
+			Name:         entry.Name(),
+			Path:         relPath,
+			AbsolutePath: absolutePath,
+			IsDir:        entry.IsDir(),
+		}
+		for _, owner := range owners {
+			if pathWithinDirectory(owner.StepDir, absolutePath) {
+				node.OwnerStepUUID = owner.StepUUID
+				node.OwnerStepName = owner.StepName
+				break
+			}
 		}
 		if !entry.IsDir() {
 			ext := strings.TrimPrefix(filepath.Ext(entry.Name()), ".")
 			node.FileType = ext
 			node.Size = info.Size()
 		} else {
-			children, err := buildFileTree(root, filepath.Join(currentDir, entry.Name()), relPath)
+			children, err := buildFileTree(root, absolutePath, relPath, owners)
 			if err == nil && len(children) > 0 {
 				node.Children = children
 			} else {
@@ -1919,18 +2095,51 @@ func (h *TasksHandler) safeTaskFilePath(taskDir, relPath string) (string, error)
 		return "", fmt.Errorf("任务目录无效: %w", err)
 	}
 	cleanPath := filepath.Clean(strings.TrimSpace(relPath))
-	if strings.Contains(cleanPath, "..") || filepath.IsAbs(cleanPath) {
+	if filepath.IsAbs(cleanPath) || cleanPath == ".." || strings.HasPrefix(cleanPath, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("文件路径无效: %s", relPath)
 	}
 	absPath := filepath.Join(root, cleanPath)
-	// Verify the resolved path is within the task directory
-	absRoot, _ := filepath.Abs(root)
-	absTarget, _ := filepath.Abs(absPath)
-	rel, err := filepath.Rel(absRoot, absTarget)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	if !pathWithinDirectory(root, absPath) {
 		return "", fmt.Errorf("文件路径不在任务目录范围内")
 	}
+	containsSymlink, err := pathContainsSymlink(root, absPath)
+	if err != nil {
+		return "", fmt.Errorf("文件路径无效: %w", err)
+	}
+	if containsSymlink {
+		return "", fmt.Errorf("文件路径不允许包含符号链接")
+	}
 	return absPath, nil
+}
+
+func pathWithinDirectory(root, target string) bool {
+	relative, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func pathContainsSymlink(root, target string) (bool, error) {
+	relative, err := filepath.Rel(root, target)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return false, fmt.Errorf("文件路径不在任务目录范围内")
+	}
+	current := root
+	for _, part := range strings.Split(relative, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return false, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // listTaskSessions returns all local CLI running records under the task, and the complete events can be played back on demand through WebSocket.
@@ -1940,6 +2149,9 @@ func (h *TasksHandler) listTaskSessions(c *gin.Context) {
 		`SELECT s.uuid, s.task_uuid, s.step_uuid, ts.step_key, ts.name,
 		        s.conversation_uuid, s.parent_session_uuid, s.run_no, s.status,
 		        s.cli_type, s.external_session_id, s.work_dir, s.prompt_snapshot,
+		        COALESCE((SELECT p.user_prompt FROM gt_task_progress p
+		                  WHERE p.session_uuid = s.uuid AND p.record_type = 'user_question'
+		                  ORDER BY p.created_at ASC LIMIT 1), '') AS display_prompt,
 		        s.input_tokens, s.output_tokens, s.total_tokens,
 		        s.started_at, s.finished_at, s.duration_ms, s.created_at, s.updated_at,
 		        s.error_message
@@ -1969,6 +2181,7 @@ func (h *TasksHandler) listTaskSessions(c *gin.Context) {
 		ExternalSessionID string `json:"external_session_id"`
 		WorkDir           string `json:"work_dir"`
 		PromptSnapshot    string `json:"prompt_snapshot"`
+		DisplayPrompt     string `json:"display_prompt"`
 		InputTokens       int    `json:"input_tokens"`
 		OutputTokens      int    `json:"output_tokens"`
 		TotalTokens       int    `json:"total_tokens"`
@@ -1986,7 +2199,7 @@ func (h *TasksHandler) listTaskSessions(c *gin.Context) {
 		if err := rows.Scan(
 			&item.UUID, &item.TaskUUID, &item.StepUUID, &item.StepKey, &item.StepName,
 			&item.ConversationUUID, &item.ParentSessionUUID, &item.RunNo, &item.Status,
-			&item.CLIType, &item.ExternalSessionID, &item.WorkDir, &item.PromptSnapshot,
+			&item.CLIType, &item.ExternalSessionID, &item.WorkDir, &item.PromptSnapshot, &item.DisplayPrompt,
 			&item.InputTokens, &item.OutputTokens, &item.TotalTokens,
 			&item.StartedAt, &item.FinishedAt, &item.DurationMs, &item.CreatedAt, &item.UpdatedAt,
 			&item.ErrorMessage,
@@ -2007,20 +2220,40 @@ func (h *TasksHandler) listTaskSessions(c *gin.Context) {
 func (h *TasksHandler) continueSession(c *gin.Context) {
 	parentSessionUUID := c.Param("uuid")
 	var body struct {
-		Content   string `json:"content"`
-		RequestID string `json:"request_id"`
+		Content        string `json:"content"`
+		DisplayContent string `json:"display_content"`
+		RequestID      string `json:"request_id"`
+		CLIType        string `json:"cli_type"`
+		Model          string `json:"model"`
+		ModelName      string `json:"model_name"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	displayContent := body.DisplayContent
+	if strings.TrimSpace(displayContent) == "" {
+		displayContent = body.Content
+	}
+	prompt, err := h.resolveSessionTaskAttachmentReferences(c.Request.Context(), parentSessionUUID, body.Content)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
+	modelName := strings.TrimSpace(body.ModelName)
+	if modelName == "" {
+		modelName = strings.TrimSpace(body.Model)
+	}
 	sessionUUID, err := h.orchestrator().ContinueConversation(
 		c.Request.Context(),
 		workflow.ContinueConversationOptions{
 			ParentSessionUUID: parentSessionUUID,
-			Prompt:            body.Content,
+			Prompt:            prompt,
+			DisplayPrompt:     displayContent,
 			RequestID:         body.RequestID,
+			CLIType:           body.CLIType,
+			Model:             modelName,
 		},
 	)
 	if err != nil {

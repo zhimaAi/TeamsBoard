@@ -4,56 +4,509 @@
     :footer="null"
     :closable="false"
     :body-style="{ padding: 0 }"
-    width="922px"
+    :width="922"
+    :mask-style="{ backgroundColor: 'rgba(0, 0, 0, 0.45)' }"
     centered
-    wrap-class-name="task-detail-info-modal"
+    :wrap-class-name="editing ? 'task-detail-info-modal task-edit-modal' : 'task-detail-info-modal'"
     @cancel="handleOpenChange(false)"
     @update:open="handleOpenChange"
   >
-    <div class="task-detail-modal">
-      <header class="modal-header">
-        <h2>需求详情</h2>
-        <button type="button" aria-label="关闭需求详情弹窗" @click="handleOpenChange(false)">
-          <img :src="closeIcon" alt="" aria-hidden="true" />
-        </button>
-      </header>
+    <div
+      class="task-detail-modal"
+      :class="{ 'is-editing': editing }"
+    >
+      <template v-if="task && editing">
+        <div class="modal-body edit-modal-body">
+          <section class="requirement-pane edit-requirement-pane">
+            <div class="edit-title-heading">
+              <a-input
+                v-model:value="form.title"
+                :maxlength="50"
+                :bordered="false"
+                placeholder="任务标题"
+                class="title-input"
+              />
+            </div>
+            <div class="description-box">
+              <a-textarea
+                v-model:value="form.description"
+                :auto-size="false"
+                :bordered="false"
+                placeholder="添加描述…"
+                class="description-input"
+              />
+            </div>
+          </section>
 
-      <div v-if="task" class="modal-body">
+          <aside class="task-info-pane edit-task-info-pane">
+            <h3>任务信息</h3>
+            <button
+              type="button"
+              class="task-info-close"
+              aria-label="关闭编辑任务弹窗"
+              @click="handleOpenChange(false)"
+            >
+              <img
+                :src="closeIcon"
+                alt=""
+                aria-hidden="true"
+              />
+            </button>
+            <div class="task-info-list edit-task-info-list">
+              <div class="task-info-item edit-task-info-item">
+                <span class="info-icon">
+                  <img
+                    :src="workDirIcon"
+                    alt=""
+                    aria-hidden="true"
+                  />
+                </span>
+                <div class="info-content">
+                  <span class="info-label">工作目录</span>
+                  <button
+                    type="button"
+                    class="chip info-control"
+                    :class="{ selected: form.work_dir }"
+                    :disabled="!canEditContext"
+                    :title="
+                      canEditContext ? '选择任务主工作目录（必选）' : form.work_dir || '工作目录'
+                    "
+                    @click="chooseMainDirectory"
+                  >
+                    <span class="chip-label">{{ form.work_dir || '选择工作目录' }}</span>
+                    <b v-if="canEditContext">*</b>
+                    <DownOutlined />
+                  </button>
+                </div>
+              </div>
+
+              <div class="task-info-item edit-task-info-item">
+                <span class="info-icon">
+                  <img
+                    :src="priorityIcon"
+                    alt=""
+                    aria-hidden="true"
+                  />
+                </span>
+                <div class="info-content">
+                  <span class="info-label">任务优先级</span>
+                  <a-dropdown trigger="click">
+                    <button
+                      type="button"
+                      class="chip info-control"
+                      :class="{ selected: form.priority }"
+                    >
+                      <span
+                        v-if="form.priority"
+                        class="priority-value"
+                        :class="{
+                          high: form.priority === '高',
+                          medium: form.priority === '中',
+                          low: form.priority === '低',
+                        }"
+                        >{{ form.priority }}</span
+                      >
+                      <span
+                        v-else
+                        class="chip-label"
+                        >选择优先级</span
+                      >
+                      <DownOutlined />
+                    </button>
+                    <template #overlay>
+                      <a-menu>
+                        <a-menu-item
+                          key=""
+                          @click="form.priority = ''"
+                          >不选择</a-menu-item
+                        >
+                        <a-menu-item
+                          key="high"
+                          @click="form.priority = '高'"
+                          >🔴 高</a-menu-item
+                        >
+                        <a-menu-item
+                          key="medium"
+                          @click="form.priority = '中'"
+                          >🟡 中</a-menu-item
+                        >
+                        <a-menu-item
+                          key="low"
+                          @click="form.priority = '低'"
+                          >🔵 低</a-menu-item
+                        >
+                      </a-menu>
+                    </template>
+                  </a-dropdown>
+                </div>
+              </div>
+
+              <div class="task-info-item edit-task-info-item">
+                <span class="info-icon">
+                  <img
+                    :src="statusIcon"
+                    alt=""
+                    aria-hidden="true"
+                  />
+                </span>
+                <div class="info-content">
+                  <span class="info-label">任务状态</span>
+                  <span
+                    class="info-value"
+                    :class="statusClass"
+                    >{{ statusLabel }}</span
+                  >
+                </div>
+              </div>
+
+              <div class="task-info-item edit-task-info-item">
+                <span class="info-icon">
+                  <img
+                    :src="projectIcon"
+                    alt=""
+                    aria-hidden="true"
+                  />
+                </span>
+                <div class="info-content">
+                  <span class="info-label">所属项目</span>
+                  <a-dropdown
+                    v-if="canEditContext"
+                    trigger="click"
+                  >
+                    <button
+                      type="button"
+                      class="chip info-control"
+                      :class="{ selected: selectedProject || form.project_uuid }"
+                    >
+                      <span class="chip-label">{{ projectChipLabel }}</span>
+                      <DownOutlined />
+                    </button>
+                    <template #overlay>
+                      <a-menu>
+                        <a-menu-item
+                          key="none"
+                          @click="chooseProject('')"
+                          >不选择项目</a-menu-item
+                        >
+                        <a-menu-divider />
+                        <a-menu-item
+                          v-for="project in projects"
+                          :key="project.uuid"
+                          @click="chooseProject(project.uuid)"
+                        >
+                          <span class="menu-primary">{{ project.name }}</span>
+                          <small>{{ project.local_dir }}</small>
+                        </a-menu-item>
+                      </a-menu>
+                    </template>
+                  </a-dropdown>
+                  <button
+                    v-else
+                    type="button"
+                    class="chip info-control selected"
+                    disabled
+                  >
+                    <span class="chip-label">{{ projectChipLabel }}</span>
+                    <DownOutlined />
+                  </button>
+                </div>
+              </div>
+
+              <div class="task-info-item edit-task-info-item">
+                <span class="info-icon">
+                  <img
+                    :src="pipelineIcon"
+                    alt=""
+                    aria-hidden="true"
+                  />
+                </span>
+                <div class="info-content">
+                  <span class="info-label">流水线</span>
+                  <a-dropdown
+                    v-if="canEditPipeline"
+                    trigger="click"
+                  >
+                    <button
+                      type="button"
+                      class="chip info-control pipeline-chip"
+                      :class="{ selected: selectedPipeline || form.pipeline_uuid }"
+                    >
+                      <img
+                        v-if="selectedPipeline?.avatar"
+                        class="chip-avatar"
+                        :src="selectedPipeline.avatar"
+                        alt=""
+                      />
+                      <span class="chip-label">{{ pipelineChipLabel }}</span>
+                      <DownOutlined />
+                    </button>
+                    <template #overlay>
+                      <a-menu class="pipeline-menu">
+                        <a-menu-item
+                          key="none"
+                          @click="choosePipeline('')"
+                          >暂不指定流水线</a-menu-item
+                        >
+                        <a-menu-divider />
+                        <a-menu-item
+                          v-for="pipeline in pipelines"
+                          :key="pipeline.uuid"
+                          @click="choosePipeline(pipeline.uuid)"
+                        >
+                          <span class="menu-primary">{{ pipeline.name }}</span>
+                          <small>
+                            {{ isPipelineCloud(pipeline) ? '团队同步' : '本地流水线' }} ·
+                            {{ pipeline.steps?.length || 0 }} 步
+                          </small>
+                        </a-menu-item>
+                      </a-menu>
+                    </template>
+                  </a-dropdown>
+                  <button
+                    v-else
+                    type="button"
+                    class="chip info-control pipeline-chip selected"
+                    disabled
+                  >
+                    <img
+                      v-if="task.pipeline_avatar_snapshot || selectedPipeline?.avatar"
+                      class="chip-avatar"
+                      :src="selectedPipeline?.avatar || task.pipeline_avatar_snapshot"
+                      alt=""
+                    />
+                    <span class="chip-label">{{ pipelineChipLabel }}</span>
+                    <DownOutlined />
+                  </button>
+                </div>
+              </div>
+
+              <div class="task-info-item edit-task-info-item">
+                <span class="info-icon">
+                  <img
+                    :src="dateIcon"
+                    alt=""
+                    aria-hidden="true"
+                  />
+                </span>
+                <div class="info-content">
+                  <span class="info-label">预期开始 / 结束</span>
+                  <div class="date-range-control">
+                    <a-date-picker
+                      v-model:value="form.planned_start_date"
+                      value-format="YYYY-MM-DD"
+                      placeholder="开始日期"
+                      size="small"
+                    />
+                    <span aria-hidden="true">～</span>
+                    <a-date-picker
+                      v-model:value="form.planned_end_date"
+                      value-format="YYYY-MM-DD"
+                      placeholder="结束日期"
+                      size="small"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div class="task-info-item edit-task-info-item">
+                <span class="info-icon">
+                  <img
+                    :src="relatedProjectIcon"
+                    alt=""
+                    aria-hidden="true"
+                  />
+                </span>
+                <div class="info-content">
+                  <span class="info-label">关联项目</span>
+                  <a-select
+                    v-model:value="form.child_project_uuids"
+                    class="info-select"
+                    mode="multiple"
+                    :max-tag-count="1"
+                    :options="childProjectOptions"
+                    placeholder="请选择"
+                    size="small"
+                    :disabled="!canEditContext"
+                  />
+                </div>
+              </div>
+
+              <div class="task-info-item edit-task-info-item">
+                <span class="info-icon">
+                  <img
+                    :src="workDirIcon"
+                    alt=""
+                    aria-hidden="true"
+                  />
+                </span>
+                <div class="info-content">
+                  <span class="info-label">关联目录</span>
+                  <div class="directory-content info-directory-control">
+                    <div
+                      v-if="form.additional_dirs.length"
+                      class="directory-list"
+                    >
+                      <div
+                        v-for="(dir, index) in form.additional_dirs"
+                        :key="`${dir}-${index}`"
+                        class="directory-item"
+                      >
+                        <span :title="dir || '未填写'">{{ dir || '未填写' }}</span>
+                        <button
+                          v-if="canEditContext"
+                          type="button"
+                          aria-label="移除关联目录"
+                          @click="form.additional_dirs.splice(index, 1)"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                    <a-button
+                      v-if="canEditContext"
+                      size="small"
+                      class="directory-add"
+                      @click="addDirectory"
+                    >
+                      <PlusOutlined />添加关联目录
+                    </a-button>
+                    <span
+                      v-else-if="!form.additional_dirs.length"
+                      class="directory-empty"
+                      >未设置</span
+                    >
+                  </div>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
+
+        <footer class="modal-footer">
+          <a-button
+            :disabled="saving"
+            @click="cancelEdit"
+            >取消</a-button
+          >
+          <a-button
+            type="primary"
+            :loading="saving"
+            @click="save"
+            >保存</a-button
+          >
+        </footer>
+      </template>
+
+      <div
+        v-else-if="task"
+        class="modal-body"
+      >
         <section class="requirement-pane">
           <div class="requirement-summary">
-            <h3>{{ task.title }}</h3>
-            <div class="requirement-meta">
-              <span class="meta-tag status-tag" :class="statusClass">{{ statusLabel }}</span>
-              <span v-if="task.priority" class="meta-tag priority-tag" :class="priorityClass">
-                {{ priorityLabel }}
-              </span>
-              <span class="meta-divider" aria-hidden="true"></span>
-              <span class="deadline">截止日期：{{ plannedEndDateLabel }}</span>
+            <div class="requirement-title-rule">
+              <h3>{{ task.title }}</h3>
             </div>
           </div>
           <div
+            v-if="descriptionUsesHtml"
             class="detail-desc-markdown"
             v-html="descriptionContent"
             @click="handleDescriptionClick"
           />
+          <MarkdownPreview
+            v-else
+            class="detail-desc-markdown"
+            :content="task.description"
+            :task-uuid="task.uuid"
+            empty-text="暂无描述"
+            @click="handleDescriptionClick"
+          />
+          <button
+            type="button"
+            class="requirement-edit-button"
+            @click="enterEdit"
+          >
+            <EditOutlined />
+            <span>编辑</span>
+          </button>
         </section>
 
         <aside class="task-info-pane">
           <h3>任务信息</h3>
+          <button
+            type="button"
+            class="task-info-close"
+            aria-label="关闭需求详情弹窗"
+            @click="handleOpenChange(false)"
+          >
+            <img
+              :src="closeIcon"
+              alt=""
+              aria-hidden="true"
+            />
+          </button>
           <div class="task-info-list">
             <div class="task-info-item">
               <span class="info-icon">
-                <img :src="workDirIcon" alt="" aria-hidden="true" />
+                <img
+                  :src="workDirIcon"
+                  alt=""
+                  aria-hidden="true"
+                />
               </span>
               <div class="info-content">
                 <span class="info-label">工作目录</span>
-                <span class="info-value" :title="primaryWorkDir">{{ primaryWorkDir }}</span>
+                <span
+                  class="info-value"
+                  :title="primaryWorkDir"
+                  >{{ primaryWorkDir }}</span
+                >
               </div>
             </div>
 
             <div class="task-info-item">
               <span class="info-icon">
-                <img :src="projectIcon" alt="" aria-hidden="true" />
+                <img
+                  :src="priorityIcon"
+                  alt=""
+                  aria-hidden="true"
+                />
+              </span>
+              <div class="info-content">
+                <span class="info-label">任务优先级</span>
+                <span
+                  class="info-value"
+                  :class="priorityClass"
+                  >{{ priorityLabel || '未设置' }}</span
+                >
+              </div>
+            </div>
+
+            <div class="task-info-item">
+              <span class="info-icon">
+                <img
+                  :src="statusIcon"
+                  alt=""
+                  aria-hidden="true"
+                />
+              </span>
+              <div class="info-content">
+                <span class="info-label">任务状态</span>
+                <span
+                  class="info-value"
+                  :class="statusClass"
+                  >{{ statusLabel }}</span
+                >
+              </div>
+            </div>
+
+            <div class="task-info-item">
+              <span class="info-icon">
+                <img
+                  :src="projectIcon"
+                  alt=""
+                  aria-hidden="true"
+                />
               </span>
               <div class="info-content">
                 <span class="info-label">所属项目</span>
@@ -73,7 +526,11 @@
 
             <div class="task-info-item">
               <span class="info-icon">
-                <img :src="pipelineIcon" alt="" aria-hidden="true" />
+                <img
+                  :src="pipelineIcon"
+                  alt=""
+                  aria-hidden="true"
+                />
               </span>
               <div class="info-content">
                 <span class="info-label">流水线</span>
@@ -83,26 +540,36 @@
                     :src="task.pipeline_avatar_snapshot"
                     alt=""
                   />
-                  <span :title="task.pipeline_name_snapshot || '未分配'">
-                    {{ task.pipeline_name_snapshot || '未分配' }}
-                  </span>
+                  <span :title="pipelineDisplayName">{{ pipelineDisplayName }}</span>
                 </span>
               </div>
             </div>
 
             <div class="task-info-item">
               <span class="info-icon">
-                <img :src="dateIcon" alt="" aria-hidden="true" />
+                <img
+                  :src="dateIcon"
+                  alt=""
+                  aria-hidden="true"
+                />
               </span>
               <div class="info-content">
                 <span class="info-label">预期开始 / 结束</span>
-                <span class="info-value" :title="plannedDateRange">{{ plannedDateRange }}</span>
+                <span
+                  class="info-value"
+                  :title="plannedDateRange"
+                  >{{ plannedDateRange }}</span
+                >
               </div>
             </div>
 
-            <div v-if="relatedProjects.length" class="task-info-item">
+            <div class="task-info-item">
               <span class="info-icon">
-                <img :src="relatedProjectIcon" alt="" aria-hidden="true" />
+                <img
+                  :src="relatedProjectIcon"
+                  alt=""
+                  aria-hidden="true"
+                />
               </span>
               <div class="info-content">
                 <span class="info-label">关联项目</span>
@@ -119,12 +586,21 @@
                   </span>
                   <span :title="project.name">{{ project.name }}</span>
                 </span>
+                <span
+                  v-if="!relatedProjects.length"
+                  class="info-value"
+                  >未设置</span
+                >
               </div>
             </div>
 
-            <div v-if="relatedDirectories.length" class="task-info-item">
+            <div class="task-info-item">
               <span class="info-icon">
-                <img :src="workDirIcon" alt="" aria-hidden="true" />
+                <img
+                  :src="workDirIcon"
+                  alt=""
+                  aria-hidden="true"
+                />
               </span>
               <div class="info-content">
                 <span class="info-label">关联目录</span>
@@ -136,27 +612,48 @@
                 >
                   {{ dir }}
                 </span>
+                <span
+                  v-if="!relatedDirectories.length"
+                  class="info-value"
+                  >未设置</span
+                >
               </div>
             </div>
           </div>
         </aside>
       </div>
 
-      <div v-else class="modal-empty">暂无任务信息</div>
+      <div
+        v-else
+        class="modal-empty"
+      >
+        暂无任务信息
+      </div>
     </div>
   </a-modal>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
+import { message } from 'ant-design-vue'
+import { DownOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons-vue'
+import apiClient from '@/api/client'
+import MarkdownPreview from '@/components/MarkdownPreview.vue'
 import closeIcon from '@/assets/icons/task-detail-close.svg'
 import dateIcon from '@/assets/icons/task-detail-date.svg'
 import pipelineIcon from '@/assets/icons/task-detail-pipeline.svg'
+import priorityIcon from '@/assets/icons/task-detail-priority.svg'
 import projectIcon from '@/assets/icons/task-detail-project.svg'
 import relatedProjectIcon from '@/assets/icons/task-detail-related-project.svg'
+import statusIcon from '@/assets/icons/task-detail-status.svg'
 import workDirIcon from '@/assets/icons/task-detail-work-dir.svg'
+import { selectDirectory } from '@/composables/useDesktop'
 import { projectIconPreset } from '@/constants/project-icons'
+import { usePipelineStore } from '@/stores/pipeline'
+import type { LocalProject } from '@/types/project'
 import type { TaskWithDetails } from '@/types/task-detail'
+import { isPipelineCloud } from '@/utils/pipeline'
 
 const props = defineProps<{
   open: boolean
@@ -168,8 +665,30 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:open': [open: boolean]
   'preview-image': [url: string]
+  saved: []
 }>()
 
+const pipelineStore = usePipelineStore()
+const { pipelines } = storeToRefs(pipelineStore)
+const editing = ref(false)
+const saving = ref(false)
+const projects = ref<LocalProject[]>([])
+const form = reactive({
+  title: '',
+  description: '',
+  pipeline_uuid: '',
+  project_uuid: '',
+  child_project_uuids: [] as string[],
+  work_dir: '',
+  additional_dirs: [] as string[],
+  priority: '',
+  planned_start_date: '',
+  planned_end_date: '',
+})
+
+const canEditContext = computed(() => props.status === 'pending')
+const canEditPipeline = computed(() => canEditContext.value && !props.task?.pipeline_snapshot_uuid)
+const descriptionUsesHtml = computed(() => /<[a-z][\s\S]*>/i.test(props.task?.description || ''))
 const statusLabel = computed(() => {
   if (props.status === 'pending') return '待开始'
   if (props.status === 'in_progress') return '进行中'
@@ -177,19 +696,25 @@ const statusLabel = computed(() => {
   return '已完成'
 })
 const statusClass = computed(() => `status-${props.status || 'done'}`)
-const priorityLabel = computed(() => {
-  if (props.task?.priority === 'high' || props.task?.priority === '高') return '高'
-  if (props.task?.priority === 'medium' || props.task?.priority === '中') return '中'
-  return '低'
+const priorityLabel = computed(() => normalizePriority(props.task?.priority))
+const priorityClass = computed(() => {
+  const value = editing.value ? form.priority : priorityLabel.value
+  if (value === '高') return 'priority-高'
+  if (value === '中') return 'priority-中'
+  if (value === '低') return 'priority-低'
+  return ''
 })
-const priorityClass = computed(() => `priority-${priorityLabel.value}`)
 const plannedStartDateLabel = computed(() => formatDate(props.task?.planned_start_date))
 const plannedEndDateLabel = computed(() => formatDate(props.task?.planned_end_date))
 const plannedDateRange = computed(
   () => `${plannedStartDateLabel.value} ～ ${plannedEndDateLabel.value}`,
 )
 const descriptionContent = computed(() => props.renderedDescription || '暂无描述')
-const primaryWorkDir = computed(() => props.task?.work_dir || props.task?.task_dir || '未设置')
+const primaryWorkDir = computed(() =>
+  editing.value
+    ? form.work_dir || '未设置'
+    : props.task?.work_dir || props.task?.task_dir || '未设置',
+)
 const relatedProjects = computed(() =>
   (props.task?.projects || []).filter((project) => project.uuid !== props.task?.project_uuid),
 )
@@ -198,8 +723,85 @@ const relatedDirectories = computed(() => {
     ...(props.task?.work_dirs || []),
     ...relatedProjects.value.map((project) => project.local_dir || project.main_dir || ''),
   ]
-  return [...new Set(directories.filter((dir) => dir && dir !== primaryWorkDir.value))]
+  return [
+    ...new Set(
+      directories.filter((dir) => dir && dir !== (props.task?.work_dir || props.task?.task_dir)),
+    ),
+  ]
 })
+const selectedProject = computed(() =>
+  projects.value.find((item) => item.uuid === form.project_uuid),
+)
+const selectedChildren = computed(() =>
+  projects.value.filter((item) => form.child_project_uuids.includes(item.uuid)),
+)
+const selectedPipeline = computed(() =>
+  pipelines.value.find((item) => item.uuid === form.pipeline_uuid),
+)
+const childProjectOptions = computed(() =>
+  projects.value
+    .filter((item) => item.uuid !== form.project_uuid)
+    .map((item) => ({ label: item.name, value: item.uuid })),
+)
+const pipelineDisplayName = computed(() => {
+  if (form.pipeline_uuid && editing.value) {
+    return pipelines.value.find((item) => item.uuid === form.pipeline_uuid)?.name || '未分配'
+  }
+  return props.task?.pipeline_name_snapshot || '未分配'
+})
+const projectChipLabel = computed(
+  () => selectedProject.value?.name || props.task?.project_name || '所属项目',
+)
+const pipelineChipLabel = computed(
+  () => selectedPipeline.value?.name || props.task?.pipeline_name_snapshot || '流水线',
+)
+const allWorkDirs = computed(() => {
+  const dirs = [
+    form.work_dir,
+    ...selectedChildren.value.map((item) => item.local_dir),
+    ...form.additional_dirs,
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean)
+  return [...new Map(dirs.map((value) => [value.toLowerCase(), value])).values()]
+})
+
+watch(
+  () => props.open,
+  (open) => {
+    if (!open) {
+      editing.value = false
+      saving.value = false
+      return
+    }
+    syncFormFromTask()
+  },
+)
+
+watch(
+  () => props.task?.uuid,
+  () => {
+    if (props.open && !editing.value) syncFormFromTask()
+  },
+)
+
+function normalizePriority(value?: string) {
+  if (value === 'high' || value === '高') return '高'
+  if (value === 'medium' || value === '中') return '中'
+  if (value === 'low' || value === '低') return '低'
+  return ''
+}
+
+function formatDateValue(value?: string | number) {
+  if (!value) return ''
+  if (typeof value === 'string' && !/^\d+$/.test(value)) return value
+  const timestamp = Number(value)
+  const date = new Date(timestamp < 1e12 ? timestamp * 1000 : timestamp)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
 
 function projectIconStyle(type?: string) {
   const icon = projectIconPreset(type)
@@ -211,14 +813,7 @@ function projectIconSymbol(type?: string) {
 }
 
 function formatDate(value?: string | number) {
-  if (!value) return '未设置'
-  if (typeof value === 'string' && !/^\d+$/.test(value)) return value
-  const timestamp = Number(value)
-  const date = new Date(timestamp < 1e12 ? timestamp * 1000 : timestamp)
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+  return formatDateValue(value) || '未设置'
 }
 
 function handleOpenChange(open: boolean) {
@@ -229,37 +824,167 @@ function handleDescriptionClick(event: MouseEvent) {
   const target = event.target
   if (target instanceof HTMLImageElement) emit('preview-image', target.src)
 }
+
+function syncFormFromTask() {
+  const task = props.task
+  form.title = task?.title || ''
+  form.description = task?.description || ''
+  form.pipeline_uuid = task?.selected_pipeline_uuid || ''
+  form.project_uuid = task?.project_uuid || ''
+  form.child_project_uuids = (task?.projects || [])
+    .filter((project) => project.uuid !== task?.project_uuid)
+    .map((project) => project.uuid)
+  form.work_dir = task?.work_dir || ''
+  const related = new Set(form.child_project_uuids)
+  const childDirs = new Set(
+    (task?.projects || [])
+      .filter((project) => related.has(project.uuid))
+      .map((project) => (project.local_dir || project.main_dir || '').trim())
+      .filter(Boolean),
+  )
+  form.additional_dirs = (task?.work_dirs || []).filter(
+    (dir) => dir && dir !== form.work_dir && !childDirs.has(dir),
+  )
+  form.priority = normalizePriority(task?.priority)
+  form.planned_start_date = formatDateValue(task?.planned_start_date)
+  form.planned_end_date = formatDateValue(task?.planned_end_date)
+}
+
+async function enterEdit() {
+  syncFormFromTask()
+  editing.value = true
+  try {
+    const [pipelineResult, projectResult] = await Promise.allSettled([
+      pipelineStore.loadPipelines(true),
+      apiClient.get<{ items: LocalProject[] }>('/projects'),
+    ])
+    projects.value = projectResult.status === 'fulfilled' ? projectResult.value.items || [] : []
+    if (pipelineResult.status === 'rejected') message.warning('流水线加载失败，可稍后重试')
+    if (projectResult.status === 'rejected') message.warning('项目加载失败，仍可直接选择工作目录')
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '加载编辑选项失败')
+  }
+}
+
+function cancelEdit() {
+  editing.value = false
+  syncFormFromTask()
+}
+
+function chooseProject(uuid: string) {
+  form.project_uuid = uuid
+  form.child_project_uuids = form.child_project_uuids.filter((item) => item !== form.project_uuid)
+  const project = projects.value.find((item) => item.uuid === form.project_uuid)
+  if (project) form.work_dir = project.local_dir
+}
+
+function choosePipeline(uuid: string) {
+  form.pipeline_uuid = uuid
+}
+
+async function chooseMainDirectory() {
+  if (!canEditContext.value) return
+  try {
+    const selected = await selectDirectory(form.work_dir)
+    if (selected) {
+      form.work_dir = selected
+      form.project_uuid = ''
+    }
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '无法打开目录选择器')
+  }
+}
+
+async function addDirectory() {
+  if (!canEditContext.value) return
+  try {
+    const selected = await selectDirectory(form.work_dir)
+    if (!selected) return
+    if (allWorkDirs.value.some((dir) => dir.toLowerCase() === selected.toLowerCase())) {
+      message.warning('该目录已在工作目录中')
+      return
+    }
+    form.additional_dirs.push(selected)
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '无法打开目录选择器')
+  }
+}
+
+async function save() {
+  if (!props.task) return
+  if (!form.title.trim()) return message.warning('请输入任务标题')
+  if (canEditContext.value && !form.work_dir.trim())
+    return message.warning('请选择所属项目或主工作目录')
+  saving.value = true
+  try {
+    const payload: Record<string, unknown> = {
+      title: form.title.trim(),
+      content: form.description,
+      description: form.description,
+      priority: form.priority || undefined,
+      planned_start_date: form.planned_start_date || undefined,
+      planned_end_date: form.planned_end_date || undefined,
+    }
+    if (canEditContext.value) {
+      payload.project_uuid = form.project_uuid || undefined
+      payload.child_project_uuids = form.child_project_uuids
+      payload.work_dir = form.work_dir
+      payload.work_dirs = allWorkDirs.value
+      if (canEditPipeline.value) payload.pipeline_uuid = form.pipeline_uuid || undefined
+    }
+    await apiClient.put(`/tasks/${encodeURIComponent(props.task.uuid)}`, payload)
+    message.success('任务已更新')
+    editing.value = false
+    emit('saved')
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '任务更新失败')
+  } finally {
+    saving.value = false
+  }
+}
 </script>
 
 <style scoped>
 .task-detail-modal {
   overflow: hidden;
-  border-radius: 16px;
+  border-radius: 20px;
   color: #262626;
   background: #fff;
-  font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+.task-detail-modal.is-editing {
+  overflow: visible;
 }
 
 .modal-header {
   display: flex;
-  height: 56px;
+  min-height: 60px;
   box-sizing: border-box;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 24px;
+  padding: 18px 24px 14px;
   border-bottom: 1px solid #f0f0f0;
 }
 
-.modal-header h2,
-.task-info-pane h3 {
-  margin: 0;
-  color: #262626;
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 24px;
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
-.modal-header button {
+.header-text-button {
+  height: 24px;
+  padding: 0;
+  border: 0;
+  color: #3157e2;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.header-close {
   display: flex;
   width: 16px;
   height: 16px;
@@ -271,9 +996,18 @@ function handleDescriptionClick(event: MouseEvent) {
   cursor: pointer;
 }
 
-.modal-header button img {
-  width: 12px;
-  height: 12px;
+.header-close img {
+  width: 100%;
+  height: 100%;
+}
+
+.modal-header h2,
+.task-info-pane h3 {
+  margin: 0;
+  color: #262626;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 28px;
 }
 
 .modal-body {
@@ -308,13 +1042,370 @@ function handleDescriptionClick(event: MouseEvent) {
   margin-bottom: 16px;
 }
 
-.requirement-summary h3 {
+.requirement-summary h3,
+.task-primary .title-input {
   margin: 0 0 12px;
   color: #262626;
   font-size: 22px;
   font-weight: 600;
   line-height: 32px;
   overflow-wrap: anywhere;
+}
+
+.task-primary {
+  padding: 20px 24px 0;
+}
+
+/* antd borderless 的 border:none 选择器特异性更高，下边框需 !important 才能稳定生效（含聚焦态） */
+.task-primary .title-input {
+  height: 56px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid #f0f0f0 !important;
+  border-radius: 0;
+  font-weight: 500;
+  line-height: 36px;
+}
+
+.description-box {
+  display: flex;
+  height: 272px;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.description-input {
+  height: 272px;
+  min-height: 0;
+  flex: 1;
+  border: 0;
+  border-radius: 0;
+  color: #262626;
+  font-size: 14px;
+  line-height: 26px;
+  overflow-y: auto;
+  resize: none;
+}
+
+.task-primary :deep(.ant-input),
+.task-primary :deep(textarea) {
+  padding-right: 0 !important;
+  padding-left: 0 !important;
+}
+
+.task-primary :deep(.description-input) {
+  padding: 8px 4px !important;
+}
+
+.description-input::-webkit-scrollbar {
+  width: 11px;
+}
+
+.description-input::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.description-input::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 16px;
+  background: #a1a7b2;
+  background-clip: content-box;
+}
+
+.chip-row {
+  position: relative;
+  display: flex;
+  min-height: 56px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 24px 14px;
+}
+
+.chip-row.has-expanded {
+  min-height: 60px;
+  padding-bottom: 18px;
+}
+
+.chip,
+.more-chip {
+  display: flex;
+  min-width: 0;
+  height: 32px;
+  max-width: 180px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid #d9d9d9;
+  border-radius: 16px;
+  color: #bfbfbf;
+  background: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.chip-icon {
+  flex: 0 0 auto;
+  color: #bfbfbf;
+  font-size: 16px;
+}
+
+.chip :deep(.anticon-down) {
+  display: none;
+}
+
+.chip.selected {
+  border-color: #d9d9d9;
+  color: #262626;
+  background: #fff;
+}
+
+.chip:disabled {
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.chip b {
+  flex: 0 0 auto;
+  color: #e34d59;
+  font-weight: 500;
+}
+
+.chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.priority-value {
+  display: inline-flex;
+  height: 22px;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px solid currentColor;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.priority-value.high {
+  color: #fb363f;
+}
+
+.priority-value.medium {
+  color: #d97706;
+}
+
+.priority-value.low {
+  color: #3157e2;
+}
+
+.chip-avatar {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.more-chip {
+  width: 32px;
+  margin-left: auto;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  color: #262626;
+}
+
+.more-menu {
+  position: absolute;
+  z-index: 30;
+  top: 48px;
+  right: 24px;
+  width: 200px;
+  padding: 5px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+}
+
+.more-menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  color: #4b5563;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+
+.more-menu button:hover:not(:disabled) {
+  background: #f8fafc;
+}
+
+.more-menu button:disabled {
+  color: #bfbfbf;
+  cursor: not-allowed;
+}
+
+.expanded-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 24px;
+}
+
+.expanded-row {
+  display: flex;
+  min-width: 0;
+  height: 48px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  border-radius: 6px;
+  background: #f2f4f7;
+}
+
+.expanded-row > span:first-child {
+  flex: 0 0 104px;
+  color: #262626;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.expanded-row :deep(.ant-picker) {
+  min-width: 0;
+  height: 32px;
+  flex: 1;
+  border-color: #d9d9d9;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.expanded-row :deep(.ant-picker-input > input) {
+  color: #8c8c8c;
+  font-size: 14px;
+}
+
+.expanded-close {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: #8c8c8c;
+  background: transparent;
+  cursor: pointer;
+}
+
+.expanded-close:hover {
+  color: #4b5563;
+  background: #f5f6f8;
+}
+
+.expanded-close :deep(.anticon) {
+  font-size: 14px;
+}
+
+.dirs-row.has-directories {
+  height: auto;
+  min-height: 82px;
+  align-items: flex-start;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.dirs-row.has-directories > span:first-child {
+  margin-top: 5px;
+}
+
+.directory-content {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.directory-list {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.children-row :deep(.ant-select) {
+  min-width: 0;
+  flex: 1;
+}
+
+.children-row,
+.dirs-row {
+  grid-column: 1 / -1;
+}
+
+.children-row :deep(.ant-select-selector) {
+  min-height: 32px !important;
+  border-color: #d9d9d9 !important;
+  border-radius: 6px !important;
+  background: #fff !important;
+}
+
+.children-row :deep(.ant-select-selection-placeholder) {
+  color: #bfbfbf;
+  font-size: 14px;
+}
+
+.directory-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: #4b5563;
+  background: #fff;
+  font-size: 11px;
+}
+
+.directory-item > span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-item > button {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.directory-add {
+  height: 32px;
+  border-color: #d9d9d9;
+  border-radius: 6px;
+  color: #4b5563;
+  background: #fff;
 }
 
 .requirement-meta {
@@ -371,17 +1462,11 @@ function handleDescriptionClick(event: MouseEvent) {
   background: #f0f0f0;
 }
 
-.deadline {
-  overflow: hidden;
-  color: #8c8c8c;
-  font-size: 14px;
-  line-height: 22px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .detail-desc-markdown {
+  min-height: 0;
+  padding: 0;
   color: #262626;
+  background: transparent;
   font-size: 14px;
   font-weight: 400;
   line-height: 28px;
@@ -536,6 +1621,15 @@ function handleDescriptionClick(event: MouseEvent) {
   white-space: nowrap;
 }
 
+.modal-footer {
+  display: flex;
+  height: 64px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 24px;
+}
+
 .modal-empty {
   display: flex;
   height: 360px;
@@ -543,6 +1637,11 @@ function handleDescriptionClick(event: MouseEvent) {
   justify-content: center;
   color: #8c8c8c;
   font-size: 14px;
+}
+
+.menu-primary {
+  display: block;
+  color: #374151;
 }
 
 :global(.task-detail-info-modal .ant-modal) {
@@ -556,14 +1655,544 @@ function handleDescriptionClick(event: MouseEvent) {
   border-radius: 16px;
 }
 
+:global(.task-edit-modal .ant-modal-content) {
+  overflow: visible;
+}
+
 :global(.task-detail-info-modal .ant-modal-body) {
   padding: 0;
+}
+
+:global(.task-edit-modal .ant-dropdown-menu-item) {
+  min-width: 220px;
+}
+
+:global(.task-edit-modal .ant-dropdown-menu-item small) {
+  display: block;
+  max-width: 270px;
+  overflow: hidden;
+  color: #9ca3af;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Figma node 2870:9784 — 922px two-column requirement detail dialog. */
+.task-detail-modal,
+.task-detail-modal.is-editing {
+  overflow: hidden;
+  border-radius: 16px;
+}
+
+.modal-body {
+  height: 716px;
+  min-height: 0;
+  grid-template-columns: 600px 322px;
+}
+
+.requirement-pane {
+  position: relative;
+  box-sizing: border-box;
+  padding: 24px;
+}
+
+.requirement-title-rule {
+  width: 100%;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #3157e2;
+}
+
+.requirement-summary {
+  margin-bottom: 16px;
+}
+
+.requirement-summary h3 {
+  margin: 0;
+  color: #262626;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 32px;
+}
+
+.requirement-meta {
+  margin-top: 12px;
+}
+
+.detail-desc-markdown {
+  color: #262626;
+  font-size: 14px;
+  line-height: 28px;
+}
+
+.requirement-edit-button {
+  position: absolute;
+  z-index: 2;
+  top: 88px;
+  right: 22px;
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border: 1px solid #e6eaf1;
+  border-radius: 9px;
+  color: #262626;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 5px 16px rgba(23, 35, 60, 0.07);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.15px;
+  line-height: 22px;
+}
+
+.requirement-edit-button :deep(.anticon) {
+  font-size: 14px;
+}
+
+.task-info-pane {
+  position: relative;
+  box-sizing: border-box;
+  padding: 24px;
+}
+
+.task-info-pane h3 {
+  margin: 0 0 16px;
+  color: #262626;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.task-info-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.task-info-close img {
+  width: 100%;
+  height: 100%;
+}
+
+.task-info-list {
+  gap: 16px;
+}
+
+.task-info-item {
+  gap: 8px;
+}
+
+.info-content {
+  gap: 4px;
+}
+
+.info-label {
+  color: #8c8c8c;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.info-value {
+  display: flex;
+  width: 100%;
+  height: 32px;
+  box-sizing: border-box;
+  align-items: center;
+  padding: 4px 12px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  color: #262626;
+  background: #fff;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.info-value-with-avatar {
+  gap: 8px;
+}
+
+.info-value-with-avatar > span:last-child {
+  min-width: 0;
+  flex: 1;
+}
+
+.info-icon :deep(.anticon) {
+  color: #7a8699;
+  font-size: 16px;
+}
+
+.edit-modal-body {
+  overflow: hidden;
+}
+
+.edit-requirement-pane {
+  display: flex;
+  overflow: hidden;
+  flex-direction: column;
+}
+
+.edit-title-heading {
+  padding-bottom: 8px;
+  border-bottom: 1px solid #3157e2;
+}
+
+.edit-title-heading .title-input {
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  border: 0 !important;
+  border-radius: 0;
+  color: #262626;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 32px;
+}
+
+.edit-requirement-pane :deep(.ant-input),
+.edit-requirement-pane :deep(textarea) {
+  padding-right: 0 !important;
+  padding-left: 0 !important;
+}
+
+.edit-requirement-pane .description-box {
+  height: auto;
+  min-height: 0;
+  flex: 1;
+  margin-top: 16px;
+}
+
+.edit-requirement-pane .description-input {
+  height: 100% !important;
+  min-height: 0;
+  padding: 0 4px 0 0 !important;
+  color: #262626;
+  font-size: 14px;
+  line-height: 28px;
+}
+
+.edit-task-info-pane {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.edit-info-list {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 16px;
+  padding: 0;
+}
+
+.edit-info-list.has-expanded {
+  min-height: 0;
+  padding-bottom: 0;
+}
+
+.edit-info-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.edit-info-label {
+  color: #8c8c8c;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.edit-info-field .chip {
+  width: 100%;
+  max-width: none;
+  height: 32px;
+  box-sizing: border-box;
+  gap: 8px;
+  padding: 4px 12px;
+  border-color: #d9d9d9;
+  border-radius: 6px;
+  color: #262626;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.edit-info-field .chip-icon {
+  color: #7a8699;
+}
+
+.edit-info-field .chip :deep(.anticon-down) {
+  display: inline-flex;
+  margin-left: auto;
+  color: #7a8699;
+  font-size: 12px;
+}
+
+.edit-info-field .chip-label {
+  flex: 1;
+  color: inherit;
+  text-align: left;
+}
+
+.edit-info-field .priority-value {
+  height: 22px;
+  padding: 0 8px;
+}
+
+.edit-extra-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 0 0;
+}
+
+.edit-extra-fields .expanded-row {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  box-sizing: border-box;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.edit-extra-fields .expanded-row > span:first-child {
+  flex: 0 0 auto;
+  color: #8c8c8c;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.edit-extra-fields .expanded-row :deep(.ant-picker) {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  box-sizing: border-box;
+  border-color: #d9d9d9;
+  border-radius: 6px;
+}
+
+.edit-extra-fields .children-row :deep(.ant-select) {
+  width: 100%;
+  min-width: 0;
+}
+
+.edit-extra-fields .children-row :deep(.ant-select-selector) {
+  min-height: 32px !important;
+  border-color: #d9d9d9 !important;
+  border-radius: 6px !important;
+}
+
+.edit-extra-fields .expanded-close {
+  position: absolute;
+  z-index: 1;
+  right: 4px;
+  bottom: 4px;
+  width: 24px;
+  height: 24px;
+  color: #8c8c8c;
+  background: #fff;
+}
+
+.edit-extra-fields .directory-content {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.edit-extra-fields .directory-item {
+  padding: 4px 8px;
+  background: #f2f4f7;
+}
+
+.edit-extra-fields .directory-add {
+  margin-top: 2px;
+  border-color: #d9d9d9;
+  border-radius: 6px;
+}
+
+.edit-task-info-list {
+  gap: 16px;
+}
+
+.edit-task-info-item .info-control {
+  width: 100%;
+  max-width: none;
+  height: 32px;
+  box-sizing: border-box;
+  gap: 8px;
+  padding: 4px 12px;
+  border-color: #d9d9d9;
+  border-radius: 6px;
+  color: #262626;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.edit-task-info-item .info-control .chip-label {
+  flex: 1;
+  color: inherit;
+  text-align: left;
+}
+
+.edit-task-info-item .info-control :deep(.anticon-down) {
+  display: inline-flex;
+  margin-left: auto;
+  color: #7a8699;
+  font-size: 12px;
+}
+
+.edit-task-info-item .priority-value {
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.info-value.priority-高 {
+  color: #fb363f;
+}
+
+.info-value.priority-中 {
+  color: #fa8c16;
+}
+
+.info-value.priority-低 {
+  color: #3157e2;
+}
+
+.date-range-control {
+  display: flex;
+  width: 100%;
+  height: 32px;
+  box-sizing: border-box;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.date-range-control > span {
+  flex: 0 0 auto;
+  color: #8c8c8c;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.date-range-control :deep(.ant-picker) {
+  min-width: 0;
+  height: 30px;
+  flex: 1;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.date-range-control :deep(.ant-picker-input > input) {
+  min-width: 0;
+  color: #262626;
+  font-size: 12px;
+}
+
+.edit-task-info-item :deep(.info-select) {
+  width: 100%;
+}
+
+.edit-task-info-item :deep(.info-select .ant-select-selector) {
+  min-height: 32px !important;
+  border-color: #d9d9d9 !important;
+  border-radius: 6px !important;
+  background: #fff !important;
+}
+
+.info-directory-control {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.info-directory-control .directory-item {
+  padding: 4px 8px;
+  background: #f2f4f7;
+}
+
+.info-directory-control .directory-add {
+  margin-top: 2px;
+  border-color: #d9d9d9;
+  border-radius: 6px;
+}
+
+.directory-empty {
+  display: block;
+  padding: 0 8px;
+  color: #8c8c8c;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.modal-footer {
+  height: 52px;
+  box-sizing: border-box;
+  padding: 0 24px;
+  border-top: 1px solid #d9d9d9;
+}
+
+.modal-footer :deep(.ant-btn) {
+  height: 32px;
+  padding: 5px 16px;
+  border-color: #d9d9d9;
+  border-radius: 6px;
+  color: #595959;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.modal-footer :deep(.ant-btn-primary) {
+  border-color: #3157e2;
+  color: #fff;
+  background: #3157e2;
+}
+
+:global(.task-edit-modal .ant-modal-content) {
+  overflow: hidden;
+}
+
+@media (min-width: 761px) and (max-width: 954px) {
+  .modal-body {
+    grid-template-columns: minmax(0, 1fr) 322px;
+  }
 }
 
 @media (max-width: 760px) {
   .modal-body {
     display: block;
-    height: calc(100vh - 88px);
+    height: calc(100vh - 96px);
     min-height: 0;
     overflow-y: auto;
   }
@@ -583,6 +2212,23 @@ function handleDescriptionClick(event: MouseEvent) {
 
   .requirement-meta {
     flex-wrap: wrap;
+  }
+
+  .description-box,
+  .description-input {
+    height: 180px;
+  }
+
+  .edit-requirement-pane {
+    min-height: 252px;
+  }
+
+  .requirement-edit-button {
+    right: 18px;
+  }
+
+  .expanded-fields {
+    grid-template-columns: 1fr;
   }
 }
 </style>

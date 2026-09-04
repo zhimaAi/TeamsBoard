@@ -187,6 +187,46 @@ func (m *MemStore) UpdateStep(pipelineUUID, stepUUID, cliType, modelName string)
 	return nil, ErrStepNotFound
 }
 
+// BatchUpdateStepExecution validates all step UUIDs before mutating the cloud
+// pipeline cache, so one missing target cannot leave a partially updated set.
+func (m *MemStore) BatchUpdateStepExecution(pipelineUUID string, stepUUIDs []string, cliType, modelName string) (*Pipeline, error) {
+	cliType = strings.TrimSpace(cliType)
+	modelName = strings.TrimSpace(modelName)
+	if cliType == "" || modelName == "" {
+		return nil, fmt.Errorf("云端 Agent 编排必须配置 CLI 和模型")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pipe := m.byUUID[pipelineUUID]
+	if pipe == nil {
+		return nil, ErrNotFound
+	}
+	indices := make([]int, 0, len(stepUUIDs))
+	for _, stepUUID := range stepUUIDs {
+		found := -1
+		for idx := range pipe.Steps {
+			if pipe.Steps[idx].UUID == stepUUID {
+				found = idx
+				break
+			}
+		}
+		if found < 0 {
+			return nil, fmt.Errorf("%w: %s", ErrStepNotFound, stepUUID)
+		}
+		indices = append(indices, found)
+	}
+
+	now := time.Now().UnixMilli()
+	for _, idx := range indices {
+		pipe.Steps[idx].CLIType = cliType
+		pipe.Steps[idx].ModelName = modelName
+		pipe.Steps[idx].UpdatedAt = now
+	}
+	pipe.UpdatedAt = now
+	return clonePipeline(pipe), nil
+}
+
 func (m *MemStore) findStepLocked(pipelineUUID, stepUUID string) *Step {
 	pipe := m.byUUID[pipelineUUID]
 	if pipe == nil {

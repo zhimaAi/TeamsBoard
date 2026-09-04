@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { message } from 'ant-design-vue'
 import {
@@ -14,7 +14,12 @@ import {
   PlusOutlined,
 } from '@ant-design/icons-vue'
 import apiClient from '@/api/client'
+import { useCreateTaskDefaults } from '@/composables/useCreateTaskDefaults'
 import { isDesktopRuntime, selectDirectory } from '@/composables/useDesktop'
+import {
+  formatPastedImageContent,
+  useTaskImageAttachments,
+} from '@/composables/useTaskImageAttachments'
 import { usePipelineStore } from '@/stores/pipeline'
 import type { Pipeline } from '@/types/pipeline'
 import type { LocalProject } from '@/types/project'
@@ -31,6 +36,15 @@ const pipelineStore = usePipelineStore()
 const { pipelines } = storeToRefs(pipelineStore)
 const loading = ref(false)
 const saving = ref(false)
+const { getCreateTaskDefaults, saveCreateTaskDefaults } = useCreateTaskDefaults()
+const {
+  addImages,
+  buildDraftAttachmentInputs,
+  clear: clearImageAttachments,
+  isSaving: isSavingPastedImages,
+  removeAttachmentMarkers,
+} = useTaskImageAttachments()
+const descriptionRef = ref<HTMLTextAreaElement>()
 const projects = ref<LocalProject[]>([])
 const form = reactive({
   title: '',
@@ -83,6 +97,7 @@ function pipelineLabel(pipeline?: Pipeline) {
   return pipeline?.name || '流水线'
 }
 function reset() {
+  clearImageAttachments()
   Object.assign(form, {
     title: props.initialWorkItem?.title || '',
     description: props.initialWorkItem?.description || '',
@@ -101,6 +116,70 @@ function reset() {
   showDirs.value = false
 }
 
+async function handleDescriptionPaste(event: ClipboardEvent) {
+  if (!event.clipboardData) return
+  const files = [...event.clipboardData.items]
+    .filter((item) => item.type.startsWith('image/'))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file))
+  if (!files.length) return
+  if (isSavingPastedImages.value) {
+    event.preventDefault()
+    message.warning('上一批图片正在保存，请稍后再粘贴')
+    return
+  }
+  const textarea = descriptionRef.value
+  const value = form.description
+  const start = textarea?.selectionStart ?? value.length
+  const end = textarea?.selectionEnd ?? start
+  const pastedText = event.clipboardData.getData('text/plain')
+  const pastedHtml = event.clipboardData.getData('text/html')
+  event.preventDefault()
+  let insertedImageMarkers = false
+  try {
+    const attachments = addImages(files)
+    insertPastedDescription(
+      pastedText,
+      pastedHtml,
+      attachments.map((attachment) => attachment.marker),
+      start,
+      end,
+    )
+    insertedImageMarkers = true
+    await nextTick()
+    descriptionRef.value?.focus()
+  } catch (error) {
+    if (insertedImageMarkers) form.description = removeAttachmentMarkers(form.description)
+    clearImageAttachments()
+    message.error(error instanceof Error ? error.message : '图片粘贴失败')
+  }
+}
+
+function insertPastedDescription(
+  text: string,
+  html: string,
+  markers: string[],
+  start: number,
+  end: number,
+) {
+  const value = form.description
+  const insertStart = Math.min(start, value.length)
+  const insertEnd = Math.min(Math.max(end, insertStart), value.length)
+  const inserted = formatPastedImageContent(
+    text,
+    html,
+    markers,
+    value.slice(0, insertStart),
+    value.slice(insertEnd),
+  )
+  form.description = `${value.slice(0, insertStart)}${inserted}${value.slice(insertEnd)}`
+  const caret = insertStart + inserted.length
+  nextTick(() => {
+    descriptionRef.value?.focus()
+    descriptionRef.value?.setSelectionRange(caret, caret)
+  })
+}
+
 async function load() {
   loading.value = true
   const [pipelineResult, projectResult] = await Promise.allSettled([
@@ -111,7 +190,27 @@ async function load() {
   if (pipelineResult.status === 'rejected')
     message.warning('流水线加载失败，可不指定流水线创建任务')
   if (projectResult.status === 'rejected') message.warning('项目加载失败，仍可直接选择工作目录')
+  applyCreateTaskDefaults()
   loading.value = false
+}
+
+function applyCreateTaskDefaults() {
+  const defaults = getCreateTaskDefaults()
+  if (defaults.project_uuid && projects.value.some((item) => item.uuid === defaults.project_uuid)) {
+    form.project_uuid = defaults.project_uuid
+  }
+  if (defaults.work_dir) {
+    form.work_dir = defaults.work_dir
+  } else if (form.project_uuid) {
+    const project = projects.value.find((item) => item.uuid === form.project_uuid)
+    if (project?.local_dir) form.work_dir = project.local_dir
+  }
+  if (
+    defaults.pipeline_uuid &&
+    pipelines.value.some((item) => item.uuid === defaults.pipeline_uuid)
+  ) {
+    form.pipeline_uuid = defaults.pipeline_uuid
+  }
 }
 
 function chooseProject(uuid: string) {
@@ -157,10 +256,12 @@ async function addDirectory() {
 async function create() {
   if (!form.title.trim()) return message.warning('请输入任务标题')
   if (!form.work_dir.trim()) return message.warning('请选择所属项目或主工作目录')
+  if (isSavingPastedImages.value) return message.warning('图片正在保存，请稍后创建任务')
   if (form.additional_dirs.some((item) => !item.trim()))
     return message.warning('请填写或移除空的关联目录')
   saving.value = true
   try {
+    const attachments = await buildDraftAttachmentInputs(form.description)
     const result = await apiClient.post<{ uuid: string }>('/tasks', {
       title: form.title.trim(),
       content: form.description,
@@ -176,6 +277,12 @@ async function create() {
       status: props.initialStatus || 'pending',
       work_item_type: props.initialWorkItem?.type,
       work_item_id: props.initialWorkItem?.id,
+      attachments,
+    })
+    saveCreateTaskDefaults({
+      project_uuid: form.project_uuid,
+      work_dir: form.work_dir,
+      pipeline_uuid: form.pipeline_uuid,
     })
     message.success('本地任务已创建')
     emit('created', result.uuid)
@@ -200,14 +307,11 @@ watch(moreOpen, (open) => {
 })
 onUnmounted(() => document.removeEventListener('click', onOutsideClick))
 
-watch(
-  pipelines,
-  (items) => {
-    if (!items.some((item) => item.uuid === form.pipeline_uuid)) {
-      form.pipeline_uuid = ''
-    }
-  },
-)
+watch(pipelines, (items) => {
+  if (!items.some((item) => item.uuid === form.pipeline_uuid)) {
+    form.pipeline_uuid = ''
+  }
+})
 
 watch(
   () => props.open,
@@ -250,13 +354,17 @@ watch(
           placeholder="自定义名称"
           class="title-input"
         />
-        <a-textarea
-          v-model:value="form.description"
-          :auto-size="false"
-          :bordered="false"
-          placeholder="添加描述…"
-          class="description-input"
-        />
+        <div class="description-box">
+          <a-textarea
+            ref="descriptionRef"
+            v-model:value="form.description"
+            :auto-size="false"
+            :bordered="false"
+            placeholder="添加描述…"
+            class="description-input"
+            @paste="handleDescriptionPaste"
+          />
+        </div>
       </section>
       <div
         class="chip-row"
@@ -596,8 +704,18 @@ watch(
   line-height: 34px;
 }
 
+.description-box {
+  display: flex;
+  height: 293px;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .description-input {
   height: 293px;
+  min-height: 0;
+  flex: 1;
   border: 0;
   border-radius: 0;
   color: #262626;
@@ -957,6 +1075,7 @@ watch(
 }
 
 @media (max-width: 760px) {
+  .description-box,
   .description-input {
     height: 180px;
   }

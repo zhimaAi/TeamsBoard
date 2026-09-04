@@ -2,6 +2,11 @@ export type PipelineSource = 'local' | 'cloud'
 export type StepBusinessStatus = 'pending' | 'active' | 'completed'
 export type ExecutionStatus = 'idle' | 'created' | 'running' | 'success' | 'failed' | 'stopped' | 'interrupted' | ''
 
+export interface ConversationRuntimeConfig {
+  cli_type: string
+  model_name: string
+}
+
 export interface PipelineStep {
   uuid: string
   pipeline_uuid?: string
@@ -56,6 +61,14 @@ export interface TaskProgress {
   created_at: number
   started_at?: number
   finished_at?: number
+}
+
+export interface CompleteStepResponse {
+  task_done: boolean
+  next_step_uuid?: string
+  session_uuid?: string
+  start_error?: string
+  auto_started: boolean
 }
 
 export interface LocalTask {

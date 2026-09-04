@@ -1,4 +1,12 @@
-export type ProjectIconKind = 'folder' | 'rocket' | 'code' | 'database' | 'globe' | 'mobile' | 'custom'
+export type ProjectIconKind =
+  | 'folder'
+  | 'rocket'
+  | 'code'
+  | 'database'
+  | 'globe'
+  | 'mobile'
+  | 'image'
+  | 'custom'
 
 export interface LocalProject {
   uuid: string

@@ -1,5 +1,8 @@
 <template>
-  <div class="task-detail-page" :class="{ embedded }">
+  <div
+    class="task-detail-page"
+    :class="{ embedded }"
+  >
     <header class="detail-header">
       <button
         v-if="!embedded"
@@ -14,7 +17,10 @@
       <div class="detail-title">
         <h1 class="detail-title-text">看板详情</h1>
       </div>
-      <div v-if="task" class="header-controls">
+      <div
+        v-if="task"
+        class="header-controls"
+      >
         <a-select
           v-model:value="selectedTaskStatus"
           class="status-select"
@@ -23,7 +29,10 @@
           aria-label="任务状态"
           @change="changeStatus"
         />
-        <div class="work-dir" :title="task.work_dir || '未设置工作目录'">
+        <div
+          class="work-dir"
+          :title="task.work_dir || '未设置工作目录'"
+        >
           <FolderOpenOutlined /><span>{{ task.work_dir || '未设置工作目录' }}</span>
         </div>
         <button
@@ -33,10 +42,20 @@
           aria-label="查看任务详情"
           @click="detailModalOpen = true"
         >
-          <img class="detail-info-icon" :src="detailInfoIcon" alt="" aria-hidden="true" />
+          <img
+            class="detail-info-icon"
+            :src="detailInfoIcon"
+            alt=""
+            aria-hidden="true"
+          />
         </button>
-        <button v-if="taskStatus === 'pending'" type="button" class="start-button" :disabled="starting"
-          @click="startTask">
+        <button
+          v-if="taskStatus === 'pending'"
+          type="button"
+          class="start-button"
+          :disabled="starting"
+          @click="startTask"
+        >
           {{ starting ? '启动中…' : '启动任务' }}
         </button>
         <button
@@ -47,39 +66,91 @@
           aria-label="删除任务"
           @click="deleteTask"
         >
-          <img :src="deleteTaskIcon" alt="" aria-hidden="true" />
+          <img
+            :src="deleteTaskIcon"
+            alt=""
+            aria-hidden="true"
+          />
         </button>
       </div>
     </header>
 
-    <section v-if="task" class="pipeline-card">
+    <section
+      v-if="task"
+      class="pipeline-card"
+    >
       <div class="pipeline-card-head">
         <PipelineFlowIcon class="pipeline-card-icon" />
         <span class="pipeline-card-label">执行流水线</span>
-        <span class="pipeline-card-sep" aria-hidden="true"></span>
+        <span
+          class="pipeline-card-sep"
+          aria-hidden="true"
+        ></span>
         <strong class="pipeline-card-name">{{
           task.pipeline_name_snapshot || '未指派流水线'
-          }}</strong>
-        <span v-if="sortedSteps.length" class="pipeline-card-progress">第 {{ currentStepIndex + 1 }}/{{
-          sortedSteps.length }} 步</span>
+        }}</strong>
+        <span
+          v-if="sortedSteps.length"
+          class="pipeline-card-progress"
+          >第 {{ currentStepIndex + 1 }}/{{ sortedSteps.length }} 步</span
+        >
       </div>
-      <AgentStepStrip v-if="hasPipelineSnapshot" :steps="sortedSteps" :current-step-index="currentStepIndex"
-        :current-step-uuid="effectiveCurrentStepUuid" :selected-step-uuid="selectedStepUuid" @select="selectStep" />
-      <UnassignedPipelineGuide v-else @assign="assignModalOpen = true" />
+      <AgentStepStrip
+        v-if="hasPipelineSnapshot"
+        :steps="sortedSteps"
+        :current-step-index="currentStepIndex"
+        :current-step-uuid="effectiveCurrentStepUuid"
+        :selected-step-uuid="selectedStepUuid"
+        @select="selectStep"
+      />
+      <UnassignedPipelineGuide
+        v-else
+        @assign="assignModalOpen = true"
+      />
     </section>
 
-    <div v-if="task" class="detail-scroll">
-
+    <div
+      v-if="task"
+      class="detail-scroll"
+    >
       <div class="detail-content">
         <template v-if="hasPipelineSnapshot">
-          <NextStepButton v-if="showNextStepCard" :next-step-name="nextStepName" :is-last-step="isLastStep"
-            :disabled="!canComplete" :completing="completing" @confirm="completeStep" />
+          <NextStepButton
+            v-if="showNextStepCard"
+            :next-step-name="nextStepName"
+            :is-last-step="isLastStep"
+            :disabled="!canComplete"
+            :completing="completing"
+            @confirm="completeStep"
+          />
           <h2 class="task-title">{{ task.title }}</h2>
-          <div v-if="task.description" class="task-desc" :class="{ expanded: descriptionExpanded }">
-            <div ref="requirementContentRef" class="task-desc-content" v-html="renderedDescription"
-              @click="openImagePreview" />
-            <button v-if="descriptionNeedsExpand" type="button" class="desc-toggle"
-              @click="descriptionExpanded = !descriptionExpanded">
+          <div
+            v-if="task.description"
+            class="task-desc"
+            :class="{ expanded: descriptionExpanded }"
+          >
+            <div
+              ref="requirementContentRef"
+              class="task-desc-content"
+              @click="openImagePreview"
+            >
+              <div
+                v-if="descriptionUsesHtml"
+                v-html="renderedDescription"
+              />
+              <MarkdownPreview
+                v-else
+                :content="task.description"
+                :task-uuid="resolvedTaskUuid"
+                @attachments-loaded="measureDescriptionOverflow"
+              />
+            </div>
+            <button
+              v-if="descriptionNeedsExpand"
+              type="button"
+              class="desc-toggle"
+              @click="descriptionExpanded = !descriptionExpanded"
+            >
               <DownOutlined v-if="!descriptionExpanded" />
               <UpOutlined v-else />
               {{ descriptionExpanded ? '收起' : '展开更多' }}
@@ -92,51 +163,108 @@
               alt=""
               aria-hidden="true"
             />
-            <span>仅展示「{{
-              selectedStep?.name || 'Agent'
-            }}」的动态与你的留言，点击执行流水线可切换</span>
+            <span
+              >仅展示「{{
+                selectedStep?.name || '当前步骤'
+              }}」的动态与你的留言，点击执行流水线可切换</span
+            >
           </p>
-          <StepMessageList ref="messageListRef" :items="selectedProgress" :steps="sortedSteps"
-            :highlight-uuid="highlightUuid" :loading="loading" :selected-step-name="selectedStep?.name || ''"
-            @copy="copyResult" />
+          <StepMessageList
+            ref="messageListRef"
+            :items="selectedProgress"
+            :steps="sortedSteps"
+            :highlight-uuid="highlightUuid"
+            :loading="loading"
+            :selected-step-name="selectedStep?.name || ''"
+            :task-uuid="resolvedTaskUuid"
+            @copy="copyResult"
+          />
         </template>
-        <div v-else class="pipeline-empty">
+        <div
+          v-else
+          class="pipeline-empty"
+        >
           <div class="pipeline-empty-icon">
-            <img src="@/assets/icons/task-unassigned-pipeline.png" alt="" aria-hidden="true" />
+            <img
+              src="@/assets/icons/task-unassigned-pipeline.png"
+              alt=""
+              aria-hidden="true"
+            />
           </div>
           <p>未指派流水线</p>
           <span>请先分配流水线，动态记录将自动展示</span>
         </div>
       </div>
     </div>
-    <div v-else-if="loading" class="detail-loading">
+    <div
+      v-else-if="loading"
+      class="detail-loading"
+    >
       <a-spin />
     </div>
-    <a-empty v-else class="detail-empty" description="任务不存在" />
+    <a-empty
+      v-else
+      class="detail-empty"
+      description="任务不存在"
+    />
 
-    <ChatComposer v-if="task && hasPipelineSnapshot" v-model="question" :can-ask="canAsk" :submitting="submitting"
-      :placeholder="composerPlaceholder" :context-text="composerContextText" :task-uuid="resolvedTaskUuid"
-      :current-step="selectedStep" @submit="submitQuestion" @prompt-saved="load" />
+    <ChatComposer
+      ref="composerRef"
+      v-if="task && hasPipelineSnapshot"
+      v-model="question"
+      :can-ask="canAsk"
+      :submitting="submitting"
+      :running="Boolean(activeSelectedProgress)"
+      :stopping="stoppingSessionUuid === activeSelectedProgress?.session_uuid"
+      :cli-type="composerCliType"
+      :model-name="composerModelName"
+      :placeholder="composerPlaceholder"
+      :context-text="composerContextText"
+      :task-uuid="resolvedTaskUuid"
+      :current-step="selectedStep"
+      :steps="sortedSteps"
+      :executing-step-uuid="effectiveCurrentStepUuid"
+      @submit="submitQuestion"
+      @stop="stopSelectedConversation"
+      @prompt-saved="load"
+    />
 
-    <TaskDetailInfoModal v-model:open="detailModalOpen" :task="task" :status="taskStatus"
-      :rendered-description="renderedDescription" @preview-image="showImagePreview" />
+    <StopExecutionConfirmModal
+      :open="stopConfirmOpen"
+      :loading="Boolean(stoppingSessionUuid)"
+      @close="closeStopConfirm"
+      @confirm="confirmStopConversation"
+    />
 
-    <TaskImagePreviewModal v-model:open="previewImageVisible" :image-url="previewImageUrl" />
+    <TaskDetailInfoModal
+      v-model:open="detailModalOpen"
+      :task="task"
+      :status="taskStatus"
+      :rendered-description="renderedDescription"
+      @preview-image="showImagePreview"
+      @saved="handleTaskSaved"
+    />
 
-    <AssignPipelineModal v-model:open="assignModalOpen" :task-uuid="resolvedTaskUuid" :task-title="task?.title || ''"
-      :preferred-pipeline-uuid="task?.selected_pipeline_uuid || ''" mode="detail" @assigned="handleAssigned" />
+    <TaskImagePreviewModal
+      v-model:open="previewImageVisible"
+      :image-url="previewImageUrl"
+    />
+
+    <AssignPipelineModal
+      v-model:open="assignModalOpen"
+      :task-uuid="resolvedTaskUuid"
+      :task-title="task?.title || ''"
+      :preferred-pipeline-uuid="task?.selected_pipeline_uuid || ''"
+      mode="detail"
+      @assigned="handleAssigned"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import {
-  DownOutlined,
-  FolderOpenOutlined,
-  LeftOutlined,
-  UpOutlined,
-} from '@ant-design/icons-vue'
+import { DownOutlined, FolderOpenOutlined, LeftOutlined, UpOutlined } from '@ant-design/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 import apiClient from '@/api/client'
 import detailInfoIcon from '@/assets/icons/task-detail-view.svg'
@@ -144,16 +272,21 @@ import deleteTaskIcon from '@/assets/icons/task-detail-delete.svg'
 import conversationFilterIcon from '@/assets/icons/task-conversation-filter.svg'
 import MarkdownIt from 'markdown-it'
 import AssignPipelineModal from '@/components/AssignPipelineModal.vue'
+import MarkdownPreview from '@/components/MarkdownPreview.vue'
 import AgentStepStrip from '@/components/task-progress/AgentStepStrip.vue'
 import ChatComposer from '@/components/task-progress/ChatComposer.vue'
 import NextStepButton from '@/components/task-progress/NextStepButton.vue'
 import PipelineFlowIcon from '@/components/task-progress/PipelineFlowIcon.vue'
 import StepMessageList from '@/components/task-progress/StepMessageList.vue'
+import StopExecutionConfirmModal from '@/components/task-progress/StopExecutionConfirmModal.vue'
 import UnassignedPipelineGuide from '@/components/task-progress/UnassignedPipelineGuide.vue'
-import { isUserMessage, resultText } from '@/components/task-progress/utils'
+import { isUserMessage, resultText, userMessageText } from '@/components/task-progress/utils'
+import { copyText } from '@/utils/clipboard'
+import { isStopConfirmSuppressed, suppressStopConfirm } from '@/utils/stopConfirm'
 import { useDocumentTitle } from '@/composables/useDocumentTitle'
 import { useLocalWS, useLocalWSStatus } from '@/composables/useLocalWebSocket'
-import type { TaskProgress } from '@/types/pipeline'
+import type { CompleteStepResponse, TaskProgress } from '@/types/pipeline'
+import type { ChatComposerSubmission } from '@/types/task-attachments'
 import type { TaskWithDetails } from '@/types/task-detail'
 import TaskDetailInfoModal from '@/views/workflows/components/TaskDetailInfoModal.vue'
 import TaskImagePreviewModal from '@/views/workflows/components/TaskImagePreviewModal.vue'
@@ -203,11 +336,15 @@ watch(
 const loading = ref(false)
 const submitting = ref(false)
 const completing = ref(false)
+const stoppingSessionUuid = ref('')
 const progress = ref<TaskProgress[]>([])
 const selectedStepUuid = ref('')
 const question = ref('')
 const highlightUuid = ref('')
 const messageListRef = ref<InstanceType<typeof StepMessageList>>()
+const stopConfirmOpen = ref(false)
+const stopConfirmSessionUuid = ref('')
+const composerRef = ref<InstanceType<typeof ChatComposer>>()
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
 let highlightTimer: ReturnType<typeof setTimeout> | undefined
 const wsConnected = useLocalWSStatus()
@@ -237,26 +374,39 @@ const selectedStepIndex = computed(() =>
 const selectedProgress = computed(() =>
   progress.value.filter((item) => item.task_step_uuid === selectedStepUuid.value),
 )
+const latestSelectedAgentProgress = computed(() =>
+  [...selectedProgress.value].reverse().find((item) => !isUserMessage(item)),
+)
+const activeSelectedProgress = computed(() =>
+  [...selectedProgress.value]
+    .reverse()
+    .find(
+      (item) => !isUserMessage(item) && (item.status === 'created' || item.status === 'running'),
+    ),
+)
+const composerCliType = computed(
+  () => latestSelectedAgentProgress.value?.cli_type || selectedStep.value?.cli_type || '',
+)
+const composerModelName = computed(
+  () =>
+    latestSelectedAgentProgress.value?.model ||
+    selectedStep.value?.model_name ||
+    selectedStep.value?.model ||
+    '',
+)
 const selectedIsCurrent = computed(() => selectedStepUuid.value === effectiveCurrentStepUuid.value)
 const selectedStepReached = computed(() =>
   Boolean(
     selectedStep.value &&
-      (selectedIsCurrent.value ||
-        selectedStep.value.status === 'completed' ||
-        (currentStepIndex.value >= 0 &&
-          selectedStepIndex.value >= 0 &&
-          selectedStepIndex.value < currentStepIndex.value) ||
-        selectedProgress.value.length > 0),
+    (selectedIsCurrent.value ||
+      selectedStep.value.status === 'completed' ||
+      (currentStepIndex.value >= 0 &&
+        selectedStepIndex.value >= 0 &&
+        selectedStepIndex.value < currentStepIndex.value) ||
+      selectedProgress.value.length > 0),
   ),
 )
-const hasRunningSelectedConversation = computed(() =>
-  progress.value.some(
-    (item) =>
-      item.task_step_uuid === selectedStepUuid.value &&
-      !isUserMessage(item) &&
-      (item.status === 'created' || item.status === 'running'),
-  ),
-)
+const hasRunningSelectedConversation = computed(() => Boolean(activeSelectedProgress.value))
 const currentStepLocked = computed(
   () =>
     !task.value ||
@@ -264,9 +414,7 @@ const currentStepLocked = computed(
     Boolean(task.value.current_step_completed) ||
     currentStep.value?.status === 'completed',
 )
-const canAsk = computed(
-  () => selectedStepReached.value && !hasRunningSelectedConversation.value,
-)
+const canAsk = computed(() => selectedStepReached.value && !hasRunningSelectedConversation.value)
 const canComplete = computed(
   () =>
     selectedIsCurrent.value &&
@@ -290,13 +438,18 @@ const showNextStepCard = computed(
 )
 const composerPlaceholder = computed(() => {
   if (!selectedStepReached.value) return '执行到当前步骤后才可发起对话'
-  if (hasRunningSelectedConversation.value) return 'Agent 正在执行，请等待本轮完成'
-  return '输入留言，与该步骤 Agent 沟通…'
+  if (hasRunningSelectedConversation.value) return '当前步骤正在执行，请等待本轮完成'
+  return '输入留言，与该步骤沟通…'
 })
 const composerContextText = computed(
   () =>
-    `正在与「${selectedStep.value?.name || 'Agent'}」沟通 · 步骤 ${Math.max(selectedStepIndex.value + 1, 1)}`,
+    `正在与「${selectedStep.value?.name || '当前步骤'}」沟通 · 步骤 ${Math.max(selectedStepIndex.value + 1, 1)}`,
 )
+
+function handleTaskSaved() {
+  emit('changed')
+  void load()
+}
 
 function returnToBoard() {
   if (props.embedded) emit('close')
@@ -397,14 +550,20 @@ function deleteTask() {
 }
 
 const md = new MarkdownIt({ breaks: true, linkify: true })
+const descriptionUsesHtml = computed(() => /<[a-z][\s\S]*>/i.test(task.value?.description || ''))
 
 const renderedDescription = computed(() => {
   const text = task.value?.description
   if (!text) return ''
   // 兼容接口可能返回的历史 HTML 描述；纯文本和 Markdown 仍统一渲染。
-  if (/<[a-z][\s\S]*>/i.test(text)) return text
+  if (descriptionUsesHtml.value) return text
   return md.render(text)
 })
+
+function measureDescriptionOverflow() {
+  const content = requirementContentRef.value
+  if (content) descriptionNeedsExpand.value = content.scrollHeight > content.clientHeight + 1
+}
 
 async function load(silent = false) {
   if (!resolvedTaskUuid.value) return
@@ -440,8 +599,7 @@ async function load(silent = false) {
     }
     descriptionExpanded.value = false
     await nextTick()
-    const content = requirementContentRef.value
-    if (content) descriptionNeedsExpand.value = content.scrollHeight > content.clientHeight + 1
+    measureDescriptionOverflow()
   } catch (error) {
     if (!silent) message.error(error instanceof Error ? error.message : '任务进度加载失败')
   } finally {
@@ -528,17 +686,60 @@ function flashTarget(uuid: string) {
   }, 1200)
 }
 
-async function submitQuestion() {
-  const text = question.value.trim()
+function stopSelectedConversation() {
+  const sessionUuid = activeSelectedProgress.value?.session_uuid
+  if (!sessionUuid || stoppingSessionUuid.value) {
+    if (!sessionUuid) message.warning('未找到可停止的运行会话，请刷新后重试')
+    return
+  }
+  if (isStopConfirmSuppressed()) {
+    void stopConversation(sessionUuid)
+    return
+  }
+  stopConfirmSessionUuid.value = sessionUuid
+  stopConfirmOpen.value = true
+}
+
+function closeStopConfirm() {
+  stopConfirmOpen.value = false
+  stopConfirmSessionUuid.value = ''
+}
+
+function confirmStopConversation(suppressFutureConfirm: boolean) {
+  const sessionUuid = stopConfirmSessionUuid.value
+  if (suppressFutureConfirm) suppressStopConfirm()
+  if (sessionUuid) void stopConversation(sessionUuid)
+}
+
+async function stopConversation(sessionUuid: string) {
+  stoppingSessionUuid.value = sessionUuid
+  try {
+    await apiClient.post(`/tasks/sessions/${encodeURIComponent(sessionUuid)}/stop`, {})
+    message.success('当前运行已停止')
+    await load()
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '停止运行失败')
+  } finally {
+    stoppingSessionUuid.value = ''
+    closeStopConfirm()
+  }
+}
+
+async function submitQuestion(submission: ChatComposerSubmission) {
+  const text = submission.content.trim()
   const step = selectedStep.value
   if (!text || !step || !canAsk.value) return
   submitting.value = true
   try {
     await apiClient.post(`/tasks/${resolvedTaskUuid.value}/steps/${step.uuid}/questions`, {
       question: text,
+      display_question: submission.display_content?.trim() || text,
       request_id: crypto.randomUUID(),
+      cli_type: submission.config.cli_type,
+      model_name: submission.config.model_name,
     })
     question.value = ''
+    composerRef.value?.resetAfterSubmit()
     message.success('消息已发送，继续选中 Agent 对话')
     await load()
     await locateTarget()
@@ -554,9 +755,21 @@ async function completeStep() {
   if (!step || !canComplete.value) return
   completing.value = true
   try {
-    await apiClient.post(`/tasks/${resolvedTaskUuid.value}/steps/${step.uuid}/complete`, {})
+    const autoStart = !['stopped', 'interrupted'].includes(
+      latestSelectedAgentProgress.value?.status || '',
+    )
+    const result = await apiClient.post<CompleteStepResponse>(
+      `/tasks/${resolvedTaskUuid.value}/steps/${step.uuid}/complete`,
+      { auto_start: autoStart },
+    )
     const wasLastStep = sortedSteps.value.at(-1)?.uuid === step.uuid
-    message.success(wasLastStep ? '任务已完成' : '已进入下一步并自动启动执行')
+    if (wasLastStep) {
+      message.success('任务已完成')
+    } else if (result.start_error) {
+      message.warning(`已进入下一步，但自动启动失败：${result.start_error}`)
+    } else {
+      message.success(result.auto_started ? '已进入下一步并自动启动执行' : '已进入下一步')
+    }
     await load()
     const nextCurrent = task.value?.current_step_uuid
     if (nextCurrent && nextCurrent !== selectedStepUuid.value) {
@@ -573,7 +786,7 @@ async function completeStep() {
 
 async function copyResult(item: TaskProgress) {
   try {
-    await navigator.clipboard.writeText(resultText(item))
+    await copyText(isUserMessage(item) ? userMessageText(item) : resultText(item))
     message.success('已复制')
   } catch {
     message.warning('复制失败')
@@ -798,7 +1011,7 @@ onBeforeUnmount(() => {
   padding: 16px 24px 12px 24px;
   background: #fff;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
-  z-index: 1; 
+  z-index: 1;
 }
 
 .pipeline-card-head {
@@ -868,6 +1081,12 @@ onBeforeUnmount(() => {
   margin: 0;
   color: inherit;
   font-size: inherit;
+}
+
+.task-desc :deep(.markdown-preview-shell) {
+  min-height: 0;
+  padding: 0;
+  background: transparent;
 }
 
 .desc-toggle {
@@ -962,7 +1181,6 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 760px) {
-
   .work-dir,
   .detail-button {
     display: none;

@@ -72,7 +72,10 @@
                 v-if="isUserMessage(item)"
                 class="message-card-body"
               >
-                {{ item.user_prompt || item.question }}
+                <MarkdownPreview
+                  :content="userMessageText(item)"
+                  :task-uuid="taskUuid"
+                />
               </div>
               <div
                 v-else
@@ -87,6 +90,7 @@
                 <MarkdownPreview
                   v-else
                   :content="resultText(item)"
+                  :task-uuid="taskUuid"
                 />
               </div>
               <div
@@ -133,7 +137,7 @@ import { computed, ref } from 'vue'
 import { CopyOutlined, DownOutlined, LoadingOutlined, RightOutlined } from '@ant-design/icons-vue'
 import MarkdownPreview from '@/components/MarkdownPreview.vue'
 import type { PipelineStep, TaskProgress } from '@/types/pipeline'
-import { initials, isUserMessage, resultText } from './utils'
+import { initials, isUserMessage, resultText, userMessageText } from './utils'
 
 const props = withDefaults(
   defineProps<{
@@ -142,8 +146,9 @@ const props = withDefaults(
     highlightUuid?: string
     loading?: boolean
     selectedStepName?: string
+    taskUuid?: string
   }>(),
-  { highlightUuid: '', loading: false, selectedStepName: '' },
+  { highlightUuid: '', loading: false, selectedStepName: '', taskUuid: '' },
 )
 
 const emit = defineEmits<{
@@ -168,7 +173,7 @@ function stepForUuid(uuid?: string) {
   return stepMap.value.get(uuid || '')
 }
 function stepName(uuid?: string) {
-  return stepForUuid(uuid)?.name || 'Agent'
+  return stepForUuid(uuid)?.name || '专家流水线'
 }
 
 function displayStatus(status?: string) {

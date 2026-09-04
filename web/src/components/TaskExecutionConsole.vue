@@ -1,10 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { message, Modal } from 'ant-design-vue'
+import { message } from 'ant-design-vue'
 import MarkdownIt from 'markdown-it'
 import apiClient from '@/api/client'
 import { getApiToken } from '@/api/token'
 import CliSelectModal from '@/components/CliSelectModal.vue'
+import {
+  formatPastedImageContent,
+  useTaskImageAttachments,
+} from '@/composables/useTaskImageAttachments'
+import { sanitizeUserMessageText } from '@/components/task-progress/utils'
+import StopExecutionConfirmModal from '@/components/task-progress/StopExecutionConfirmModal.vue'
+import { isStopConfirmSuppressed, suppressStopConfirm } from '@/utils/stopConfirm'
 
 interface Step {
   uuid: string
@@ -31,6 +38,7 @@ interface Session {
   external_session_id: string
   work_dir: string
   prompt_snapshot: string
+  display_prompt: string
   input_tokens: number
   output_tokens: number
   total_tokens: number
@@ -90,9 +98,19 @@ const selectedSessionUuid = ref('')
 const eventsBySession = ref<Record<string, TimelineEvent[]>>({})
 const question = ref('')
 const sending = ref(false)
+const {
+  clear: clearImageAttachments,
+  isSaving: isSavingPastedImages,
+  addImages,
+  removeAttachmentMarkers,
+  resolveAttachmentMarkdown,
+  uploadAttachmentsToTask,
+} = useTaskImageAttachments()
 const permissionActionSequence = ref<number>()
 const dismissedPermissionEvents = ref<Record<string, boolean>>({})
 const stopping = ref(false)
+const stopConfirmOpen = ref(false)
+const stopConfirmSessionUuid = ref('')
 const startingStep = ref('')
 const cliModalOpen = ref(false)
 const socketState = ref<'connecting' | 'connected' | 'disconnected'>('disconnected')
@@ -104,7 +122,6 @@ let closingSocket = false
 
 const activeStatuses = ['created', 'running', 'waiting_input', 'stop_requested']
 const terminalStatuses = ['success', 'failed', 'stopped', 'interrupted']
-
 const sessionsByStep = computed(() => {
   const grouped: Record<string, Session[]> = {}
   for (const step of props.steps) grouped[step.step_key] = []
@@ -130,8 +147,8 @@ const conversationsByStep = computed(() => {
 
     grouped[stepKey] = [...conversations.entries()]
       .map(([uuid, items]) => {
-        const ordered = [...items].sort((a, b) =>
-          a.run_no - b.run_no || a.created_at - b.created_at,
+        const ordered = [...items].sort(
+          (a, b) => a.run_no - b.run_no || a.created_at - b.created_at,
         )
         return {
           uuid,
@@ -140,20 +157,21 @@ const conversationsByStep = computed(() => {
           latestSession: ordered[ordered.length - 1],
         }
       })
-      .sort((a, b) =>
-        a.firstSession.created_at - b.firstSession.created_at
-        || a.firstSession.run_no - b.firstSession.run_no,
+      .sort(
+        (a, b) =>
+          a.firstSession.created_at - b.firstSession.created_at ||
+          a.firstSession.run_no - b.firstSession.run_no,
       )
   }
   return grouped
 })
 
 const selectedStep = computed(() =>
-  props.steps.find(step => step.step_key === selectedStepKey.value),
+  props.steps.find((step) => step.step_key === selectedStepKey.value),
 )
 
 const selectedSession = computed(() =>
-  sessions.value.find(session => session.uuid === selectedSessionUuid.value),
+  sessions.value.find((session) => session.uuid === selectedSessionUuid.value),
 )
 
 const selectedConversationUuid = computed(() => {
@@ -166,21 +184,17 @@ const selectedConversationSessions = computed(() => {
   if (!session) return []
   const conversationUuid = session.conversation_uuid || session.uuid
   return sessions.value
-    .filter(item => (item.conversation_uuid || item.uuid) === conversationUuid)
+    .filter((item) => (item.conversation_uuid || item.uuid) === conversationUuid)
     .sort((a, b) => a.run_no - b.run_no || a.created_at - b.created_at)
 })
 
 const activeSession = computed(() =>
-  sessions.value.find(session => activeStatuses.includes(session.status)),
+  sessions.value.find((session) => activeStatuses.includes(session.status)),
 )
 
 const canContinue = computed(() => {
   const session = selectedSession.value
-  return Boolean(
-    session
-    && terminalStatuses.includes(session.status)
-    && !activeSession.value,
-  )
+  return Boolean(session && terminalStatuses.includes(session.status) && !activeSession.value)
 })
 
 const continueHint = computed(() => {
@@ -190,50 +204,67 @@ const continueHint = computed(() => {
 })
 
 function statusText(status: string) {
-  return {
-    idle: '未执行',
-    created: '准备中',
-    running: '执行中',
-    waiting_input: '等待输入',
-    stop_requested: '正在终止',
-    success: '已完成',
-    failed: '失败',
-    stopped: '已终止',
-    interrupted: '已中断',
-  }[status] || status
+  return (
+    {
+      idle: '未执行',
+      created: '准备中',
+      running: '执行中',
+      waiting_input: '等待输入',
+      stop_requested: '正在终止',
+      success: '已完成',
+      failed: '失败',
+      stopped: '已终止',
+      interrupted: '已中断',
+    }[status] || status
+  )
 }
 
 function statusColor(status: string) {
-  return {
-    idle: 'default',
-    created: 'processing',
-    running: 'processing',
-    waiting_input: 'warning',
-    stop_requested: 'warning',
-    success: 'success',
-    failed: 'error',
-    stopped: 'warning',
-    interrupted: 'default',
-  }[status] || 'default'
+  return (
+    {
+      idle: 'default',
+      created: 'processing',
+      running: 'processing',
+      waiting_input: 'warning',
+      stop_requested: 'warning',
+      success: 'success',
+      failed: 'error',
+      stopped: 'warning',
+      interrupted: 'default',
+    }[status] || 'default'
+  )
 }
 
 function cliDisplayName(cliType: string) {
-  return {
-    claude: 'Claude Code',
-    codebuddy: 'CodeBuddy Code',
-    codex: 'Codex CLI',
-    cursor: 'Cursor Agent',
-    opencode: 'OpenCode',
-    copilot: 'GitHub Copilot CLI',
-    grok: 'Grok CLI',
-    hermes: 'Hermes',
-    kimi: 'Kimi Code',
-    qoder: 'Qoder CLI',
-    'qoder-cn': 'Qoder CLI (CN)',
-    qwen: 'Qwen Code',
-    openclaw: 'OpenClaw',
-    pi: 'Pi Agent',
-  }[cliType] || cliType.toUpperCase() || 'CLI'
+  return (
+    {
+      claude: 'Claude Code',
+      codebuddy: 'CodeBuddy Code',
+      codex: 'Codex CLI',
+      cursor: 'Cursor Agent',
+      opencode: 'OpenCode',
+      copilot: 'GitHub Copilot CLI',
+      grok: 'Grok CLI',
+      hermes: 'Hermes',
+      kimi: 'Kimi Code',
+      qoder: 'Qoder CLI',
+      'qoder-cn': 'Qoder CLI (CN)',
+      qwen: 'Qwen Code',
+      openclaw: 'OpenClaw',
+      pi: 'Pi Agent',
+    }[cliType] ||
+    cliType.toUpperCase() ||
+    'CLI'
+  )
+}
+
+function displaySessionPrompt(session: Session) {
+  return sanitizeUserMessageText(
+    session.display_prompt ||
+      session.prompt_snapshot ||
+      selectedStep.value?.prompt_snapshot ||
+      '开始执行步骤',
+  )
 }
 
 function sessionEvents(sessionUuid: string) {
@@ -241,8 +272,9 @@ function sessionEvents(sessionUuid: string) {
 }
 
 function sessionHasPendingPermission(sessionUuid: string) {
-  const permissionEvent = (eventsBySession.value[sessionUuid] || [])
-    .find(event => event.type === 'permission_request')
+  const permissionEvent = (eventsBySession.value[sessionUuid] || []).find(
+    (event) => event.type === 'permission_request',
+  )
   return Boolean(permissionEvent && !isPermissionEventDismissed(permissionEvent, sessionUuid))
 }
 
@@ -255,7 +287,7 @@ function sessionStatusColor(session: Session) {
 }
 
 function sessionHasErrorEvent(sessionUuid: string) {
-  return (eventsBySession.value[sessionUuid] || []).some(event => event.type === 'error')
+  return (eventsBySession.value[sessionUuid] || []).some((event) => event.type === 'error')
 }
 
 function sessionErrorHint(session?: Session) {
@@ -309,11 +341,14 @@ async function loadSessions(preferredSessionUuid?: string) {
     const result = await apiClient.get<{ items: Session[] }>(`/tasks/${props.taskUuid}/sessions`)
     sessions.value = result.items || []
 
-    if (preferredSessionUuid && sessions.value.some(item => item.uuid === preferredSessionUuid)) {
+    if (preferredSessionUuid && sessions.value.some((item) => item.uuid === preferredSessionUuid)) {
       selectSession(preferredSessionUuid)
       return
     }
-    if (selectedSessionUuid.value && sessions.value.some(item => item.uuid === selectedSessionUuid.value)) {
+    if (
+      selectedSessionUuid.value &&
+      sessions.value.some((item) => item.uuid === selectedSessionUuid.value)
+    ) {
       return
     }
 
@@ -327,6 +362,7 @@ async function loadSessions(preferredSessionUuid?: string) {
 }
 
 function selectStep(stepKey: string) {
+  clearPastedImagesFromQuestion()
   selectedStepKey.value = stepKey
   const stepSessions = sessionsByStep.value[stepKey] || []
   const latest = stepSessions[stepSessions.length - 1]
@@ -336,8 +372,9 @@ function selectStep(stepKey: string) {
 }
 
 function selectSession(sessionUuid: string) {
-  const session = sessions.value.find(item => item.uuid === sessionUuid)
+  const session = sessions.value.find((item) => item.uuid === sessionUuid)
   if (!session) return
+  clearPastedImagesFromQuestion()
   selectedStepKey.value = session.step_key
   selectedSessionUuid.value = sessionUuid
   subscribeConversation(sessionUuid)
@@ -345,11 +382,11 @@ function selectSession(sessionUuid: string) {
 }
 
 function subscribeConversation(sessionUuid: string) {
-  const session = sessions.value.find(item => item.uuid === sessionUuid)
+  const session = sessions.value.find((item) => item.uuid === sessionUuid)
   if (!session) return
   const conversationUuid = session.conversation_uuid || session.uuid
   const conversationSessions = sessions.value
-    .filter(item => (item.conversation_uuid || item.uuid) === conversationUuid)
+    .filter((item) => (item.conversation_uuid || item.uuid) === conversationUuid)
     .sort((a, b) => a.run_no - b.run_no || a.created_at - b.created_at)
   for (const item of conversationSessions) subscribe(item.uuid)
 }
@@ -363,7 +400,11 @@ async function webSocketUrl() {
 }
 
 async function connectSocket() {
-  if (!props.open || socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) {
+  if (
+    !props.open ||
+    socket?.readyState === WebSocket.OPEN ||
+    socket?.readyState === WebSocket.CONNECTING
+  ) {
     return
   }
   closingSocket = false
@@ -403,16 +444,25 @@ function subscribe(sessionUuid: string) {
   }
   const existing = eventsBySession.value[sessionUuid] || []
   const afterSequence = existing.reduce((max, event) => Math.max(max, event.sequence), 0)
-  socket.send(JSON.stringify({
-    type: 'executor.subscribe',
-    task_uuid: props.taskUuid,
-    session_uuid: sessionUuid,
-    after_sequence: afterSequence,
-  }))
+  socket.send(
+    JSON.stringify({
+      type: 'executor.subscribe',
+      task_uuid: props.taskUuid,
+      session_uuid: sessionUuid,
+      after_sequence: afterSequence,
+    }),
+  )
 }
 
 function handleSocketMessage(raw: MessageEvent<string>) {
-  let payload: Record<string, any>
+  let payload: {
+    type?: string
+    task_uuid?: string
+    session_uuid?: string
+    status?: string
+    sequence?: number
+    event?: string | ExecutorEvent
+  }
   try {
     payload = JSON.parse(raw.data)
   } catch {
@@ -426,7 +476,7 @@ function handleSocketMessage(raw: MessageEvent<string>) {
     if (!sessionUuid || !event || !sequence) return
 
     const current = eventsBySession.value[sessionUuid] || []
-    if (!current.some(item => item.sequence === sequence)) {
+    if (!current.some((item) => item.sequence === sequence)) {
       eventsBySession.value = {
         ...eventsBySession.value,
         [sessionUuid]: [...current, { ...event, sequence }].sort((a, b) => a.sequence - b.sequence),
@@ -443,7 +493,7 @@ function handleSocketMessage(raw: MessageEvent<string>) {
   }
 
   if (payload.type === 'executor.state_changed' && payload.task_uuid === props.taskUuid) {
-    const target = sessions.value.find(item => item.uuid === payload.session_uuid)
+    const target = sessions.value.find((item) => item.uuid === payload.session_uuid)
     if (target) target.status = String(payload.status)
     if (payload.status !== 'stop_requested') {
       void loadSessions()
@@ -475,12 +525,17 @@ async function onCliConfirm(payload: { cli_type: string; model: string }) {
 }
 
 async function sendQuestion() {
-  const content = question.value.trim()
-  if (!content || !selectedSession.value || !canContinue.value) return
+  const session = selectedSession.value
+  const taskUuid = props.taskUuid
+  if (!question.value.trim() || !session || !canContinue.value || isSavingPastedImages.value) return
   sending.value = true
   try {
-    const result = await continueSession(selectedSession.value.uuid, content)
+    if (taskUuid !== props.taskUuid) return
+    const content = question.value.trim()
+    if (!content) return
+    const result = await continueSession(session.uuid, content, content)
     question.value = ''
+    clearImageAttachments()
     await loadSessions(result.session_uuid)
     emit('refresh')
   } catch (error) {
@@ -490,6 +545,77 @@ async function sendQuestion() {
   }
 }
 
+async function handlePaste(event: ClipboardEvent) {
+  if (!event.clipboardData) return
+  const files = [...event.clipboardData.items]
+    .filter((item) => item.type.startsWith('image/'))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file))
+  if (!files.length) return
+  if (isSavingPastedImages.value) {
+    event.preventDefault()
+    message.warning('上一批图片正在保存，请稍后再粘贴')
+    return
+  }
+
+  const textarea = event.target as HTMLTextAreaElement
+  const start = textarea.selectionStart ?? question.value.length
+  const end = textarea.selectionEnd ?? start
+  const pastedText = event.clipboardData.getData('text/plain')
+  const pastedHtml = event.clipboardData.getData('text/html')
+  event.preventDefault()
+  let insertedImageMarkers = false
+  try {
+    const attachments = addImages(files)
+    insertPastedQuestion(
+      pastedText,
+      pastedHtml,
+      attachments.map((attachment) => attachment.marker),
+      textarea,
+      start,
+      end,
+    )
+    insertedImageMarkers = true
+    await uploadAttachmentsToTask(props.taskUuid)
+    const resolved = resolveAttachmentMarkdown(question.value, textarea.selectionStart)
+    question.value = resolved.content
+    clearImageAttachments()
+    await nextTick()
+    textarea.focus()
+    textarea.setSelectionRange(resolved.caret, resolved.caret)
+  } catch (error) {
+    if (insertedImageMarkers) question.value = removeAttachmentMarkers(question.value)
+    clearImageAttachments()
+    message.error(error instanceof Error ? error.message : '图片粘贴失败')
+  }
+}
+
+function insertPastedQuestion(
+  text: string,
+  html: string,
+  imageMarkers: string[],
+  textarea: HTMLTextAreaElement,
+  start: number,
+  end: number,
+) {
+  const insertStart = Math.min(start, question.value.length)
+  const insertEnd = Math.min(Math.max(end, insertStart), question.value.length)
+  const before = question.value.slice(0, insertStart)
+  const after = question.value.slice(insertEnd)
+  const inserted = formatPastedImageContent(text, html, imageMarkers, before, after)
+  question.value = `${before}${inserted}${after}`
+  const caret = insertStart + inserted.length
+  nextTick(() => {
+    textarea.focus()
+    textarea.setSelectionRange(caret, caret)
+  })
+}
+
+function clearPastedImagesFromQuestion() {
+  question.value = removeAttachmentMarkers(question.value)
+  clearImageAttachments()
+}
+
 async function approvePermission(event: TimelineEvent, sourceSessionUuid: string) {
   const session = selectedSession.value
   if (!session || !canContinue.value) {
@@ -497,11 +623,9 @@ async function approvePermission(event: TimelineEvent, sourceSessionUuid: string
     return
   }
 
-  const toolNames = [...new Set(
-    (event.permission_requests || [])
-      .map(item => item.tool_name)
-      .filter(Boolean),
-  )]
+  const toolNames = [
+    ...new Set((event.permission_requests || []).map((item) => item.tool_name).filter(Boolean)),
+  ]
   const toolDescription = toolNames.length ? toolNames.join('、') : '上述工具'
   const content = `用户已明确批准使用 ${toolDescription}。请继续执行刚才因权限不足而未完成的操作，不要再次等待授权。`
 
@@ -522,36 +646,49 @@ async function approvePermission(event: TimelineEvent, sourceSessionUuid: string
   }
 }
 
-function continueSession(sessionUuid: string, content: string) {
-  return apiClient.post<{ session_uuid: string }>(
-    `/tasks/sessions/${sessionUuid}/messages`,
-    { content, request_id: crypto.randomUUID() },
-  )
+function continueSession(sessionUuid: string, content: string, displayContent = content) {
+  return apiClient.post<{ session_uuid: string }>(`/tasks/sessions/${sessionUuid}/messages`, {
+    content,
+    display_content: displayContent,
+    request_id: crypto.randomUUID(),
+  })
 }
 
 function stopActiveSession() {
   const session = activeSession.value
   if (!session) return
-  Modal.confirm({
-    title: '终止当前执行？',
-    content: 'CLI 进程及其子进程将被终止，已经产生的对话和日志会保留。',
-    okText: '终止执行',
-    okType: 'danger',
-    cancelText: '取消',
-    onOk: async () => {
-      stopping.value = true
-      try {
-        await apiClient.post(`/tasks/sessions/${session.uuid}/stop`)
-        await loadSessions(session.uuid)
-        emit('refresh')
-        message.success('执行已终止')
-      } catch (error) {
-        message.error(error instanceof Error ? error.message : '终止失败')
-      } finally {
-        stopping.value = false
-      }
-    },
-  })
+  if (isStopConfirmSuppressed()) {
+    void executeStop(session.uuid)
+    return
+  }
+  stopConfirmSessionUuid.value = session.uuid
+  stopConfirmOpen.value = true
+}
+
+async function executeStop(sessionUuid: string) {
+  stopping.value = true
+  try {
+    await apiClient.post(`/tasks/sessions/${sessionUuid}/stop`)
+    await loadSessions(sessionUuid)
+    emit('refresh')
+    message.success('执行已终止')
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '终止失败')
+  } finally {
+    stopping.value = false
+    closeStopConfirm()
+  }
+}
+
+function closeStopConfirm() {
+  stopConfirmOpen.value = false
+  stopConfirmSessionUuid.value = ''
+}
+
+function confirmStopActiveSession(suppressFutureConfirm: boolean) {
+  const sessionUuid = stopConfirmSessionUuid.value
+  if (suppressFutureConfirm) suppressStopConfirm()
+  if (sessionUuid) void executeStop(sessionUuid)
 }
 
 function scrollToBottom(force = false) {
@@ -574,7 +711,8 @@ watch(
   () => props.open,
   (open) => {
     if (open) {
-      selectedStepKey.value = props.focusStepKey || selectedStepKey.value || props.steps[0]?.step_key || ''
+      selectedStepKey.value =
+        props.focusStepKey || selectedStepKey.value || props.steps[0]?.step_key || ''
       selectedSessionUuid.value = props.focusSessionUuid || ''
       void loadSessions(props.focusSessionUuid)
       connectSocket()
@@ -592,6 +730,14 @@ watch(
   },
 )
 
+watch(
+  () => props.taskUuid,
+  () => {
+    question.value = ''
+    clearImageAttachments()
+  },
+)
+
 onBeforeUnmount(closeSocket)
 </script>
 
@@ -604,11 +750,35 @@ onBeforeUnmount(closeSocket)
     wrap-class-name="task-execution-modal"
     @cancel="emit('update:open', false)"
   >
+    <StopExecutionConfirmModal
+      :open="stopConfirmOpen"
+      :loading="stopping"
+      title="终止当前执行？"
+      description="CLI 进程及其子进程将被终止，已经产生的对话和日志会保留。"
+      confirm-text="终止执行"
+      @close="closeStopConfirm"
+      @confirm="confirmStopActiveSession"
+    />
+
     <template #title>
       <div class="modal-title">
         <span>任务执行窗口</span>
-        <a-tag :color="socketState === 'connected' ? 'success' : socketState === 'connecting' ? 'processing' : 'default'">
-          {{ socketState === 'connected' ? '实时连接' : socketState === 'connecting' ? '正在连接' : '连接已断开' }}
+        <a-tag
+          :color="
+            socketState === 'connected'
+              ? 'success'
+              : socketState === 'connecting'
+                ? 'processing'
+                : 'default'
+          "
+        >
+          {{
+            socketState === 'connected'
+              ? '实时连接'
+              : socketState === 'connecting'
+                ? '正在连接'
+                : '连接已断开'
+          }}
         </a-tag>
         <span class="local-note">AI 对话会同步云端，工具明细仅保存在本机</span>
       </div>
@@ -624,13 +794,20 @@ onBeforeUnmount(closeSocket)
             class="step-group"
             :class="{ selected: selectedStepKey === step.step_key }"
           >
-            <button class="step-button" type="button" @click="selectStep(step.step_key)">
+            <button
+              class="step-button"
+              type="button"
+              @click="selectStep(step.step_key)"
+            >
               <span class="step-number">{{ step.sort_order }}</span>
               <span class="step-title">{{ step.name }}</span>
               <a-badge :status="statusColor(step.execution_status) as any" />
             </button>
 
-            <div v-if="selectedStepKey === step.step_key" class="session-list">
+            <div
+              v-if="selectedStepKey === step.step_key"
+              class="session-list"
+            >
               <button
                 v-for="(conversation, conversationIndex) in conversationsByStep[step.step_key]"
                 :key="conversation.uuid"
@@ -645,21 +822,37 @@ onBeforeUnmount(closeSocket)
                     对话 {{ conversationIndex + 1 }}
                     <small>
                       {{ conversation.sessions.length }} 轮 ·
-                      {{ formatTime(conversation.firstSession.started_at || conversation.firstSession.created_at) }}
+                      {{
+                        formatTime(
+                          conversation.firstSession.started_at ||
+                            conversation.firstSession.created_at,
+                        )
+                      }}
                     </small>
                   </span>
                   <small
-                    v-if="conversation.latestSession.status === 'failed' && conversation.latestSession.error_message"
+                    v-if="
+                      conversation.latestSession.status === 'failed' &&
+                      conversation.latestSession.error_message
+                    "
                     class="session-error-text"
                   >
                     {{ conversation.latestSession.error_message }}
                   </small>
                 </span>
-                <a-tag :color="sessionStatusColor(conversation.latestSession)" class="session-status">
+                <a-tag
+                  :color="sessionStatusColor(conversation.latestSession)"
+                  class="session-status"
+                >
                   {{ sessionStatusText(conversation.latestSession) }}
                 </a-tag>
               </button>
-              <div v-if="!conversationsByStep[step.step_key]?.length" class="no-session">暂无执行记录</div>
+              <div
+                v-if="!conversationsByStep[step.step_key]?.length"
+                class="no-session"
+              >
+                暂无执行记录
+              </div>
             </div>
           </div>
         </a-spin>
@@ -669,11 +862,21 @@ onBeforeUnmount(closeSocket)
         <header class="console-header">
           <div>
             <div class="eyebrow">当前步骤</div>
-            <h3>{{ selectedStep ? `${selectedStep.sort_order}. ${selectedStep.name}` : '请选择步骤' }}</h3>
-            <div v-if="selectedSession" class="session-meta">
-              {{ selectedSession.cli_type.toUpperCase() }} · 当前对话共 {{ selectedConversationSessions.length }} 轮
-              <template v-if="selectedSession.duration_ms"> · {{ formatDuration(selectedSession.duration_ms) }}</template>
-              <template v-if="selectedSession.total_tokens"> · {{ selectedSession.total_tokens }} Tokens</template>
+            <h3>
+              {{ selectedStep ? `${selectedStep.sort_order}. ${selectedStep.name}` : '请选择步骤' }}
+            </h3>
+            <div
+              v-if="selectedSession"
+              class="session-meta"
+            >
+              {{ selectedSession.cli_type.toUpperCase() }} · 当前对话共
+              {{ selectedConversationSessions.length }} 轮
+              <template v-if="selectedSession.duration_ms">
+                · {{ formatDuration(selectedSession.duration_ms) }}</template
+              >
+              <template v-if="selectedSession.total_tokens">
+                · {{ selectedSession.total_tokens }} Tokens</template
+              >
             </div>
           </div>
           <a-space>
@@ -696,14 +899,24 @@ onBeforeUnmount(closeSocket)
           </a-space>
         </header>
 
-        <div ref="messagePanel" class="message-panel" @scroll="onMessageScroll">
+        <div
+          ref="messagePanel"
+          class="message-panel"
+          @scroll="onMessageScroll"
+        >
           <a-empty
             v-if="!selectedSession"
             :description="selectedStep ? '这个步骤还没有执行记录' : '请从左侧选择一个步骤'"
           />
           <template v-else>
-            <template v-for="conversationSession in selectedConversationSessions" :key="conversationSession.uuid">
-              <div v-if="selectedConversationSessions.length > 1" class="round-divider">
+            <template
+              v-for="conversationSession in selectedConversationSessions"
+              :key="conversationSession.uuid"
+            >
+              <div
+                v-if="selectedConversationSessions.length > 1"
+                class="round-divider"
+              >
                 <span>第 {{ conversationSession.run_no }} 轮</span>
                 <em v-if="conversationSession.parent_session_uuid">续聊</em>
               </div>
@@ -713,29 +926,45 @@ onBeforeUnmount(closeSocket)
                 <div class="message-content">
                   <div class="message-label">
                     发送给 CLI
-                    <span>{{ formatTime(conversationSession.started_at || conversationSession.created_at) }}</span>
+                    <span>{{
+                      formatTime(conversationSession.started_at || conversationSession.created_at)
+                    }}</span>
                   </div>
                   <div class="bubble user-bubble">
-                    {{ conversationSession.prompt_snapshot || selectedStep?.prompt_snapshot || '开始执行步骤' }}
+                    {{ displaySessionPrompt(conversationSession) }}
                   </div>
                 </div>
               </div>
 
-              <template v-for="event in sessionEvents(conversationSession.uuid)" :key="event.sequence">
-                <div v-if="event.type === 'message'" class="message-row assistant-message">
+              <template
+                v-for="event in sessionEvents(conversationSession.uuid)"
+                :key="event.sequence"
+              >
+                <div
+                  v-if="event.type === 'message'"
+                  class="message-row assistant-message"
+                >
                   <div class="avatar cli-avatar">CLI</div>
                   <div class="message-content">
                     <div class="message-label">
                       {{ cliDisplayName(conversationSession.cli_type) }}
                       <span>{{ formatTime(event.timestamp || 0) }}</span>
                     </div>
-                    <div class="bubble assistant-bubble markdown-body" v-html="renderMarkdown(event.content)" />
+                    <div
+                      class="bubble assistant-bubble markdown-body"
+                      v-html="renderMarkdown(event.content)"
+                    />
                   </div>
                 </div>
 
-                <details v-else-if="event.type === 'tool_call' || event.type === 'tool_result'" class="tool-event">
+                <details
+                  v-else-if="event.type === 'tool_call' || event.type === 'tool_result'"
+                  class="tool-event"
+                >
                   <summary>
-                    <span class="tool-kind">{{ event.type === 'tool_call' ? '调用工具' : '工具返回' }}</span>
+                    <span class="tool-kind">{{
+                      event.type === 'tool_call' ? '调用工具' : '工具返回'
+                    }}</span>
                     <span class="tool-preview">{{ event.content || '无输出' }}</span>
                     <time>{{ formatTime(event.timestamp || 0) }}</time>
                   </summary>
@@ -743,7 +972,10 @@ onBeforeUnmount(closeSocket)
                 </details>
 
                 <div
-                  v-else-if="event.type === 'permission_request' && !isPermissionEventDismissed(event, conversationSession.uuid)"
+                  v-else-if="
+                    event.type === 'permission_request' &&
+                    !isPermissionEventDismissed(event, conversationSession.uuid)
+                  "
                   class="permission-event"
                 >
                   <div class="permission-title">CLI 权限申请</div>
@@ -784,23 +1016,35 @@ onBeforeUnmount(closeSocket)
                   class="system-event"
                 />
 
-                <div v-else-if="event.type === 'start'" class="system-line">
+                <div
+                  v-else-if="event.type === 'start'"
+                  class="system-line"
+                >
                   <span>CLI 已启动</span>
                 </div>
-                <div v-else-if="event.type === 'complete'" class="system-line">
+                <div
+                  v-else-if="event.type === 'complete'"
+                  class="system-line"
+                >
                   <span>本轮执行结束</span>
                 </div>
               </template>
 
               <a-alert
-                v-if="conversationSession.error_message && !sessionHasErrorEvent(conversationSession.uuid)"
+                v-if="
+                  conversationSession.error_message &&
+                  !sessionHasErrorEvent(conversationSession.uuid)
+                "
                 type="error"
                 show-icon
                 :message="conversationSession.error_message"
                 class="system-event"
               />
 
-              <div v-if="activeStatuses.includes(conversationSession.status)" class="typing-row">
+              <div
+                v-if="activeStatuses.includes(conversationSession.status)"
+                class="typing-row"
+              >
                 <span /><span /><span />
                 <em>CLI 正在执行，消息会实时显示在这里</em>
               </div>
@@ -814,6 +1058,7 @@ onBeforeUnmount(closeSocket)
             :disabled="!canContinue"
             :placeholder="continueHint"
             :auto-size="{ minRows: 2, maxRows: 5 }"
+            @paste="handlePaste"
             @keydown.ctrl.enter.prevent="sendQuestion"
             @keydown.meta.enter.prevent="sendQuestion"
           />
@@ -822,7 +1067,7 @@ onBeforeUnmount(closeSocket)
             <a-button
               type="primary"
               :loading="sending"
-              :disabled="!canContinue || !question.trim()"
+              :disabled="!canContinue || isSavingPastedImages || !question.trim()"
               @click="sendQuestion"
             >
               发送问题
@@ -875,7 +1120,7 @@ onBeforeUnmount(closeSocket)
   color: #596273;
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: .08em;
+  letter-spacing: 0.08em;
   background: #f7f8fb;
 }
 
@@ -1012,7 +1257,7 @@ onBeforeUnmount(closeSocket)
   margin-bottom: 2px;
   color: #8791a3;
   font-size: 11px;
-  letter-spacing: .08em;
+  letter-spacing: 0.08em;
 }
 
 .console-header h3 {
@@ -1320,11 +1565,11 @@ onBeforeUnmount(closeSocket)
 }
 
 .typing-row span:nth-child(2) {
-  animation-delay: .15s;
+  animation-delay: 0.15s;
 }
 
 .typing-row span:nth-child(3) {
-  animation-delay: .3s;
+  animation-delay: 0.3s;
 }
 
 .typing-row em {
@@ -1352,8 +1597,16 @@ onBeforeUnmount(closeSocket)
 }
 
 @keyframes pulse {
-  0%, 70%, 100% { opacity: .25; transform: translateY(0); }
-  35% { opacity: 1; transform: translateY(-2px); }
+  0%,
+  70%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  35% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
 }
 
 @media (max-width: 820px) {

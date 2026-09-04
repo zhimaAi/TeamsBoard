@@ -45,8 +45,16 @@ type RunStepOptions struct {
 // ContinueConversationOptions are the options for continuing a historical CLI conversation.
 type ContinueConversationOptions struct {
 	ParentSessionUUID string
-	Prompt            string
-	RequestID         string
+	// Prompt is the complete prompt passed to the CLI. It can contain local
+	// attachment paths, which are an execution detail rather than user-facing
+	// conversation content.
+	Prompt string
+	// DisplayPrompt is persisted for the user-message record. When omitted by
+	// an older caller, Prompt remains the backwards-compatible fallback.
+	DisplayPrompt string
+	RequestID     string
+	CLIType       string
+	Model         string
 }
 
 type activeSession struct {
@@ -213,17 +221,20 @@ func (o *Orchestrator) RunStep(ctx context.Context, opts RunStepOptions) (string
 	return sessionUUID, nil
 }
 
-// ContinueConversation creates a new locally recorded round while resuming the
-// same native CLI conversation. The native CLI session already carries all the
-// task context (step instruction, directories, history) from the initial run,
-// so only the user's raw message is sent as the prompt — no system prompt
-// boilerplate is re-attached, and historical Q&A is not replayed.
+// ContinueConversation creates a new locally recorded round. It resumes the
+// same native conversation when the CLI is unchanged and a native session ID
+// exists; otherwise it starts a fresh native conversation while preserving the
+// product-level conversation UUID and round sequence.
 func (o *Orchestrator) ContinueConversation(ctx context.Context, opts ContinueConversationOptions) (string, error) {
 	prompt := strings.TrimSpace(opts.Prompt)
 	if prompt == "" {
 		return "", fmt.Errorf("问题内容不能为空")
 	}
-	var taskUUID, stepUUID, stepKey, workDir, parentStatus, conversationUUID, externalSessionID, cliType, modelName, snapshotUUID string
+	displayPrompt := strings.TrimSpace(opts.DisplayPrompt)
+	if displayPrompt == "" {
+		displayPrompt = prompt
+	}
+	var taskUUID, stepUUID, stepKey, workDir, parentStatus, conversationUUID, externalSessionID, parentCLIType, parentModelName, snapshotUUID string
 	err := o.db.QueryRowContext(ctx,
 		`SELECT s.task_uuid, s.step_uuid, ts.step_key, s.work_dir, s.status, s.conversation_uuid,
 		        s.external_session_id, s.cli_type, s.model_name, ts.task_pipeline_snapshot_uuid
@@ -232,7 +243,7 @@ func (o *Orchestrator) ContinueConversation(ctx context.Context, opts ContinueCo
 		 WHERE s.uuid = ?`,
 		opts.ParentSessionUUID,
 	).Scan(&taskUUID, &stepUUID, &stepKey, &workDir, &parentStatus, &conversationUUID,
-		&externalSessionID, &cliType, &modelName, &snapshotUUID)
+		&externalSessionID, &parentCLIType, &parentModelName, &snapshotUUID)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("历史会话不存在")
 	}
@@ -242,18 +253,39 @@ func (o *Orchestrator) ContinueConversation(ctx context.Context, opts ContinueCo
 	if !IsTerminalStatus(parentStatus) {
 		return "", fmt.Errorf("当前一轮仍在执行，请等待完成或先终止")
 	}
-	if strings.TrimSpace(externalSessionID) == "" {
-		return "", fmt.Errorf("该 CLI 未返回原生会话 ID，无法继续当前对话")
+	cliType, modelName, nativeSessionID, resumeNative, err := resolveContinuationRuntime(
+		parentCLIType,
+		parentModelName,
+		externalSessionID,
+		opts.CLIType,
+		opts.Model,
+	)
+	if err != nil {
+		return "", err
 	}
 	runOpts := RunStepOptions{TaskUUID: taskUUID, StepUUID: stepUUID, StepKey: stepKey,
-		WorkDir: workDir, RequestID: opts.RequestID, UserPrompt: prompt, RecordType: "user_question"}
+		WorkDir: workDir, RequestID: opts.RequestID, CLIType: cliType, Model: modelName,
+		UserPrompt: displayPrompt, RecordType: "user_question"}
 	if err = o.validateRun(ctx, runOpts); err != nil {
 		return "", err
 	}
-	// Continue-conversation sends only the user's raw message to the resumed
-	// native CLI session; the full step prompt was already delivered at the
-	// initial run and is not re-attached (avoids noisy system prompt noise).
-	promptSnapshot := prompt
+	// Resume sends only the user's raw message because the native conversation
+	// already carries context. Switching CLI (or lacking a native session ID)
+	// starts a fresh native conversation and rebuilds the complete step prompt.
+	// Both paths keep the parent's product-level conversation_uuid and advance
+	// run_no, as required by the local conversation and CloudSync contract.
+	storedPromptSnapshot := displayPrompt
+	executionPromptSnapshot := prompt
+	if !resumeNative {
+		storedPromptSnapshot, err = BuildTaskPrompt(ctx, o.db, taskUUID, stepUUID, displayPrompt)
+		if err != nil {
+			return "", err
+		}
+		executionPromptSnapshot, err = BuildTaskPrompt(ctx, o.db, taskUUID, stepUUID, prompt)
+		if err != nil {
+			return "", err
+		}
+	}
 	execPath, execErr := resolveCLIExecutable(cliType)
 	now := nowMillis()
 	sessionUUID := uuid.NewString()
@@ -290,7 +322,7 @@ func (o *Orchestrator) ContinueConversation(ctx context.Context, opts ContinueCo
 		 session_uuid, record_type, user_prompt, cli_type, model_name, status, created_at, started_at)
 		SELECT ?, ?, ?, s.uuid, s.local_step_uuid, s.cloud_step_id, ?, 'user_question', ?, ?, ?, 'created', ?, ?
 		FROM gt_task_steps s WHERE s.uuid = ?`, progressUUID, taskUUID, snapshotUUID, sessionUUID,
-		prompt, cliType, modelName, now, now, stepUUID)
+		displayPrompt, cliType, modelName, now, now, stepUUID)
 	if err != nil {
 		return "", fmt.Errorf("创建用户提问进度失败: %w", err)
 	}
@@ -311,7 +343,7 @@ func (o *Orchestrator) ContinueConversation(ctx context.Context, opts ContinueCo
 		 started_at, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionUUID, taskUUID, stepUUID, stepUUID, aiProgressUUID, conversationUUID, opts.ParentSessionUUID,
-		runNo, SessionStatusCreated, cliType, modelName, externalSessionID, workDir, promptSnapshot,
+		runNo, SessionStatusCreated, cliType, modelName, nativeSessionID, workDir, storedPromptSnapshot,
 		now, now, now)
 	if err != nil {
 		return "", fmt.Errorf("创建继续会话 Session 失败: %w", err)
@@ -331,11 +363,36 @@ func (o *Orchestrator) ContinueConversation(ctx context.Context, opts ContinueCo
 		o.stateBroadcaster(taskUUID, stepKey, sessionUUID, SessionStatusRunning)
 	}
 	if execErr != nil {
-		go o.failSessionWithError(sessionUUID, taskUUID, stepKey, externalSessionID, execErr.Error())
+		go o.failSessionWithError(sessionUUID, taskUUID, stepKey, nativeSessionID, execErr.Error())
 		return sessionUUID, nil
 	}
-	go o.runCLIProcess(context.WithoutCancel(ctx), sessionUUID, runOpts, cliType, execPath, promptSnapshot, true, externalSessionID, modelName)
+	go o.runCLIProcess(context.WithoutCancel(ctx), sessionUUID, runOpts, cliType, execPath, executionPromptSnapshot, resumeNative, nativeSessionID, modelName)
 	return sessionUUID, nil
+}
+
+func resolveContinuationRuntime(parentCLIType, parentModelName, externalSessionID, requestedCLIType, requestedModel string) (cliType, modelName, nativeSessionID string, resumeNative bool, err error) {
+	parentCLIType = strings.TrimSpace(parentCLIType)
+	parentModelName = strings.TrimSpace(parentModelName)
+	requestedCLIType = strings.TrimSpace(requestedCLIType)
+	requestedModel = strings.TrimSpace(requestedModel)
+
+	cliType = requestedCLIType
+	if cliType == "" {
+		cliType = parentCLIType
+	}
+	modelName = requestedModel
+	if modelName == "" {
+		modelName = parentModelName
+	}
+	if requestedCLIType != "" && requestedCLIType != parentCLIType && requestedModel == "" {
+		return "", "", "", false, fmt.Errorf("切换 CLI 时必须同时选择模型")
+	}
+
+	resumeNative = cliType == parentCLIType && strings.TrimSpace(externalSessionID) != ""
+	if resumeNative {
+		nativeSessionID = strings.TrimSpace(externalSessionID)
+	}
+	return cliType, modelName, nativeSessionID, resumeNative, nil
 }
 
 // runCLIProcess runs the CLI process asynchronously

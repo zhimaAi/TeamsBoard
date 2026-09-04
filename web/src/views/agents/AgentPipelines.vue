@@ -2,23 +2,8 @@
   <div class="agent-page">
     <header class="page-bar">
       <div class="page-identity">
-        <!-- <h1>专家流水线</h1> -->
-        <span
-          class="agent-tabs"
-          aria-label="Agent 类型"
-        >
-          <span
-            class="agent-tab active"
-            aria-current="page"
-          >
-            <ApartmentOutlined />流水线
-          </span>
-          <a-tooltip title="功能开发中，即将上线">
-            <span class="agent-tab"><TeamOutlined />专家团</span>
-          </a-tooltip>
-        </span>
-        <span class="dot" />
-        <div class="page-description">管理流水线与 Agent 配置</div>
+        <h1>专家流水线</h1>
+        <div class="page-description">管理专家流水线与编排配置</div>
       </div>
       <!-- <a-button
         size="small"
@@ -30,32 +15,44 @@
       </a-button> -->
     </header>
 
-    <div class="agent-layout">
-      <PipelineListPane
-        :pipelines="pipelines"
-        :selected-uuid="selectedUuid"
-        @create="openPipelineModal()"
-        @edit="openPipelineModal"
-        @select="loadPipeline"
-      />
-      <PipelineStepsPane
-        :pipeline="selectedPipeline"
-        @create-agent="openAgentModal()"
-        @copy-agent="copyModalOpen = true"
-        @edit-agent="openAgentModal"
-        @move-agent="moveStep"
-        @remove-agent="removeStep"
-      />
-    </div>
-    <div v-if="loading" class="loading-overlay">
-      <a-spin />
+    <div
+      class="agent-layout"
+      :aria-busy="!initialLoadFinished"
+    >
+      <template v-if="initialLoadFinished">
+        <PipelineListPane
+          :pipelines="pipelines"
+          :selected-uuid="selectedUuid"
+          :copying-uuid="copyingUuid"
+          @copy="copyPipeline"
+          @create="openPipelineModal()"
+          @delete="deletePipeline"
+          @edit="openPipelineModal"
+          @select="loadPipeline"
+        />
+        <PipelineStepsPane
+          :pipeline="selectedPipeline"
+          @create-agent="openAgentModal()"
+          @copy-agent="copyModalOpen = true"
+          @edit-agent="openAgentModal"
+          @move-agent="moveStep"
+          @remove-agent="removeStep"
+          @updated="pipelineStore.upsertPipeline"
+        />
+      </template>
+      <span
+        v-else
+        class="visually-hidden"
+        role="status"
+      >
+        正在加载流水线
+      </span>
     </div>
 
     <PipelineEditorModal
       v-model:open="pipelineModalOpen"
       :pipeline="editingPipeline"
       @created="handlePipelineCreated"
-      @deleted="handlePipelineDeleted"
       @updated="handlePipelineUpdated"
     />
     <AgentEditorModal
@@ -76,13 +73,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { message, Modal } from 'ant-design-vue'
-import {
-  ApartmentOutlined,
-  TeamOutlined,
-} from '@ant-design/icons-vue'
 import { useRoute } from 'vue-router'
 import apiClient, { ApiError } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
@@ -106,17 +99,20 @@ import {
 const route = useRoute()
 const authStore = useAuthStore()
 const pipelineStore = usePipelineStore()
-const { pipelines } = storeToRefs(pipelineStore)
-const loading = ref(false)
+const { pipelines, loaded } = storeToRefs(pipelineStore)
+const initialLoadFinished = ref(loaded.value)
 const syncing = ref(false)
 const selectedUuid = ref('')
 const handledPipelineQuery = ref('')
 const pipelineModalOpen = ref(false)
 const agentModalOpen = ref(false)
 const copyModalOpen = ref(false)
+const copyingUuid = ref('')
 const editingPipeline = ref<Pipeline>()
 const editingStep = ref<PipelineStep>()
 const editingStepAvatar = ref<string>(AGENT_AVATARS[0])
+const pageActive = ref(true)
+let hasActivatedOnce = false
 
 const selectedPipeline = computed(() =>
   pipelines.value.find((item) => item.uuid === selectedUuid.value),
@@ -133,8 +129,11 @@ function pipelineUuidFromQuery() {
   return Array.isArray(value) ? value[0] || '' : value || ''
 }
 
+function isActiveAgentRoute() {
+  return pageActive.value && route.name === 'agents'
+}
+
 async function load(showError = true) {
-  loading.value = true
   try {
     await pipelineStore.loadPipelines(true)
     const queryPipelineUuid = pipelineUuidFromQuery()
@@ -152,7 +151,7 @@ async function load(showError = true) {
   } catch (error) {
     if (showError) message.error(error instanceof Error ? error.message : '流水线加载失败')
   } finally {
-    loading.value = false
+    initialLoadFinished.value = true
   }
 }
 
@@ -172,10 +171,7 @@ async function selectPipelineFromQuery() {
     handledPipelineQuery.value = ''
     return
   }
-  if (
-    uuid === handledPipelineQuery.value ||
-    !pipelines.value.some((item) => item.uuid === uuid)
-  )
+  if (uuid === handledPipelineQuery.value || !pipelines.value.some((item) => item.uuid === uuid))
     return
   handledPipelineQuery.value = uuid
   if (uuid === selectedUuid.value) return
@@ -183,6 +179,7 @@ async function selectPipelineFromQuery() {
 }
 
 async function syncCloudPipelines(manual = false) {
+  if (!authStore.cloudLoggedIn) return
   if (syncing.value) return
   syncing.value = true
   try {
@@ -193,17 +190,44 @@ async function syncCloudPipelines(manual = false) {
       )
     await load(false)
   } catch (error) {
-    if (manual || !(error instanceof ApiError && error.status === 401))
-      message.warning(error instanceof Error ? error.message : '云端流水线同步失败')
+    if (error instanceof ApiError && error.status === 401) {
+      authStore.clearCloudAuth()
+      if (manual) message.warning('云端登录已失效，请重新登录')
+      return
+    }
+    message.warning(error instanceof Error ? error.message : '云端流水线同步失败')
   } finally {
     syncing.value = false
   }
+}
+
+async function refreshAfterActivation() {
+  await load(false)
+  if (isActiveAgentRoute()) await syncCloudPipelines(false)
 }
 
 function openPipelineModal(pipeline?: Pipeline) {
   if (pipeline && isPipelineCloud(pipeline)) return
   editingPipeline.value = pipeline
   pipelineModalOpen.value = true
+}
+
+async function copyPipeline(pipeline: Pipeline) {
+  if (copyingUuid.value) return
+  copyingUuid.value = pipeline.uuid
+  try {
+    const copied = await apiClient.post<Pipeline>(
+      `/pipelines/${encodeURIComponent(pipeline.uuid)}/copy`,
+      {},
+    )
+    pipelineStore.upsertPipeline(copied)
+    selectedUuid.value = copied.uuid
+    message.success(`已复制为“${copied.name}”`)
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '流水线复制失败')
+  } finally {
+    copyingUuid.value = ''
+  }
 }
 
 function openAgentModal(step?: PipelineStep) {
@@ -228,8 +252,22 @@ async function handlePipelineUpdated() {
   await load()
 }
 
-async function handlePipelineDeleted() {
-  await load()
+function deletePipeline(pipeline: Pipeline) {
+  if (isPipelineCloud(pipeline)) return
+  Modal.confirm({
+    title: `删除流水线“${pipeline.name}”？`,
+    content: '不会影响已经创建任务中的执行快照。',
+    okType: 'danger',
+    onOk: async () => {
+      try {
+        await apiClient.delete<DeleteResponse>(`/pipelines/${pipeline.uuid}`)
+        await load()
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : '流水线删除失败')
+        throw error
+      }
+    },
+  })
 }
 
 async function refreshSelectedPipeline() {
@@ -263,7 +301,9 @@ function removeStep(step: PipelineStep) {
     okType: 'danger',
     onOk: async () => {
       try {
-        await apiClient.delete<DeleteResponse>(`/pipelines/${selectedUuid.value}/steps/${step.uuid}`)
+        await apiClient.delete<DeleteResponse>(
+          `/pipelines/${selectedUuid.value}/steps/${step.uuid}`,
+        )
         await refreshSelectedPipeline()
       } catch (error) {
         message.error(error instanceof Error ? error.message : '移除 Agent 失败')
@@ -278,10 +318,31 @@ onMounted(async () => {
   await syncCloudPipelines(false)
 })
 
+onActivated(() => {
+  pageActive.value = true
+  // KeepAlive 首次挂载也会触发激活钩子，首轮请求继续只由 onMounted 负责。
+  if (!hasActivatedOnce) {
+    hasActivatedOnce = true
+    return
+  }
+  void refreshAfterActivation()
+})
+
+onDeactivated(() => {
+  pageActive.value = false
+  handledPipelineQuery.value = ''
+  pipelineModalOpen.value = false
+  agentModalOpen.value = false
+  copyModalOpen.value = false
+  editingPipeline.value = undefined
+  editingStep.value = undefined
+})
+
 // 登出后立即从列表移除团队同步的流水线；重新登录后重新同步恢复
 watch(
   () => authStore.cloudLoggedIn,
   (loggedIn) => {
+    if (!isActiveAgentRoute()) return
     if (loggedIn) {
       void syncCloudPipelines(false)
       return
@@ -295,7 +356,10 @@ watch(
 
 watch(
   () => route.query.pipeline,
-  () => void selectPipelineFromQuery(),
+  () => {
+    if (!isActiveAgentRoute()) return
+    void selectPipelineFromQuery()
+  },
 )
 </script>
 
@@ -348,49 +412,6 @@ watch(
   line-height: 28px;
 }
 
-.agent-tabs {
-  display: flex;
-  height: 38px;
-  align-items: center;
-  padding: 3px;
-  border-radius: 20px;
-  background: #f1f2f4;
-}
-
-.agent-tab {
-  display: flex;
-  height: 32px;
-  align-items: center;
-  gap: 7px;
-  padding: 0 16px;
-  border-radius: 17px;
-  color: #667085;
-  font-size: 14px;
-  font-weight: 400;
-  line-height: 32px;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.agent-tab :deep(svg) {
-  font-size: 14px;
-}
-
-.agent-tab.active {
-  color: #111827;
-  background: #fff;
-  box-shadow: 0 2px 7px rgba(15, 23, 42, 0.12);
-  font-weight: 600;
-}
-
-.page-identity .dot {
-  width: 4px;
-  height: 4px;
-  margin-left: 2px;
-  border-radius: 50%;
-  background: #d5dae1;
-}
-
 .page-description {
   color: #98a2b3;
   font-size: 12px;
@@ -410,26 +431,22 @@ watch(
   flex: 1;
   box-sizing: border-box;
   align-items: stretch;
-  gap: 16px;
+  gap: 0;
   overflow: hidden;
-  padding: 24px;
+  padding: 0;
   background: #fff;
 }
 
-.loading-overlay {
+.visually-hidden {
   position: absolute;
-  z-index: 1;
-  inset: 76px 0 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(245, 246, 248, 0.68);
-}
-
-@media (max-width: 1439px) {
-  .agent-layout {
-    padding: 16px;
-  }
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  margin: -1px;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
 }
 
 @media (max-width: 900px) {
@@ -439,8 +456,7 @@ watch(
     flex-direction: column;
   }
 
-  .page-description,
-  .page-identity .dot {
+  .page-description {
     display: none;
   }
 }
