@@ -1,25 +1,25 @@
 <template>
   <a-modal
     :open="open"
-    :title="title"
+    :title="resolvedTitle"
     :closable="false"
     :mask-closable="false"
     :footer="null"
     @cancel="emit('close')"
   >
-    <p class="stop-confirm-copy">{{ description }}</p>
+    <p class="stop-confirm-copy">{{ resolvedDescription }}</p>
     <a-checkbox
       v-model:checked="suppressFutureConfirm"
       class="stop-confirm-suppression"
       :disabled="loading"
     >
-      不再提醒
+      {{ t('workflows.task.progress.dontRemind') }}
     </a-checkbox>
     <div class="stop-confirm-actions">
       <a-button
         :disabled="loading"
         @click="emit('close')"
-        >取消</a-button
+        >{{ t('common.actions.cancel') }}</a-button
       >
       <a-button
         type="primary"
@@ -27,14 +27,17 @@
         :loading="loading"
         @click="emit('confirm', suppressFutureConfirm)"
       >
-        {{ confirmText }}
+        {{ resolvedConfirmText }}
       </a-button>
     </div>
   </a-modal>
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 const props = withDefaults(
   defineProps<{
@@ -46,10 +49,15 @@ const props = withDefaults(
   }>(),
   {
     loading: false,
-    title: '停止当前运行？',
-    description: 'CLI 进程及其子进程将被停止，已经产生的对话和日志会保留。',
-    confirmText: '停止运行',
   },
+)
+
+const resolvedTitle = computed(() => props.title ?? t('workflows.task.progress.stopTitle'))
+const resolvedDescription = computed(() =>
+  props.description ?? t('workflows.task.progress.stopDescription'),
+)
+const resolvedConfirmText = computed(() =>
+  props.confirmText ?? t('workflows.task.progress.stopConfirm'),
 )
 
 const emit = defineEmits<{

@@ -1,14 +1,14 @@
 <template>
   <AModal
     :open="open"
-    title="列表设置"
+    :title="t('workflows.board.listSettings')"
     :width="480"
     :footer="null"
     @update:open="handleOpenChange"
     @cancel="closeSettings"
   >
     <section class="view-mode-settings">
-      <h3 class="settings-section-title">查看模式</h3>
+      <h3 class="settings-section-title">{{ t('workflows.board.viewMode') }}</h3>
       <ASegmented
         v-model:value="settingsTaskViewMode"
         class="view-mode-segmented"
@@ -17,7 +17,7 @@
       />
     </section>
 
-    <h3 class="settings-section-title settings-section-title--lanes">状态设置</h3>
+    <h3 class="settings-section-title settings-section-title--lanes">{{ t('workflows.board.statusSettings') }}</h3>
     <div class="settings-lane-list">
       <div
         v-for="lane in settingsLanes"
@@ -33,7 +33,7 @@
         <input
           v-model="lane.title"
           class="lane-name-input"
-          placeholder="状态名称"
+          :placeholder="t('workflows.board.statusName')"
           maxlength="20"
           @blur="onLaneTitleBlur(lane)"
         />
@@ -42,7 +42,7 @@
           type="button"
           class="visibility-btn"
           :class="{ hidden: lane.is_hidden }"
-          :title="lane.is_hidden ? '点击显示' : '点击隐藏'"
+          :title="lane.is_hidden ? t('workflows.board.show') : t('workflows.board.hide')"
           @click="settingsToggleHidden(lane)"
         >
           <svg
@@ -95,7 +95,7 @@
         <button
           type="button"
           class="delete-btn"
-          title="删除"
+          :title="t('common.actions.delete')"
           @click="settingsRemoveLane(lane.clientKey)"
         >
           <svg
@@ -120,7 +120,7 @@
       <input
         v-model="newLaneTitle"
         class="lane-name-input"
-        placeholder="输入状态名称"
+        :placeholder="t('workflows.board.enterStatusName')"
         maxlength="20"
         @keydown.enter="settingsAddLane"
       />
@@ -153,14 +153,14 @@
         class="btn-cancel"
         @click="closeSettings"
       >
-        取消
+        {{ t('common.actions.cancel') }}
       </button>
       <button
         type="button"
         class="btn-add-lane"
         @click="settingsAddLane"
       >
-        + 添加状态
+        {{ t('workflows.board.addStatus') }}
       </button>
       <button
         type="button"
@@ -168,18 +168,21 @@
         :disabled="settingsSaving"
         @click="saveSettings"
       >
-        {{ settingsSaving ? '保存中...' : '确定' }}
+        {{ settingsSaving ? t('workflows.board.saving') : t('common.actions.confirm') }}
       </button>
     </div>
   </AModal>
 </template>
 
 <script setup lang="ts">
-import { h, ref, watch } from 'vue'
+import { computed, h, ref, watch } from 'vue'
 import { notification } from 'ant-design-vue'
 import { AppstoreOutlined, ColumnWidthOutlined, ExportOutlined } from '@ant-design/icons-vue'
 import apiClient from '@/api/client'
 import type { TaskBoardLane, TaskViewMode } from '@/types/task-board'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 interface EditableLane extends TaskBoardLane {
   clientKey: string
@@ -203,23 +206,23 @@ const emit = defineEmits<{
   saved: [taskViewMode: TaskViewMode]
 }>()
 
-const taskViewModeOptions: TaskViewModeOption[] = [
+const taskViewModeOptions = computed<TaskViewModeOption[]>(() => [
   {
-    label: h('span', { class: 'view-mode-option' }, [h(ColumnWidthOutlined), h('span', '侧滑')]),
-    title: '侧滑',
+    label: h('span', { class: 'view-mode-option' }, [h(ColumnWidthOutlined), h('span', t('workflows.board.drawer'))]),
+    title: t('workflows.board.drawer'),
     value: 'drawer',
   },
   {
-    label: h('span', { class: 'view-mode-option' }, [h(AppstoreOutlined), h('span', '弹窗')]),
-    title: '弹窗',
+    label: h('span', { class: 'view-mode-option' }, [h(AppstoreOutlined), h('span', t('workflows.board.modal'))]),
+    title: t('workflows.board.modal'),
     value: 'modal',
   },
   {
-    label: h('span', { class: 'view-mode-option' }, [h(ExportOutlined), h('span', '新窗口')]),
-    title: '新窗口',
+    label: h('span', { class: 'view-mode-option' }, [h(ExportOutlined), h('span', t('workflows.board.newWindow'))]),
+    title: t('workflows.board.newWindow'),
     value: 'new-window',
   },
-]
+])
 
 const settingsTaskViewMode = ref<TaskViewMode>(props.taskViewMode)
 const settingsLanes = ref<EditableLane[]>([])
@@ -309,9 +312,9 @@ async function settingsToggleHidden(lane: EditableLane) {
 
   try {
     await apiClient.put(`/tasks/task-lanes/${lane.id}`, { is_hidden: lane.is_hidden })
-    notification.success({ message: '保存成功', placement: 'topRight', duration: 2 })
+    notification.success({ message: t('components.resourceTable.saveSuccess'), placement: 'topRight', duration: 2 })
   } catch {
-    notification.error({ message: '保存失败', placement: 'topRight', duration: 3 })
+    notification.error({ message: t('components.resourceTable.saveFailed'), placement: 'topRight', duration: 3 })
   }
 }
 
@@ -329,9 +332,9 @@ async function onLaneTitleBlur(lane: EditableLane) {
       lane.lane_key = response.lane_key
       originalLanes.value.push(toLane(lane))
       emitLanesChange()
-      notification.success({ message: '状态已创建', placement: 'topRight', duration: 2 })
+      notification.success({ message: t('workflows.board.statusCreated'), placement: 'topRight', duration: 2 })
     } catch {
-      notification.error({ message: '创建状态失败', placement: 'topRight', duration: 3 })
+      notification.error({ message: t('workflows.board.statusCreateFailed'), placement: 'topRight', duration: 3 })
     }
     return
   }
@@ -339,9 +342,9 @@ async function onLaneTitleBlur(lane: EditableLane) {
   try {
     await apiClient.put(`/tasks/task-lanes/${lane.id}`, { title })
     emitLanesChange()
-    notification.success({ message: '保存成功', placement: 'topRight', duration: 2 })
+    notification.success({ message: t('components.resourceTable.saveSuccess'), placement: 'topRight', duration: 2 })
   } catch {
-    notification.error({ message: '保存失败', placement: 'topRight', duration: 3 })
+    notification.error({ message: t('components.resourceTable.saveFailed'), placement: 'topRight', duration: 3 })
   }
 }
 
@@ -406,10 +409,10 @@ async function saveSettings() {
     emitLanesChange()
     emit('saved', settingsTaskViewMode.value)
     closeSettings()
-    notification.success({ message: '列表设置已保存', placement: 'topRight', duration: 2 })
+    notification.success({ message: t('workflows.board.settingsSaved'), placement: 'topRight', duration: 2 })
   } catch (error) {
     notification.error({
-      message: error instanceof Error ? error.message : '保存失败',
+      message: error instanceof Error ? error.message : t('components.resourceTable.saveFailed'),
       placement: 'topRight',
       duration: 3,
     })

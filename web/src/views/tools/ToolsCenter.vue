@@ -5,6 +5,7 @@ import apiClient from '@/api/client'
 import MenuIcon from '@/components/MenuIcon.vue'
 import { useAppStore } from '@/stores/app'
 import type { MenuConfigItem } from '@/stores/app'
+import { useAppI18n } from '@/i18n'
 
 /** Menu items managed by the tool center (one-to-one with sidebar keys; order is the sidebar display order) */
 interface ToolItem {
@@ -16,72 +17,74 @@ interface ToolItem {
   detail: string
 }
 
-const TOOL_ITEMS: ToolItem[] = [
+const { t } = useAppI18n()
+
+const TOOL_ITEMS = computed<ToolItem[]>(() => [
   {
     key: 'workflows',
-    label: '看板',
+    label: t('tools.items.workflows.label'),
     tag: 'issue',
     icon: 'dashboard',
-    description: '本地任务看板与团队工作导入',
-    detail: '无需登录即可管理本地任务；登录后可在团队工作页签选择云端任务并导入本地执行。',
+    description: t('tools.items.workflows.description'),
+    detail: t('tools.items.workflows.detail'),
   },
   {
     key: 'tasks',
-    label: '任务',
+    label: t('tools.items.tasks.label'),
     tag: 'task',
     icon: 'task',
-    description: 'CLI 执行通知与任务进度',
-    detail: '集中查看每次 CLI 执行结束通知，定位 Agent 编排步骤、查看最终结果并进入下一步。',
+    description: t('tools.items.tasks.description'),
+    detail: t('tools.items.tasks.detail'),
   },
   {
     key: 'agents',
-    label: '专家流水线',
+    label: t('tools.items.agents.label'),
     tag: 'agent',
     icon: 'agent',
-    description: '本地流水线与 Agent 编排',
-    detail: '维护本地专家流水线、编排顺序、基础提示词以及每一步的 CLI 和模型配置。',
+    description: t('tools.items.agents.description'),
+    detail: t('tools.items.agents.detail'),
   },
   {
     key: 'projects',
-    label: '项目',
+    label: t('tools.items.projects.label'),
     tag: 'project',
     icon: 'project',
-    description: '本地项目与目录绑定',
-    detail: '维护可供任务选择的本地项目，绑定项目名称、图标和本地目录。',
+    description: t('tools.items.projects.description'),
+    detail: t('tools.items.projects.detail'),
   },
   {
     key: 'commands',
-    label: '命令',
+    label: t('tools.items.commands.label'),
     tag: 'command',
     icon: 'command',
-    description: '快速执行常用命令和快捷操作',
-    detail: '提供命令快捷操作功能，包括历史命令查看、Docker 容器管理、Git 操作、进程管理、终端输出查看和自定义网页链接等功能。支持命令自动补全和快捷键操作。',
+    description: t('tools.items.commands.description'),
+    detail: t('tools.items.commands.detail'),
   },
   {
     key: 'knowledge',
-    label: '知识库',
+    label: t('tools.items.knowledge.label'),
     tag: 'knowledge',
     icon: 'book',
-    description: '文档沉淀与智能检索',
-    detail: '文档沉淀与智能检索，集中管理团队知识文档，支持目录组织、全文搜索与引用，让知识随时可用。',
+    description: t('tools.items.knowledge.description'),
+    detail: t('tools.items.knowledge.detail'),
   },
   {
     key: 'apis',
-    label: '接口管理',
+    label: t('tools.items.apis.label'),
     tag: 'api',
     icon: 'api',
-    description: '接口集合管理与调试',
-    detail: '接口集合管理与调试，支持集合、环境与请求配置，可在线发送请求并沉淀接口文档。',
+    description: t('tools.items.apis.description'),
+    detail: t('tools.items.apis.detail'),
   },
   {
     key: 'settings',
-    label: '配置中心',
+    label: t('tools.items.settings.label'),
     tag: 'settings',
     icon: 'settings',
-    description: '集中管理客户端配置',
-    detail: '集中管理 Git、SSH、Docker、数据库与模型等客户端配置，为命令、知识库和其他本地能力提供统一配置入口。',
+    description: t('tools.items.settings.description'),
+    detail: t('tools.items.settings.detail'),
   },
-]
+])
 
 /** Count of fixed, non-toggleable menus (tool center only) */
 const FIXED_MENU_COUNT = 1
@@ -93,10 +96,10 @@ const dragOverKey = ref<string | null>(null)
 const dragStartOrder = ref<string[]>([])
 let dropHandled = false
 
-const selected = computed(() => TOOL_ITEMS.find((i) => i.key === selectedKey.value) ?? TOOL_ITEMS[0])
+const selected = computed(() => TOOL_ITEMS.value.find((i) => i.key === selectedKey.value) ?? TOOL_ITEMS.value[0])
 
 const orderedItems = computed(() => {
-  const itemMap = new Map(TOOL_ITEMS.map((item) => [item.key, item]))
+  const itemMap = new Map(TOOL_ITEMS.value.map((item) => [item.key, item]))
   return appStore.menuOrder
     .map((key) => itemMap.get(key))
     .filter((item): item is ToolItem => item !== undefined)
@@ -104,7 +107,7 @@ const orderedItems = computed(() => {
 
 const enabledMap = computed(() => {
   const map: Record<string, boolean> = {}
-  for (const item of TOOL_ITEMS) {
+  for (const item of TOOL_ITEMS.value) {
     map[item.key] = appStore.isMenuVisible(item.key)
   }
   return map
@@ -112,10 +115,10 @@ const enabledMap = computed(() => {
 
 /** Visible = enabled manageable items + fixed menus */
 const visibleCount = computed(
-  () => TOOL_ITEMS.filter((i) => appStore.isMenuVisible(i.key)).length + FIXED_MENU_COUNT,
+  () => TOOL_ITEMS.value.filter((i) => appStore.isMenuVisible(i.key)).length + FIXED_MENU_COUNT,
 )
 /** Hidden = disabled manageable items */
-const hiddenCount = computed(() => TOOL_ITEMS.filter((i) => !appStore.isMenuVisible(i.key)).length)
+const hiddenCount = computed(() => TOOL_ITEMS.value.filter((i) => !appStore.isMenuVisible(i.key)).length)
 
 function buildMenuPayload(
   enabled: Record<string, boolean>,
@@ -141,7 +144,7 @@ async function toggleItem(item: ToolItem, checked: boolean) {
   try {
     await saveMenuConfig(next)
   } catch {
-    message.error('保存菜单配置失败')
+    message.error(t('tools.saveVisibilityFailed'))
     appStore.setMenuEnabled(prev)
   }
 }
@@ -183,7 +186,7 @@ async function finishDrag() {
     await saveMenuConfig(enabledMap.value, nextOrder)
   } catch {
     appStore.setMenuOrder(previousOrder)
-    message.error('保存菜单排序失败')
+    message.error(t('tools.saveOrderFailed'))
   }
 }
 
@@ -202,13 +205,13 @@ function cancelDrag() {
     <!-- Header -->
     <div class="tc-header">
       <div class="tc-header-left">
-        <div class="tc-title">工具中心</div>
-        <div class="tc-subtitle">管理左侧导航菜单的显示、顺序和功能说明</div>
+        <div class="tc-title">{{ t('tools.title') }}</div>
+        <div class="tc-subtitle">{{ t('tools.subtitle') }}</div>
       </div>
       <div class="tc-header-right">
-        <span class="tc-stat">可见：{{ visibleCount }}</span>
+        <span class="tc-stat">{{ t('tools.visible', { count: visibleCount }) }}</span>
         <span class="tc-sep" />
-        <span class="tc-stat">隐藏：{{ hiddenCount }}</span>
+        <span class="tc-stat">{{ t('tools.hidden', { count: hiddenCount }) }}</span>
       </div>
     </div>
 
@@ -232,8 +235,8 @@ function cancelDrag() {
               <span
                 class="tc-drag-handle"
                 draggable="true"
-                title="拖动排序"
-                aria-label="拖动排序"
+                :title="t('tools.drag')"
+                :aria-label="t('tools.drag')"
                 @click.stop
                 @dragstart.stop="startDrag($event, item)"
                 @dragend="cancelDrag"
@@ -269,7 +272,7 @@ function cancelDrag() {
           </div>
         </div>
         <div class="tc-detail-section">
-          <div class="tc-detail-title">功能说明</div>
+          <div class="tc-detail-title">{{ t('tools.details') }}</div>
           <div class="tc-detail-text">{{ selected.detail }}</div>
         </div>
       </div>

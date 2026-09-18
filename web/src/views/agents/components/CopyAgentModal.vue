@@ -2,13 +2,14 @@
   <a-modal
     :open="open"
     class="copy-agent-modal"
-    title="选择 Agent"
+    :title="t('agents.chooseAgent')"
     width="730px"
     centered
     @update:open="emit('update:open', $event)"
   >
 
-    <div class="agent-list">
+	<a-spin :spinning="loading">
+	<div class="agent-list">
       <div class="agent-list__scroll">
         <button
           v-for="(step, index) in sourceSteps"
@@ -27,16 +28,16 @@
           <span class="agent-list-item__content">
             <strong>{{ step.name }}</strong>
             <span class="agent-list-item__description">
-              {{ step.description || step.prompt || step.prompt_snapshot || '该 Agent 暂未配置描述。' }}
+              {{ step.description || step.prompt || step.prompt_snapshot || t('agents.agentNoDescription') }}
             </span>
             <span class="agent-list-item__tags">
               <span>
                 <CodeOutlined />
-                {{ step.cli_type || '未配置 CLI' }}
+                {{ step.cli_type || t('agents.cliNotConfigured') }}
               </span>
               <span>
                 <DeploymentUnitOutlined />
-                {{ stepModel(step) || '未配置模型' }}
+                {{ stepModel(step) || t('agents.modelNotConfigured') }}
               </span>
             </span>
           </span>
@@ -51,20 +52,21 @@
 
         <a-empty
           v-if="sourceSteps.length === 0"
-          description="暂无可选择的 Agent"
+          :description="t('agents.noAgentsToChoose')"
         />
       </div>
     </div>
+	</a-spin>
 
     <template #footer>
       <div class="copy-agent-modal__footer-actions">
-        <a-button @click="emit('update:open', false)">取消</a-button>
+        <a-button @click="emit('update:open', false)">{{ t('agents.cancel') }}</a-button>
         <a-button
           type="primary"
           :loading="saving"
           @click="copy"
         >
-          确定
+          {{ t('agents.confirm') }}
         </a-button>
       </div>
     </template>
@@ -76,18 +78,24 @@ import { ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { CheckOutlined, CodeOutlined, DeploymentUnitOutlined } from '@ant-design/icons-vue'
 import apiClient from '@/api/client'
-import type { PipelineStep } from '@/types/pipeline'
+import type { ExpertMember, PipelineStep } from '@/types/pipeline'
 import {
   resolveAgentAvatar,
   type ReusablePipelineStep,
   type StepInput,
   stepModel,
 } from './agentPipeline'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 const props = defineProps<{
   open: boolean
-  targetPipelineUuid: string
+	targetPipelineUuid?: string
+	targetExpertGroupUuid?: string
+	expertRole?: 'leader' | 'member'
   sourceSteps: ReusablePipelineStep[]
+	loading?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -107,7 +115,9 @@ watch(
 
 async function copy() {
   const source = props.sourceSteps.find((step) => step.uuid === selectedStepUuid.value)
-  if (!source || !props.targetPipelineUuid) return message.warning('请选择一个 Agent')
+	if (!source || (!props.targetPipelineUuid && !props.targetExpertGroupUuid)) {
+	  return message.warning(t('agents.chooseOneAgent'))
+	}
 
   saving.value = true
   try {
@@ -119,12 +129,22 @@ async function copy() {
       cli_type: source.cli_type || '',
       model_name: stepModel(source),
     }
-    await apiClient.post<PipelineStep>(`/pipelines/${props.targetPipelineUuid}/steps`, payload)
+	if (props.targetExpertGroupUuid) {
+	  await apiClient.post<ExpertMember>(
+		`/expert-groups/${encodeURIComponent(props.targetExpertGroupUuid)}/members`,
+		{ ...payload, member_role: props.expertRole || 'member' },
+	  )
+	} else {
+	  await apiClient.post<PipelineStep>(
+		`/pipelines/${encodeURIComponent(props.targetPipelineUuid || '')}/steps`,
+		payload,
+	  )
+	}
     emit('update:open', false)
     emit('saved')
-    message.success('已复制 Agent 配置，副本与原 Agent 互不关联')
+    message.success(t('agents.agentCopied'))
   } catch (error) {
-    message.error(error instanceof Error ? error.message : 'Agent 复制失败')
+    message.error(error instanceof Error ? error.message : t('agents.agentCopyFailed'))
   } finally {
     saving.value = false
   }

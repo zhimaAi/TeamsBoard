@@ -4,6 +4,7 @@ import apiClient from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import type { Pipeline } from '@/types/pipeline'
 import { filterPipelinesByCloudLogin } from '@/utils/pipeline'
+import { t } from '@/i18n'
 
 export const usePipelineStore = defineStore('pipeline', () => {
   const authStore = useAuthStore()
@@ -35,7 +36,7 @@ export const usePipelineStore = defineStore('pipeline', () => {
         return pipelines.value
       })
       .catch((loadError) => {
-        error.value = loadError instanceof Error ? loadError.message : '流水线加载失败'
+        error.value = loadError instanceof Error ? loadError.message : t('agents.loadFailed')
         throw loadError
       })
       .finally(() => {

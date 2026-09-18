@@ -1,18 +1,20 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
-import Antd from 'ant-design-vue'
+import Antd, { message } from 'ant-design-vue'
 import App from './App.vue'
 import router from './router'
-import apiClient from '@/api/client'
+import apiClient, { setApiFeedbackHandler } from '@/api/client'
 import { seedApiToken } from '@/api/token'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
+import { i18n, initializeLocale, startLocaleSync } from '@/i18n'
 import './assets/styles/global.css'
 
 const app = createApp(App)
 const pinia = createPinia()
 
 app.use(pinia)
+app.use(i18n)
 
 interface SessionResponse {
   local_authenticated: boolean
@@ -90,9 +92,15 @@ async function bootstrap() {
       (import.meta.env.VITE_API_BASE_URL || '(空)'),
   )
 
+  initializeLocale()
+  startLocaleSync()
+
   // 先挂载页面再异步探测会话，避免启动等待导致白屏
   app.use(router)
   app.use(Antd)
+  setApiFeedbackHandler(({ message: feedbackMessage }) => {
+    message.warning(feedbackMessage)
+  })
   app.mount('#app')
 
   try {

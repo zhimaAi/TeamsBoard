@@ -1,7 +1,7 @@
 <template>
   <a-drawer
     :open="open"
-    width="min(1097px, 100vw)"
+    :width="drawerWidth"
     :closable="false"
     :mask-closable="false"
     :body-style="{ padding: 0, overflow: 'hidden' }"
@@ -9,23 +9,28 @@
     @close="requestClose"
   >
     <div class="documents-drawer-shell">
+      <div class="drawer-resize-handle" role="separator" tabindex="0"
+        :aria-label="t('workflows.task.progress.resizeDocuments')" aria-orientation="vertical"
+        :aria-valuemin="minDrawerWidth" :aria-valuemax="viewportWidth" :aria-valuenow="drawerWidth"
+        @pointerdown="startResize" @pointermove="moveResize" @pointerup="finishResize"
+        @pointercancel="finishResize" @lostpointercapture="finishResize" @keydown="resizeWithKeyboard" />
       <header class="documents-header">
         <div class="documents-heading">
           <span class="step-avatar">
             <img
               v-if="currentStep?.avatar"
               :src="currentStep.avatar"
-              :alt="`${currentStep.name}头像`"
+              :alt="currentStep.name"
             />
             <span v-else>{{ initials(currentStep?.name) }}</span>
           </span>
-          <h2>{{ currentStep?.name || '当前步骤' }}</h2>
+          <h2>{{ currentStep?.name || t('workflows.task.progress.drawerCurrentStep') }}</h2>
           <button
             type="button"
             class="open-directory-button"
             :disabled="!taskDirectory || openingDirectory"
-            :aria-label="openingDirectory ? '正在打开文件夹' : '在文件夹中打开'"
-            :title="openingDirectory ? '正在打开文件夹' : '在文件夹中打开'"
+            :aria-label="openingDirectory ? t('workflows.task.progress.openingFolder') : t('workflows.task.progress.openInFolder')"
+            :title="openingDirectory ? t('workflows.task.progress.openingFolder') : t('workflows.task.progress.openInFolder')"
             @click="openTaskDirectory"
           >
             <LoadingOutlined
@@ -44,7 +49,7 @@
           <button
             type="button"
             class="close-button"
-            aria-label="关闭产出文档"
+            :aria-label="t('workflows.task.progress.closeDocuments')"
             @click="requestClose"
           >
             <CloseOutlined />
@@ -52,8 +57,8 @@
         </div>
       </header>
 
-      <div class="documents-workspace">
-        <aside class="file-sidebar">
+      <div class="documents-workspace" :class="{ 'is-directory-collapsed': sidebarCollapsed }">
+        <aside v-show="!sidebarCollapsed" class="file-sidebar">
           <div
             v-if="treeLoading"
             class="sidebar-state"
@@ -69,22 +74,24 @@
               size="small"
               @click="loadTree"
             >
-              <ReloadOutlined />重试
+              <ReloadOutlined />{{ t('common.actions.retry') }}
             </a-button>
           </div>
           <a-empty
             v-else-if="!treeData.length"
             :image="false"
-            description="暂无产出文档"
+            :description="t('workflows.task.progress.noDocuments')"
           />
           <a-tree
             v-else
             block-node
             :tree-data="treeData"
             :selected-keys="selectedKeys"
+            :expanded-keys="expandedKeys"
+            @expand="expandedKeys = $event.map(String)"
             @select="handleSelect"
           >
-            <template #title="{ title, isDir, fileType, meta }">
+            <template #title="{ title, isDir, fileType, meta, source }">
               <div class="file-tree-node">
                 <FolderOutlined
                   v-if="isDir"
@@ -116,24 +123,51 @@
                   class="file-node-meta"
                   >{{ meta }}</span
                 >
+                <!-- 非目录且拿得到绝对路径的文件，提供一键引用到输入框 -->
+                <button
+                  v-if="!isDir && source?.absolute_path"
+                  type="button"
+                  class="file-node-reference"
+                  :title="t('workflows.task.progress.referenceToInput')"
+                  :aria-label="t('workflows.task.progress.referenceToInput')"
+                  @click.stop="emit('reference', source)"
+                >
+                  <LinkOutlined />
+                </button>
               </div>
             </template>
           </a-tree>
         </aside>
 
         <main class="file-workspace">
-          <div
-            v-if="selectedFile"
-            class="file-toolbar"
-          >
-            <div class="file-toolbar-copy">
-              <span class="save-hint"><EditOutlined />修改内容保存后同步更新该产出文档</span>
+          <div class="file-toolbar">
+            <button
+              type="button"
+              class="directory-collapse-btn"
+              :title="sidebarCollapsed ? t('workflows.task.progress.expandDirectory') : t('workflows.task.progress.collapseDirectory')"
+              :aria-label="sidebarCollapsed ? t('workflows.task.progress.expandDirectory') : t('workflows.task.progress.collapseDirectory')"
+              :aria-expanded="!sidebarCollapsed"
+              @click="sidebarCollapsed = !sidebarCollapsed"
+            >
+              <img
+                :src="toggleDirectoryIcon"
+                alt=""
+                aria-hidden="true"
+                :class="{ 'is-collapsed': sidebarCollapsed }"
+              />
+            </button>
+            <div
+              v-if="selectedFile"
+              class="file-toolbar-copy"
+            >
+              <span class="save-hint"><EditOutlined />{{ t('workflows.task.progress.saveHint') }}</span>
               <strong>
                 <FileImageOutlined v-if="selectedContent?.encoding === 'base64'" />
                 <FileTextOutlined v-else />
                 {{ selectedFile.name }}
               </strong>
             </div>
+            <div v-if="selectedFile" class="file-toolbar-actions">
             <a-button
               v-if="selectedContent?.encoding !== 'base64'"
               type="primary"
@@ -141,8 +175,9 @@
               :disabled="contentLoading || Boolean(contentError) || !dirty"
               @click="saveFile"
             >
-              保存
+              {{ t('common.actions.save') }}
             </a-button>
+            </div>
           </div>
 
           <div class="file-content">
@@ -161,11 +196,11 @@
                 show-icon
                 :message="contentError"
               />
-              <a-button @click="retrySelectedFile">重试</a-button>
+              <a-button @click="retrySelectedFile">{{ t('common.actions.retry') }}</a-button>
             </div>
             <a-empty
               v-else-if="!selectedFile || !selectedContent"
-              description="请选择产出文档"
+              :description="t('workflows.task.progress.chooseDocument')"
             />
             <div
               v-else-if="selectedContent.encoding === 'base64'"
@@ -176,12 +211,21 @@
                 :alt="selectedFile.name"
               />
             </div>
+            <MarkdownEditor
+              v-else-if="canPreviewMarkdown"
+              :key="selectedFile.path"
+              v-model="draftContent"
+              class="file-markdown-editor"
+              :cache-id="`task-document-${taskUuid}-${selectedFile.path}`"
+              :placeholder="t('workflows.task.progress.editFile', { name: selectedFile.name })"
+              :disabled="saving"
+            />
             <a-textarea
               v-else
               v-model:value="draftContent"
               class="file-editor"
               :disabled="saving"
-              :aria-label="`编辑文件 ${selectedFile.name}`"
+              :aria-label="t('workflows.task.progress.editFile', { name: selectedFile.name })"
             />
           </div>
         </main>
@@ -191,7 +235,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import {
   CloseOutlined,
@@ -201,11 +245,17 @@ import {
   FileOutlined,
   FileTextOutlined,
   FolderOutlined,
+  LinkOutlined,
   LoadingOutlined,
   ReloadOutlined,
 } from '@ant-design/icons-vue'
 import apiClient from '@/api/client'
+import MarkdownEditor from '@/components/MarkdownEditor.vue'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 import openDirectoryIcon from '@/assets/icons/task-documents-open-directory.svg'
+import toggleDirectoryIcon from '@/assets/icons/task-documents-toggle-directory.svg'
 import { isDesktopRuntime, openDirectory } from '@/composables/useDesktop'
 import { copyText } from '@/utils/clipboard'
 import type { TaskFileContentResponse, TaskFileNode, TaskFilesResponse } from '@/types/task-files'
@@ -232,14 +282,28 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:open': [open: boolean]
+  /** 把某个产出文件引用进输入框（插入 #[名称] 标记） */
+  reference: [file: import('@/types/task-files').MentionableTaskFile]
 }>()
 
 const treeData = ref<FileTreeNode[]>([])
 const fileMap = ref(new Map<string, FileTreeNode>())
 const selectedKeys = ref<string[]>([])
+const expandedKeys = ref<string[]>([])
+const viewportWidth = ref(typeof window === 'undefined' ? 1097 : window.innerWidth)
+const minDrawerWidth = computed(() => Math.min(640, viewportWidth.value))
+const drawerWidth = ref(Math.min(1097, viewportWidth.value))
+const sidebarCollapsed = ref(false)
+let dragging = false
+let resizeStartX = 0
+let resizeStartWidth = 1097
+let liveWidth = 1097
+let resizeWrapper: HTMLElement | null = null
+let resizeRaf = 0
 const selectedFile = ref<TaskFileNode>()
 const selectedContent = ref<TaskFileContentResponse>()
 const draftContent = ref('')
+const canPreviewMarkdown = computed(() => Boolean(selectedContent.value && selectedContent.value.encoding !== 'base64' && isMarkdown(selectedFile.value?.file_type)))
 const savedContent = ref('')
 const treeLoading = ref(false)
 const contentLoading = ref(false)
@@ -250,6 +314,7 @@ const treeError = ref('')
 const contentError = ref('')
 let treeLoadVersion = 0
 let contentLoadVersion = 0
+let saveVersion = 0
 
 const dirty = computed(
   () =>
@@ -286,11 +351,13 @@ watch(
 
 async function loadTree() {
   if (!props.taskUuid) {
-    treeError.value = '缺少任务信息，无法加载产出文档'
+    treeError.value = t('workflows.task.progress.taskMissing')
     return
   }
   const requestVersion = ++treeLoadVersion
   contentLoadVersion += 1
+  saveVersion += 1
+  saving.value = false
   treeLoading.value = true
   treeError.value = ''
   taskDirectory.value = ''
@@ -304,11 +371,12 @@ async function loadTree() {
     const nextMap = new Map<string, FileTreeNode>()
     treeData.value = (result.tree || []).map((node) => mapTreeNode(node, nextMap))
     fileMap.value = nextMap
+    expandedKeys.value = [...nextMap.values()].filter((node) => node.isDir).map((node) => node.key)
     const firstFile = findFirstFile(treeData.value)
     if (firstFile) await loadFile(firstFile)
   } catch (error) {
     if (requestVersion !== treeLoadVersion) return
-    treeError.value = error instanceof Error ? error.message : '产出文档目录加载失败'
+    treeError.value = error instanceof Error ? error.message : t('workflows.task.progress.documentTreeFailed')
   } finally {
     if (requestVersion === treeLoadVersion) treeLoading.value = false
   }
@@ -335,6 +403,58 @@ function mapTreeNode(node: TaskFileNode, target: Map<string, FileTreeNode>): Fil
   return mapped
 }
 
+function startResize(event: PointerEvent) {
+  if (event.button !== 0 || dragging) return
+  event.preventDefault()
+  dragging = true
+  resizeStartX = event.clientX
+  resizeStartWidth = drawerWidth.value
+  liveWidth = drawerWidth.value
+  resizeWrapper = document.querySelector<HTMLElement>('.task-documents-drawer .ant-drawer-content-wrapper')
+  document.querySelector('.task-documents-drawer')?.classList.add('is-resizing')
+  if (resizeWrapper) resizeWrapper.style.transition = 'none'
+  ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+}
+function moveResize(event: PointerEvent) {
+  if (!dragging) return
+  liveWidth = Math.max(minDrawerWidth.value, Math.min(viewportWidth.value, resizeStartWidth + resizeStartX - event.clientX))
+  if (!resizeRaf) resizeRaf = requestAnimationFrame(flushResizeFrame)
+}
+function flushResizeFrame() {
+  resizeRaf = 0
+  if (resizeWrapper) resizeWrapper.style.width = `${liveWidth}px`
+}
+function finishResize() {
+  if (!dragging) return
+  if (resizeRaf) {
+    cancelAnimationFrame(resizeRaf)
+    resizeRaf = 0
+    flushResizeFrame()
+  }
+  dragging = false
+  drawerWidth.value = liveWidth
+  document.querySelector('.task-documents-drawer')?.classList.remove('is-resizing')
+  if (resizeWrapper) resizeWrapper.style.transition = ''
+  resizeWrapper = null
+}
+function resizeWithKeyboard(event: KeyboardEvent) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  const next = event.key === 'Home' ? minDrawerWidth.value : event.key === 'End' ? viewportWidth.value
+    : drawerWidth.value + (event.key === 'ArrowLeft' ? 24 : -24)
+  drawerWidth.value = Math.max(minDrawerWidth.value, Math.min(viewportWidth.value, next))
+}
+function updateViewport() {
+  viewportWidth.value = window.innerWidth
+  drawerWidth.value = Math.max(minDrawerWidth.value, Math.min(viewportWidth.value, drawerWidth.value))
+}
+onMounted(() => window.addEventListener('resize', updateViewport))
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', updateViewport)
+  if (resizeRaf) cancelAnimationFrame(resizeRaf)
+  resetState()
+})
+
 function findFirstFile(nodes: FileTreeNode[]): FileTreeNode | undefined {
   for (const node of nodes) {
     if (!node.isDir) return node
@@ -345,6 +465,7 @@ function findFirstFile(nodes: FileTreeNode[]): FileTreeNode | undefined {
 }
 
 function handleSelect(keys: Array<string | number>) {
+  if (saving.value) return
   const path = String(keys[0] || '')
   const node = fileMap.value.get(path)
   if (!node || node.isDir || node.path === selectedFile.value?.path) return
@@ -353,10 +474,10 @@ function handleSelect(keys: Array<string | number>) {
     return
   }
   Modal.confirm({
-    title: '放弃当前文件的未保存修改？',
-    content: '切换文件后，当前尚未保存的内容将丢失。',
-    okText: '放弃并切换',
-    cancelText: '继续编辑',
+    title: t('workflows.task.progress.discardFileTitle'),
+    content: t('workflows.task.progress.discardFileContent'),
+    okText: t('workflows.task.progress.discardAndSwitch'),
+    cancelText: t('workflows.task.progress.continueEditing'),
     onOk: () => loadFile(node),
   })
 }
@@ -382,7 +503,7 @@ async function loadFile(node: FileTreeNode) {
     savedContent.value = draftContent.value
   } catch (error) {
     if (requestVersion !== contentLoadVersion) return
-    contentError.value = error instanceof Error ? error.message : `${node.name}读取失败`
+    contentError.value = error instanceof Error ? error.message : t('workflows.task.progress.readFailed', { name: node.name })
   } finally {
     if (requestVersion === contentLoadVersion) contentLoading.value = false
   }
@@ -396,18 +517,23 @@ function retrySelectedFile() {
 async function saveFile() {
   const file = selectedFile.value
   if (!file || !props.taskUuid || !dirty.value || saving.value) return
+  const requestVersion = ++saveVersion
+  const taskUuid = props.taskUuid
+  const content = draftContent.value
   saving.value = true
   try {
-    await apiClient.post(`/tasks/${encodeURIComponent(props.taskUuid)}/files/content`, {
+    await apiClient.post(`/tasks/${encodeURIComponent(taskUuid)}/files/content`, {
       path: file.path,
-      content: draftContent.value,
+      content,
     })
-    savedContent.value = draftContent.value
-    message.success(`${file.name}已保存`)
+    if (requestVersion !== saveVersion) return
+    savedContent.value = content
+    message.success(t('workflows.task.progress.saved', { name: file.name }))
   } catch (error) {
-    message.error(error instanceof Error ? error.message : `${file.name}保存失败`)
+    if (requestVersion !== saveVersion) return
+    message.error(error instanceof Error ? error.message : t('workflows.task.progress.saveFailed', { name: file.name }))
   } finally {
-    saving.value = false
+    if (requestVersion === saveVersion) saving.value = false
   }
 }
 
@@ -418,10 +544,10 @@ function requestClose() {
     return
   }
   Modal.confirm({
-    title: '放弃未保存的文档修改？',
-    content: '关闭后，当前文件尚未保存的内容将丢失。',
-    okText: '放弃修改',
-    cancelText: '继续编辑',
+    title: t('workflows.task.progress.discardCloseTitle'),
+    content: t('workflows.task.progress.discardCloseContent'),
+    okText: t('workflows.task.progress.discardChanges'),
+    cancelText: t('workflows.task.progress.continueEditing'),
     onOk: () => emit('update:open', false),
   })
 }
@@ -441,9 +567,9 @@ async function openTaskDirectory() {
   if (!isDesktopRuntime()) {
     try {
       await copyText(taskDirectory.value)
-      message.info('浏览器环境无法直接打开文件夹，任务工作空间路径已复制')
+      message.info(t('workflows.task.progress.browserFolderCopied'))
     } catch {
-      message.warning(`浏览器环境无法直接打开文件夹：${taskDirectory.value}`)
+      message.warning(t('workflows.task.progress.browserFolderUnavailable', { path: taskDirectory.value }))
     }
     return
   }
@@ -452,7 +578,7 @@ async function openTaskDirectory() {
   try {
     await openDirectory(taskDirectory.value)
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '打开任务工作空间失败')
+    message.error(error instanceof Error ? error.message : t('workflows.task.progress.openWorkspaceFailed'))
   } finally {
     openingDirectory.value = false
   }
@@ -461,7 +587,9 @@ async function openTaskDirectory() {
 function resetState() {
   treeLoadVersion += 1
   contentLoadVersion += 1
+  saveVersion += 1
   treeData.value = []
+  expandedKeys.value = []
   fileMap.value = new Map()
   treeLoading.value = false
   saving.value = false
@@ -469,6 +597,14 @@ function resetState() {
   taskDirectory.value = ''
   treeError.value = ''
   clearSelection()
+  sidebarCollapsed.value = false
+  dragging = false
+  if (resizeRaf) {
+    cancelAnimationFrame(resizeRaf)
+    resizeRaf = 0
+  }
+  document.querySelector('.task-documents-drawer')?.classList.remove('is-resizing')
+  resizeWrapper = null
 }
 
 function normalizedFileType(type?: string) {
@@ -520,6 +656,7 @@ function formatFileSize(size?: number) {
 
 <style scoped>
 .documents-drawer-shell {
+  position: relative;
   display: flex;
   height: 100%;
   min-height: 0;
@@ -637,12 +774,30 @@ function formatFileSize(size?: number) {
   flex: 1 1 auto;
 }
 .file-sidebar {
+  position: relative;
+  display: flex;
   width: 248px;
   min-width: 0;
   flex: 0 0 248px;
+  flex-direction: column;
   overflow: auto;
   border-right: 1px solid #d9d9d9;
   padding: 16px;
+}
+.drawer-resize-handle { position: absolute; top: 0; left: 0; z-index: 3; width: 8px; touch-action: none; height: 100%; cursor: col-resize; }
+.drawer-resize-handle:hover,
+.drawer-resize-handle:focus-visible,
+:global(.task-documents-drawer.is-resizing) .drawer-resize-handle {
+  background: rgba(49, 87, 226, 0.18);
+  outline: none;
+}
+:global(.task-documents-drawer.is-resizing),
+:global(.task-documents-drawer.is-resizing *) {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+:global(.task-documents-drawer.is-resizing .ant-drawer-content-wrapper) {
+  transition: none !important;
 }
 .sidebar-state {
   display: flex;
@@ -697,7 +852,32 @@ function formatFileSize(size?: number) {
   font-size: 10px;
   line-height: 16px;
 }
+/* 一键引用到输入框：默认隐藏，悬停行时出现，避免树里视觉噪音 */
+.file-node-reference {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  color: #595959;
+  background: #fff;
+  font-size: 10px;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.file-tree-node:hover .file-node-reference {
+  opacity: 1;
+}
+.file-node-reference:hover {
+  color: #3157e2;
+  border-color: #3157e2;
+}
 .file-workspace {
+  position: relative;
   display: flex;
   min-width: 0;
   min-height: 0;
@@ -709,14 +889,44 @@ function formatFileSize(size?: number) {
   min-height: 68px;
   flex: 0 0 auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 16px;
+  gap: 8px;
+  padding: 10px 16px 10px 12px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
+.directory-collapse-btn {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  padding: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+.directory-collapse-btn img {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+.directory-collapse-btn img.is-collapsed {
+  transform: rotate(180deg);
+}
+.directory-collapse-btn:hover,
+.directory-collapse-btn:focus-visible {
+  background: #f2f4f7;
+}
+.directory-collapse-btn:focus-visible {
+  outline: 2px solid #3157e2;
+  outline-offset: 2px;
+}
+.file-toolbar-actions { display: flex; gap: 8px; flex: 0 0 auto; }
 .file-toolbar-copy {
   display: flex;
   min-width: 0;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 4px;
 }
@@ -746,8 +956,14 @@ function formatFileSize(size?: number) {
   min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
+  flex-direction: column;
   overflow: hidden;
   padding: 16px;
+}
+.file-markdown-editor {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
 }
 .content-state {
   display: flex;

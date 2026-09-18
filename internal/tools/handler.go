@@ -2,7 +2,6 @@ package tools
 
 import (
 	"database/sql"
-	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	_ "github.com/lib/pq"
 
 	"goteams-client/internal/dbconn"
+	"goteams-client/internal/i18n"
 	"goteams-client/internal/secrets"
 	"goteams-client/internal/storage"
 )
@@ -65,6 +65,7 @@ type ValidateResult struct {
 	Operation    string `json:"operation"`
 	NeedsConfirm bool   `json:"needs_confirm"`
 	Message      string `json:"message"`
+	messageKey   string
 }
 
 // validateSQL validates a SQL statement
@@ -72,14 +73,14 @@ type ValidateResult struct {
 func validateSQL(sqlText string) ValidateResult {
 	sqlText = strings.TrimSpace(sqlText)
 	if sqlText == "" {
-		return ValidateResult{Valid: false, Message: "SQL 不能为空"}
+		return ValidateResult{Valid: false, messageKey: "tool_sql_empty"}
 	}
 
 	upper := strings.ToUpper(sqlText)
 
 	// Forbid dangerous operations (write / DDL / privilege / transaction control, etc.)
 	if dangerous := dangerousSQLPattern.FindString(upper); dangerous != "" {
-		return ValidateResult{Valid: false, Operation: "", Message: fmt.Sprintf("禁止 %s 操作", dangerous)}
+		return ValidateResult{Valid: false, Operation: "", Message: dangerous, messageKey: "tool_sql_forbidden"}
 	}
 
 	// Extract the first operation type
@@ -92,11 +93,11 @@ func validateSQL(sqlText string) ValidateResult {
 	}
 
 	if operation == "" {
-		return ValidateResult{Valid: false, Message: "不支持的 SQL 操作：数据库工具仅允许只读查询（SELECT/EXPLAIN/SHOW/DESC）"}
+		return ValidateResult{Valid: false, messageKey: "tool_sql_unsupported"}
 	}
 
 	// Read-only operation, allow directly
-	return ValidateResult{Valid: true, Operation: operation, NeedsConfirm: false, Message: "只读操作"}
+	return ValidateResult{Valid: true, Operation: operation, NeedsConfirm: false, messageKey: "tool_sql_read_only"}
 }
 
 func (h *Handler) validateSQL(c *gin.Context) {
@@ -104,10 +105,15 @@ func (h *Handler) validateSQL(c *gin.Context) {
 		SQL string `json:"sql"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	result := validateSQL(body.SQL)
+	if result.messageKey == "tool_sql_forbidden" {
+		result.Message = i18n.Format(c, result.messageKey, i18n.Params{"Operation": result.Message})
+	} else {
+		result.Message = i18n.T(c, result.messageKey)
+	}
 	c.JSON(http.StatusOK, result)
 }
 
@@ -131,23 +137,27 @@ func (h *Handler) executeSQL(c *gin.Context) {
 		Confirmed         bool   `json:"confirmed"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	if body.DatabaseProfileID <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "database_profile_id 不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "tool_database_profile_required", "")
 		return
 	}
 
 	// Validate SQL (the database tool is read-only, only SELECT/EXPLAIN/SHOW/DESC allowed)
 	validation := validateSQL(body.SQL)
 	if !validation.Valid {
-		c.JSON(http.StatusBadRequest, gin.H{"error": validation.Message})
+		if validation.messageKey == "tool_sql_forbidden" {
+			i18n.Errorf(c, http.StatusBadRequest, validation.messageKey, i18n.Params{"Operation": validation.Message})
+		} else {
+			i18n.Error(c, http.StatusBadRequest, validation.messageKey, "")
+		}
 		return
 	}
 	if validation.NeedsConfirm {
 		// Read-only validation never returns NeedsConfirm; this serves as a second guard, forbidding any write.
-		c.JSON(http.StatusForbidden, gin.H{"error": "数据库工具为只读模式，禁止写入或变更操作"})
+		i18n.Error(c, http.StatusForbidden, "tool_read_only", "")
 		return
 	}
 
@@ -159,11 +169,11 @@ func (h *Handler) executeSQL(c *gin.Context) {
 		`SELECT db_type, host, port, database_name, username, secret_ref, ssh_profile_id FROM gt_database_profiles WHERE id = ?`,
 		body.DatabaseProfileID).Scan(&dbType, &host, &port, &databaseName, &username, &secretRef, &sshProfileID)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "数据库配置不存在"})
+		i18n.Error(c, http.StatusNotFound, "tool_database_not_found", "")
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -177,13 +187,13 @@ func (h *Handler) executeSQL(c *gin.Context) {
 	}
 	sshCfg, err := dbconn.ResolveSSHConfig(c.Request.Context(), h.dbRef.Get(), h.lookupSecret, sshProfileID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
 	targetDB, cleanup, err := dbconn.Open(c.Request.Context(), dbCfg, sshCfg)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer cleanup()
@@ -197,14 +207,14 @@ func (h *Handler) executeSQL(c *gin.Context) {
 		// Query
 		rows, err := targetDB.Query(body.SQL)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		defer rows.Close()
 
 		columns, err := rows.Columns()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取结果列失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		results := make([]map[string]interface{}, 0)
@@ -217,7 +227,7 @@ func (h *Handler) executeSQL(c *gin.Context) {
 			// Scan failure must error: silently skipping would let the user receive a result that looks successful
 			// but actually has missing rows, which is highly misleading in data-reconciliation scenarios.
 			if err := rows.Scan(valuePtrs...); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "读取查询结果失败: " + err.Error()})
+				i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 				return
 			}
 			row := make(map[string]interface{})
@@ -231,7 +241,7 @@ func (h *Handler) executeSQL(c *gin.Context) {
 			results = append(results, row)
 		}
 		if err := rows.Err(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "遍历查询结果失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 

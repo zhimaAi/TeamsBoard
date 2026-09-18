@@ -107,18 +107,22 @@ func (r *LocalRuntime) Close() {
 	}
 }
 
+// registerExecutorFactories 把各 CLI 适配器注册到 workflow 的适配器注册表。
+// 新增 CLI 只需要在 internal/executor/<cli> 实现适配器，并在此处补一行注册。
 func registerExecutorFactories() {
-	workflow.SetCodexAdapterFactory(func() executor.Adapter { return codex.NewAdapter() })
-	workflow.SetClaudeAdapterFactory(func() executor.Adapter { return claude.NewAdapter() })
-	workflow.SetCodeBuddyAdapterFactory(func() executor.Adapter { return codebuddy.NewAdapter() })
-	workflow.SetOpenCodeAdapterFactory(func() executor.Adapter { return opencode.NewAdapter() })
-	workflow.SetCursorAdapterFactory(func() executor.Adapter { return cursor.NewAdapter() })
-	workflow.SetCopilotAdapterFactory(func() executor.Adapter { return copilot.NewAdapter() })
-	workflow.SetGrokAdapterFactory(func() executor.Adapter { return grok.NewAdapter() })
-	workflow.SetHermesAdapterFactory(func() executor.Adapter { return hermes.NewAdapter() })
-	workflow.SetKimiAdapterFactory(func() executor.Adapter { return kimi.NewAdapter() })
-	workflow.SetQoderAdapterFactory(func() executor.Adapter { return qoder.NewAdapter() })
-	workflow.SetQwenAdapterFactory(func() executor.Adapter { return qwen.NewAdapter() })
-	workflow.SetOpenClawAdapterFactory(func() executor.Adapter { return openclaw.NewAdapter() })
-	workflow.SetPiAdapterFactory(func() executor.Adapter { return pi.NewAdapter() })
+	workflow.RegisterAdapterFactory(executor.CLITypeClaude, claude.NewAdapter)
+	workflow.RegisterAdapterFactory(executor.CLITypeCodeBuddy, codebuddy.NewAdapter)
+	workflow.RegisterAdapterFactory(executor.CLITypeCodex, codex.NewAdapter)
+	workflow.RegisterAdapterFactory(executor.CLITypeOpenCode, opencode.NewAdapter)
+	workflow.RegisterAdapterFactory(executor.CLITypeCursor, cursor.NewAdapter)
+	workflow.RegisterAdapterFactory(executor.CLITypeCopilot, copilot.NewAdapter)
+	workflow.RegisterAdapterFactory(executor.CLITypeGrok, grok.NewAdapter)
+	workflow.RegisterAdapterFactory(executor.CLITypeHermes, hermes.NewAdapter)
+	workflow.RegisterAdapterFactory(executor.CLITypeKimi, kimi.NewAdapter)
+	workflow.RegisterAdapterFactory(executor.CLITypeQoder, qoder.NewAdapter)
+	// Qoder 国内版与海外版协议一致，复用同一适配器
+	workflow.RegisterAdapterFactory(executor.CLITypeQoderCN, qoder.NewAdapter)
+	workflow.RegisterAdapterFactory(executor.CLITypeQwen, qwen.NewAdapter)
+	workflow.RegisterAdapterFactory(executor.CLITypeOpenClaw, openclaw.NewAdapter)
+	workflow.RegisterAdapterFactory(executor.CLITypePi, pi.NewAdapter)
 }

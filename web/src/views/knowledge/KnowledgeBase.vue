@@ -15,6 +15,9 @@ import {
 } from '@ant-design/icons-vue'
 import MarkdownIt from 'markdown-it'
 import apiClient, { ApiError } from '@/api/client'
+import { useAppI18n } from '@/i18n'
+
+const { t, locale } = useAppI18n()
 
 type FolderNode = {
   id: number
@@ -216,7 +219,7 @@ const directoryTreeData = computed<DirectoryNode[]>(() => {
   )
   const allNode: DirectoryNode = {
     key: 'special:all',
-    title: '全部文档',
+    title: t('knowledge.allDocuments'),
     kind: 'folder',
     entityId: 'all',
     parentKey: 'root',
@@ -227,7 +230,7 @@ const directoryTreeData = computed<DirectoryNode[]>(() => {
   }
   const defaultFolderNode: DirectoryNode = {
     key: 'special:uncategorized',
-    title: '默认文件夹',
+    title: t('knowledge.defaultFolder'),
     kind: 'folder',
     entityId: 0,
     parentKey: 'root',
@@ -299,7 +302,7 @@ function clearDraft() {
 
 function formatTime(value: number) {
   if (!value) return '—'
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
+  return new Date(value).toLocaleString(locale.value, { hour12: false })
 }
 
 async function loadFolders() {
@@ -321,7 +324,7 @@ async function refreshTrash() {
   try {
     await loadTrash()
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '回收站加载失败')
+    message.error(error instanceof Error ? error.message : t('knowledge.trashLoadFailed'))
   }
 }
 
@@ -333,7 +336,7 @@ async function loadWorkspace(selectFirst = false) {
       await openDocument(documents.value[0].uuid, true)
     }
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '知识库加载失败')
+    message.error(error instanceof Error ? error.message : t('knowledge.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -343,11 +346,11 @@ function confirmDiscardChanges() {
   if (!dirty.value) return Promise.resolve(true)
   return new Promise<boolean>((resolve) => {
     Modal.confirm({
-      title: '当前文档尚未保存',
-      content: '切换后会丢失本次修改，是否继续？',
-      okText: '放弃修改',
+      title: t('knowledge.unsavedTitle'),
+      content: t('knowledge.unsavedDescription'),
+      okText: t('knowledge.discard'),
       okType: 'danger',
-      cancelText: '继续编辑',
+      cancelText: t('knowledge.continueEditing'),
       onOk: () => resolve(true),
       onCancel: () => resolve(false),
     })
@@ -376,7 +379,7 @@ async function openDocument(uuid: string, force = false, treeKey = '') {
     trashVisible.value = false
     currentSnapshot()
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '文档加载失败')
+    message.error(error instanceof Error ? error.message : t('knowledge.documentLoadFailed'))
   }
 }
 
@@ -384,17 +387,17 @@ async function createDocument() {
   if (!(await confirmDiscardChanges())) return
   try {
     const created = await apiClient.post<KnowledgeDocument>('/knowledge/documents', {
-      title: '未命名文档',
+      title: t('knowledge.untitled'),
       folder_id: selectedFolderID.value === 'all' ? 0 : selectedFolderID.value,
-      content: '# 未命名文档\n\n在这里开始记录。',
+      content: t('knowledge.newContent'),
       tags: [],
     })
     await loadDocuments()
     await openDocument(created.uuid, true)
     viewMode.value = 'edit'
-    message.success('文档已创建')
+    message.success(t('knowledge.documentCreated'))
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '创建文档失败')
+    message.error(error instanceof Error ? error.message : t('knowledge.documentCreateFailed'))
   }
 }
 
@@ -410,25 +413,25 @@ function updateDocumentInList(document: KnowledgeDocument) {
 async function saveAsCopy() {
   try {
     const created = await apiClient.post<KnowledgeDocument>('/knowledge/documents', {
-      title: `${draft.title.trim() || '未命名文档'}（冲突副本）`,
+      title: t('knowledge.conflictCopy', { title: draft.title.trim() || t('knowledge.untitled') }),
       folder_id: draft.folderID,
       content: draft.content,
       tags: draft.tags,
     })
     await loadDocuments()
     await openDocument(created.uuid, true)
-    message.success('已另存为新文档')
+    message.success(t('knowledge.savedAsCopy'))
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '另存失败')
+    message.error(error instanceof Error ? error.message : t('knowledge.saveAsFailed'))
   }
 }
 
 function handleSaveConflict() {
   Modal.confirm({
-    title: '检测到文档冲突',
-    content: '磁盘文件或另一个页面已经修改了该文档。你可以重新加载最新内容，或将当前内容另存为副本。',
-    okText: '重新加载',
-    cancelText: '另存为副本',
+    title: t('knowledge.conflictTitle'),
+    content: t('knowledge.conflictDescription'),
+    okText: t('knowledge.reload'),
+    cancelText: t('knowledge.saveAsCopy'),
     async onOk() {
       await openDocument(draft.uuid, true)
     },
@@ -441,7 +444,7 @@ function handleSaveConflict() {
 async function saveDocument() {
   if (!draft.uuid || saving.value) return
   if (!draft.title.trim()) {
-    message.error('文档标题不能为空')
+    message.error(t('knowledge.titleRequired'))
     return
   }
   saving.value = true
@@ -467,12 +470,12 @@ async function saveDocument() {
     })
     currentSnapshot()
     updateDocumentInList(updated)
-    message.success('文档已保存')
+    message.success(t('knowledge.documentSaved'))
   } catch (error) {
     if (error instanceof ApiError && error.status === 409) {
       handleSaveConflict()
     } else {
-      message.error(error instanceof Error ? error.message : '保存失败')
+      message.error(error instanceof Error ? error.message : t('knowledge.saveFailed'))
     }
   } finally {
     saving.value = false
@@ -482,19 +485,19 @@ async function saveDocument() {
 function deleteDocument() {
   if (!draft.uuid) return
   Modal.confirm({
-    title: `将“${draft.title}”移到回收站？`,
-    content: '历史版本会一并保留，可随时从回收站恢复。',
-    okText: '移到回收站',
+    title: t('knowledge.deleteTitle', { title: draft.title }),
+    content: t('knowledge.deleteDescription'),
+    okText: t('knowledge.moveToTrash'),
     okType: 'danger',
-    cancelText: '取消',
+    cancelText: t('knowledge.cancel'),
     async onOk() {
       try {
         await apiClient.delete(`/knowledge/documents/${draft.uuid}`)
         clearDraft()
         await Promise.all([loadDocuments(), loadTrash()])
-        message.success('文档已移到回收站')
+        message.success(t('knowledge.movedToTrash'))
       } catch (error) {
-        message.error(error instanceof Error ? error.message : '删除失败')
+        message.error(error instanceof Error ? error.message : t('knowledge.deleteFailed'))
       }
     },
   })
@@ -511,26 +514,26 @@ async function restoreDocument(document: KnowledgeDocument) {
   try {
     await apiClient.post(`/knowledge/documents/${document.uuid}/restore`)
     await Promise.all([loadTrash(), loadDocuments()])
-    message.success('文档已恢复')
+    message.success(t('knowledge.restored'))
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '恢复失败')
+    message.error(error instanceof Error ? error.message : t('knowledge.restoreFailed'))
   }
 }
 
 function hardDeleteDocument(document: KnowledgeDocument) {
   Modal.confirm({
-    title: `彻底删除“${document.title}”？`,
-    content: '正文和所有历史版本都会被永久删除，此操作无法撤销。',
-    okText: '彻底删除',
+    title: t('knowledge.hardDeleteTitle', { title: document.title }),
+    content: t('knowledge.hardDeleteDescription'),
+    okText: t('knowledge.deletePermanently'),
     okType: 'danger',
-    cancelText: '取消',
+    cancelText: t('knowledge.cancel'),
     async onOk() {
       try {
         await apiClient.delete(`/knowledge/documents/${document.uuid}/permanent`)
         await loadTrash()
-        message.success('文档已彻底删除')
+        message.success(t('knowledge.hardDeleted'))
       } catch (error) {
-        message.error(error instanceof Error ? error.message : '彻底删除失败')
+        message.error(error instanceof Error ? error.message : t('knowledge.hardDeleteFailed'))
       }
     },
   })
@@ -559,15 +562,15 @@ async function moveDirectoryNode(info: DirectoryDropInfo) {
   const dragged = info.dragNode
   const target = info.node
   if (dragged.special === 'all') {
-    message.info('“全部文档”是固定聚合目录，不能调整位置')
+    message.info(t('knowledge.allFixed'))
     return
   }
   if (dragged.special === 'uncategorized' && !info.dropToGap) {
-    message.info('“默认文件夹”只能在一级目录中调整顺序')
+    message.info(t('knowledge.defaultTopLevel'))
     return
   }
   if (target.special === 'all') {
-    message.info('“全部文档”是聚合视图，请拖入具体文件夹或“默认文件夹”')
+    message.info(t('knowledge.allAggregate'))
     return
   }
   if (!info.dropToGap && target.kind !== 'folder') return
@@ -608,12 +611,12 @@ async function moveDirectoryNode(info: DirectoryDropInfo) {
   }
 
   if (dragged.kind === 'document' && targetParentKey === 'special:all') {
-    message.info('“全部文档”是聚合视图，请拖入具体文件夹或“默认文件夹”')
+    message.info(t('knowledge.allAggregate'))
     return
   }
 
   if (dragged.kind === 'document' && targetParentKey === 'root') {
-    message.info('文档请拖入具体文件夹或“默认文件夹”')
+    message.info(t('knowledge.moveDocumentHint'))
     return
   }
 
@@ -631,7 +634,7 @@ async function moveDirectoryNode(info: DirectoryDropInfo) {
       )
     const draggedFolder = findFolder(folders.value, draggedFolderID)
     if (draggedFolder && containsFolder(draggedFolder, targetFolderID)) {
-      message.error('不能将文件夹移动到自己的子目录中')
+      message.error(t('knowledge.folderCycle'))
       return
     }
   }
@@ -691,12 +694,12 @@ async function moveDirectoryNode(info: DirectoryDropInfo) {
     persistDirectoryOrder()
     selectedFolderID.value = targetFolderID
     if (dragged.kind === 'document') {
-      message.success(sourceFolderID === targetFolderID ? '文档顺序已更新' : '文档已移动')
+      message.success(sourceFolderID === targetFolderID ? t('knowledge.documentOrderUpdated') : t('knowledge.documentMoved'))
     } else {
-      message.success(sourceFolderID === targetFolderID ? '目录顺序已更新' : '目录位置已更新')
+      message.success(sourceFolderID === targetFolderID ? t('knowledge.folderOrderUpdated') : t('knowledge.folderMoved'))
     }
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '移动失败')
+    message.error(error instanceof Error ? error.message : t('knowledge.moveFailed'))
   }
 }
 
@@ -716,9 +719,9 @@ async function createFolder() {
     })
     folderModalVisible.value = false
     await loadFolders()
-    message.success('文件夹已创建')
+    message.success(t('knowledge.folderCreated'))
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '创建文件夹失败')
+    message.error(error instanceof Error ? error.message : t('knowledge.folderCreateFailed'))
   }
 }
 
@@ -726,14 +729,14 @@ async function renameSelectedFolder() {
   if (typeof selectedFolderID.value !== 'number' || selectedFolderID.value === 0) return
   const folder = flatFolders.value.find((item) => item.id === selectedFolderID.value)
   if (!folder) return
-  const name = window.prompt('文件夹名称', folder.name)?.trim()
+  const name = window.prompt(t('knowledge.folderName'), folder.name)?.trim()
   if (!name) return
   try {
     await apiClient.put(`/knowledge/folders/${folder.id}`, { name })
     await loadFolders()
-    message.success('文件夹已重命名')
+    message.success(t('knowledge.folderRenamed'))
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '重命名失败')
+    message.error(error instanceof Error ? error.message : t('knowledge.renameFailed'))
   }
 }
 
@@ -742,19 +745,19 @@ function deleteSelectedFolder() {
   const folder = flatFolders.value.find((item) => item.id === selectedFolderID.value)
   if (!folder) return
   Modal.confirm({
-    title: `删除文件夹“${folder.name}”？`,
-    content: '其中的文档和子文件夹会移动到根目录，不会删除文档。',
-    okText: '删除文件夹',
+    title: t('knowledge.deleteFolderTitle', { name: folder.name }),
+    content: t('knowledge.deleteFolderDescription'),
+    okText: t('knowledge.deleteFolder'),
     okType: 'danger',
-    cancelText: '取消',
+    cancelText: t('knowledge.cancel'),
     async onOk() {
       try {
         await apiClient.delete(`/knowledge/folders/${folder.id}`)
         selectedFolderID.value = 'all'
         await Promise.all([loadFolders(), loadDocuments()])
-        message.success('文件夹已删除')
+        message.success(t('knowledge.folderDeleted'))
       } catch (error) {
-        message.error(error instanceof Error ? error.message : '删除文件夹失败')
+        message.error(error instanceof Error ? error.message : t('knowledge.folderDeleteFailed'))
       }
     },
   })
@@ -777,7 +780,7 @@ async function performSearch() {
     if (sequence === searchSequence) searchResults.value = result.items || []
   } catch (error) {
     if (sequence === searchSequence) {
-      message.error(error instanceof Error ? error.message : '搜索失败')
+      message.error(error instanceof Error ? error.message : t('knowledge.searchFailed'))
     }
   } finally {
     if (sequence === searchSequence) searchLoading.value = false
@@ -822,27 +825,27 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="knowledge-shell">
-    <header class="knowledge-titlebar">知识库</header>
+    <header class="knowledge-titlebar">{{ t('knowledge.title') }}</header>
 
     <div class="knowledge-page" :class="{ 'is-loading': loading }">
       <aside class="knowledge-sidebar">
         <div class="directory-heading">
           <div class="directory-title">
-            <strong>文档目录</strong>
+            <strong>{{ t('knowledge.catalog') }}</strong>
             <span class="directory-divider" />
-            <span>支持拖拽排序</span>
+            <span>{{ t('knowledge.dragHint') }}</span>
           </div>
           <a-dropdown :trigger="['click']">
-            <button class="icon-button add-button" type="button" aria-label="新建">
+            <button class="icon-button add-button" type="button" :aria-label="t('knowledge.new')">
               <PlusOutlined />
             </button>
             <template #overlay>
               <a-menu>
                 <a-menu-item key="document" @click="createDocument">
-                  <FileTextOutlined /> 新建文档
+                  <FileTextOutlined /> {{ t('knowledge.newDocument') }}
                 </a-menu-item>
                 <a-menu-item key="folder" @click="openFolderModal">
-                  <FolderAddOutlined /> 新建文件夹
+                  <FolderAddOutlined /> {{ t('knowledge.newFolder') }}
                 </a-menu-item>
               </a-menu>
             </template>
@@ -853,7 +856,7 @@ onBeforeUnmount(() => {
           <a-input
             v-model:value="searchKeyword"
             allow-clear
-            placeholder="搜索接口"
+            :placeholder="t('knowledge.search')"
             @input="scheduleSearch"
             @press-enter="performSearch"
           >
@@ -882,19 +885,19 @@ onBeforeUnmount(() => {
                       v-if="kind === 'folder' && String(key).startsWith('folder:')"
                       class="node-actions"
                     >
-                      <a-tooltip title="重命名">
+                      <a-tooltip :title="t('knowledge.rename')">
                         <button
                           type="button"
-                          aria-label="重命名文件夹"
+                          :aria-label="t('knowledge.renameFolder')"
                           @click.stop="selectedFolderID = Number(entityId); renameSelectedFolder()"
                         >
                           <EditOutlined />
                         </button>
                       </a-tooltip>
-                      <a-tooltip title="删除文件夹">
+                      <a-tooltip :title="t('knowledge.deleteFolder')">
                         <button
                           type="button"
-                          aria-label="删除文件夹"
+                          :aria-label="t('knowledge.deleteFolder')"
                           @click.stop="selectedFolderID = Number(entityId); deleteSelectedFolder()"
                         >
                           <DeleteOutlined />
@@ -905,7 +908,7 @@ onBeforeUnmount(() => {
                 </template>
               </a-tree>
               <div v-if="searchKeyword && !directoryDocuments.length" class="directory-empty">
-                没有匹配的文档
+                {{ t('knowledge.noMatches') }}
               </div>
             </div>
           </a-spin>
@@ -918,16 +921,16 @@ onBeforeUnmount(() => {
           @click="openTrash"
         >
           <DeleteOutlined />
-          <span>回收站</span>
+          <span>{{ t('knowledge.trash') }}</span>
           <span class="trash-count">{{ trashDocuments.length }}</span>
         </button>
       </aside>
 
       <main v-if="trashVisible" class="trash-workspace">
         <div class="trash-header">
-          <h2><DeleteOutlined /> 回收站</h2>
-          <a-tooltip title="刷新">
-            <button class="icon-button" type="button" aria-label="刷新回收站" @click="refreshTrash">
+          <h2><DeleteOutlined /> {{ t('knowledge.trash') }}</h2>
+          <a-tooltip :title="t('common.actions.refresh')">
+            <button class="icon-button" type="button" :aria-label="t('knowledge.refreshTrash')" @click="refreshTrash">
               <ReloadOutlined />
             </button>
           </a-tooltip>
@@ -937,24 +940,24 @@ onBeforeUnmount(() => {
             <div class="trash-document-icon"><FileTextOutlined /></div>
             <div class="trash-card-main">
               <div class="trash-card-title">{{ document.title }}</div>
-              <div class="trash-card-meta">删除于 {{ formatTime(document.updated_at) }}</div>
+              <div class="trash-card-meta">{{ t('knowledge.deletedAt', { time: formatTime(document.updated_at) }) }}</div>
             </div>
             <div class="trash-card-actions">
-              <a-tooltip title="恢复">
+              <a-tooltip :title="t('knowledge.restore')">
                 <button
                   class="icon-button"
                   type="button"
-                  aria-label="恢复文档"
+                  :aria-label="t('knowledge.restore')"
                   @click="restoreDocument(document)"
                 >
                   <RollbackOutlined />
                 </button>
               </a-tooltip>
-              <a-tooltip title="彻底删除">
+              <a-tooltip :title="t('knowledge.deletePermanently')">
                 <button
                   class="icon-button danger-button"
                   type="button"
-                  aria-label="彻底删除文档"
+                  :aria-label="t('knowledge.deletePermanently')"
                   @click="hardDeleteDocument(document)"
                 >
                   <DeleteOutlined />
@@ -963,7 +966,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-        <div v-else class="trash-empty">回收站为空</div>
+        <div v-else class="trash-empty">{{ t('knowledge.trashEmpty') }}</div>
       </main>
 
       <main v-else-if="draft.uuid" class="editor-workspace">
@@ -975,7 +978,7 @@ onBeforeUnmount(() => {
                 v-if="editingTitle"
                 v-model:value="draft.title"
                 class="title-input"
-                placeholder="文档标题"
+                :placeholder="t('knowledge.documentTitle')"
                 autofocus
                 @press-enter="editingTitle = false"
                 @blur="editingTitle = false"
@@ -983,21 +986,21 @@ onBeforeUnmount(() => {
               <h2 v-else>{{ draft.title }}</h2>
             </div>
             <div class="editor-actions">
-              <a-tooltip title="重命名">
-                <button class="icon-button" type="button" aria-label="重命名文档" @click="editingTitle = true">
+              <a-tooltip :title="t('knowledge.rename')">
+                <button class="icon-button" type="button" :aria-label="t('knowledge.rename')" @click="editingTitle = true">
                   <EditOutlined />
                 </button>
               </a-tooltip>
-              <a-tooltip title="移到回收站">
-                <button class="icon-button" type="button" aria-label="删除文档" @click="deleteDocument">
+              <a-tooltip :title="t('knowledge.moveToTrash')">
+                <button class="icon-button" type="button" :aria-label="t('knowledge.moveToTrash')" @click="deleteDocument">
                   <DeleteOutlined />
                 </button>
               </a-tooltip>
-              <a-tooltip title="保存">
+              <a-tooltip :title="t('common.actions.save')">
                 <button
                   class="icon-button save-button"
                   type="button"
-                  aria-label="保存文档"
+                  :aria-label="t('knowledge.saveDocument')"
                   :disabled="saving"
                   @click="saveDocument"
                 >
@@ -1008,17 +1011,17 @@ onBeforeUnmount(() => {
           </div>
           <div class="editor-meta-row">
             <div class="save-state" :class="{ dirty }">
-              {{ dirty ? '未保存' : '已保存' }}
+              {{ dirty ? t('knowledge.unsaved') : t('knowledge.saved') }}
             </div>
             <span class="meta-divider" />
-            <span class="markdown-support">支持 Markdown</span>
+            <span class="markdown-support">{{ t('knowledge.markdown') }}</span>
             <a-segmented
               v-model:value="viewMode"
               class="view-switcher"
               :options="[
-                { value: 'edit', label: '编辑' },
-                { value: 'split', label: '分栏' },
-                { value: 'preview', label: '预览' },
+                { value: 'edit', label: t('knowledge.edit') },
+                { value: 'split', label: t('knowledge.split') },
+                { value: 'preview', label: t('knowledge.preview') },
               ]"
             />
           </div>
@@ -1029,7 +1032,7 @@ onBeforeUnmount(() => {
             <a-textarea
               v-model:value="draft.content"
               class="markdown-input"
-              placeholder="使用 Markdown 记录知识..."
+              :placeholder="t('knowledge.editorPlaceholder')"
               :spellcheck="false"
             />
           </div>
@@ -1046,8 +1049,8 @@ onBeforeUnmount(() => {
             <FileTextOutlined class="empty-document" />
             <span class="empty-check"><CheckOutlined /></span>
           </div>
-          <h2>请选择一个文件夹或一个文档</h2>
-          <p>展开目录后选择内容，即可开始阅读或编辑</p>
+          <h2>{{ t('knowledge.emptyTitle') }}</h2>
+          <p>{{ t('knowledge.emptyDescription') }}</p>
         </div>
       </main>
 
@@ -1056,8 +1059,8 @@ onBeforeUnmount(() => {
           v-model:value="rightTab"
           class="inspector-switcher"
           :options="[
-            { value: 'outline', label: '内容结构' },
-            { value: 'properties', label: '属性' },
+            { value: 'outline', label: t('knowledge.outline') },
+            { value: 'properties', label: t('knowledge.properties') },
           ]"
         />
 
@@ -1073,42 +1076,42 @@ onBeforeUnmount(() => {
               {{ item.title }}
             </button>
           </div>
-          <div v-else class="inspector-empty">暂无标题大纲</div>
+          <div v-else class="inspector-empty">{{ t('knowledge.noOutline') }}</div>
         </div>
 
         <div v-else class="inspector-content">
           <div class="property-editor">
-            <label>文件夹</label>
+            <label>{{ t('knowledge.folder') }}</label>
             <a-select v-model:value="draft.folderID" class="folder-select">
-              <a-select-option :value="0">默认文件夹</a-select-option>
+              <a-select-option :value="0">{{ t('knowledge.defaultFolder') }}</a-select-option>
               <a-select-option v-for="folder in flatFolders" :key="folder.id" :value="folder.id">
                 {{ `${'　'.repeat(folder.depth)}${folder.name}` }}
               </a-select-option>
             </a-select>
           </div>
           <dl class="property-list">
-            <div><dt>字数</dt><dd>{{ draft.wordCount }}</dd></div>
-            <div><dt>创建时间</dt><dd>{{ formatTime(draft.createdAt) }}</dd></div>
-            <div><dt>更新时间</dt><dd>{{ formatTime(draft.updatedAt) }}</dd></div>
+            <div><dt>{{ t('knowledge.wordCount') }}</dt><dd>{{ draft.wordCount }}</dd></div>
+            <div><dt>{{ t('knowledge.createdAt') }}</dt><dd>{{ formatTime(draft.createdAt) }}</dd></div>
+            <div><dt>{{ t('knowledge.updatedAt') }}</dt><dd>{{ formatTime(draft.updatedAt) }}</dd></div>
           </dl>
         </div>
       </aside>
 
     <a-modal
       v-model:open="folderModalVisible"
-      title="新建文件夹"
-      ok-text="创建"
-      cancel-text="取消"
+      :title="t('knowledge.newFolder')"
+      :ok-text="t('knowledge.create')"
+      :cancel-text="t('knowledge.cancel')"
       :ok-button-props="{ disabled: !folderName.trim() }"
       @ok="createFolder"
     >
       <a-form layout="vertical">
-        <a-form-item label="文件夹名称">
-          <a-input v-model:value="folderName" autofocus placeholder="例如：项目文档" @press-enter="createFolder" />
+        <a-form-item :label="t('knowledge.folderName')">
+          <a-input v-model:value="folderName" autofocus :placeholder="t('knowledge.folderExample')" @press-enter="createFolder" />
         </a-form-item>
-        <a-form-item label="上级文件夹">
+        <a-form-item :label="t('knowledge.parentFolder')">
           <a-select v-model:value="folderParentID" class="modal-select">
-            <a-select-option :value="0">根目录</a-select-option>
+            <a-select-option :value="0">{{ t('knowledge.root') }}</a-select-option>
             <a-select-option v-for="folder in flatFolders" :key="folder.id" :value="folder.id">
               {{ `${'　'.repeat(folder.depth)}${folder.name}` }}
             </a-select-option>

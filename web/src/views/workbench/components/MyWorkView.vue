@@ -16,6 +16,7 @@ import { useDocumentTitle } from '@/composables/useDocumentTitle'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import type { MyWorkItem } from '@/types/workitem'
+import { useAppI18n } from '@/i18n'
 
 type WorkTab = 'todo' | 'done' | 'today' | 'yesterday' | 'tomorrow'
 
@@ -40,12 +41,13 @@ const collapsedGroups = ref(new Set<string>())
 const userMenuOpen = ref(false)
 const assignModalOpen = ref(false)
 const selectedWorkItem = ref<MyWorkItem>()
+const { t, d, locale } = useAppI18n()
 
 const displayName = computed(() =>
-  authStore.cloudUser?.displayName || authStore.cloudUser?.username || '用户',
+  authStore.cloudUser?.displayName || authStore.cloudUser?.username || t('workbench.user'),
 )
 const username = computed(() => authStore.cloudUser?.username || '')
-const avatarText = computed(() => displayName.value.trim().charAt(0) || '用')
+const avatarText = computed(() => displayName.value.trim().charAt(0) || t('workbench.user').charAt(0))
 const avatarSource = computed(() => authStore.cloudUser?.avatar?.trim() || undefined)
 
 function boolValue(value: MyWorkItem['is_done']) {
@@ -83,11 +85,11 @@ function dateCount(target: number) {
 }
 
 const tabs = computed(() => [
-  { key: 'todo' as const, label: '全部待办', count: todoItems.value.length },
-  { key: 'done' as const, label: '已办', count: doneItems.value.length },
-  { key: 'today' as const, label: '今日', count: dateCount(today) },
-  { key: 'yesterday' as const, label: '昨日', count: dateCount(yesterday) },
-  { key: 'tomorrow' as const, label: '明日', count: dateCount(tomorrow) },
+  { key: 'todo' as const, label: t('workbench.filters.todo'), count: todoItems.value.length },
+  { key: 'done' as const, label: t('workbench.filters.done'), count: doneItems.value.length },
+  { key: 'today' as const, label: t('workbench.filters.today'), count: dateCount(today) },
+  { key: 'yesterday' as const, label: t('workbench.filters.yesterday'), count: dateCount(yesterday) },
+  { key: 'tomorrow' as const, label: t('workbench.filters.tomorrow'), count: dateCount(tomorrow) },
 ])
 
 const activeTabTitle = computed(() =>
@@ -105,7 +107,7 @@ const priorityOptions = computed(() => {
     priorities.set(name, Math.min(priorities.get(name) ?? Number.MAX_SAFE_INTEGER, sortOrder))
   }
   return [...priorities.entries()]
-    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0], 'zh-CN'))
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0], locale.value))
     .map(([value]) => ({ value, label: value }))
 })
 
@@ -124,9 +126,9 @@ const tabItems = computed(() => {
 })
 
 const filteredItems = computed(() => {
-  const text = keyword.value.trim().toLocaleLowerCase('zh-CN')
+  const text = keyword.value.trim().toLocaleLowerCase(locale.value)
   return tabItems.value.filter((item) => {
-    const matchesTitle = !text || item.title.toLocaleLowerCase('zh-CN').includes(text)
+    const matchesTitle = !text || item.title.toLocaleLowerCase(locale.value).includes(text)
     const matchesPriority = !selectedPriority.value
       || item.priority_name === selectedPriority.value
     return matchesTitle && matchesPriority
@@ -151,7 +153,7 @@ const groups = computed<WorkGroup[]>(() => {
     const id = String(item.workspace_id)
     const group = grouped.get(id) || {
       id,
-      name: item.workspace_name || `工作区 #${id}`,
+      name: item.workspace_name || t('workbench.workspace', { id }),
       color: item.workspace_color,
       items: [],
     }
@@ -162,19 +164,19 @@ const groups = computed<WorkGroup[]>(() => {
     .map((group) => ({ ...group, items: [...group.items].sort(compareItems) }))
     .sort((left, right) => {
       const itemComparison = compareItems(left.items[0], right.items[0])
-      return itemComparison || left.name.localeCompare(right.name, 'zh-CN')
+      return itemComparison || left.name.localeCompare(right.name, locale.value)
     })
 })
 
-const columns = [
-  { title: '操作', key: 'action', width: 104 },
-  { title: '标题', key: 'title', width: 520 },
-  { title: '状态', key: 'status', width: 120 },
-  { title: '优先级', key: 'priority', width: 110 },
-  { title: '预计开始', key: 'planned_start_date', width: 126 },
-  { title: '预计结束', key: 'planned_end_date', width: 126 },
-  { title: '处理人', key: 'assignee', width: 220 },
-]
+const columns = computed(() => [
+  { title: t('workbench.table.action'), key: 'action', width: 104 },
+  { title: t('workbench.table.title'), key: 'title', width: 520 },
+  { title: t('workbench.table.status'), key: 'status', width: 120 },
+  { title: t('workbench.table.priority'), key: 'priority', width: 110 },
+  { title: t('workbench.table.plannedStart'), key: 'planned_start_date', width: 126 },
+  { title: t('workbench.table.plannedEnd'), key: 'planned_end_date', width: 126 },
+  { title: t('workbench.table.assignee'), key: 'assignee', width: 220 },
+])
 
 function toggleGroup(id: string) {
   const next = new Set(collapsedGroups.value)
@@ -184,19 +186,15 @@ function toggleGroup(id: string) {
 }
 
 function typeLabel(type: MyWorkItem['type']) {
-  if (type === 'defect') return '缺陷'
-  if (type === 'task') return '任务'
-  return '需求'
+  if (type === 'defect') return t('workbench.type.defect')
+  if (type === 'task') return t('workbench.type.task')
+  return t('workbench.type.requirement')
 }
 
 function formatDate(value: number | string | undefined) {
   const timestamp = numberValue(value)
   if (!timestamp) return '-'
-  const date = new Date(timestamp * 1000)
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+  return d(new Date(timestamp * 1000), 'short')
 }
 
 function pillStyle(color: string | undefined, fallback: string) {
@@ -218,7 +216,7 @@ function assigneeInitial(item: MyWorkItem, index: number) {
 }
 
 function assigneeTitle(item: MyWorkItem, index: number) {
-  return item.assignee_names?.[index] || item.assignee_usernames?.[index] || '未知用户'
+  return item.assignee_names?.[index] || item.assignee_usernames?.[index] || t('workbench.unknownUser')
 }
 
 function assigneeAvatar(item: MyWorkItem, index: number) {
@@ -256,10 +254,10 @@ async function loadMyWork() {
     if (error instanceof ApiError && error.status === 401) {
       authStore.clearCloudAuth()
       appStore.setCloudStatus('auth-expired')
-      message.error('登录已失效，请重新登录')
+      message.error(t('workbench.sessionExpired'))
       return
     }
-    errorText.value = error instanceof Error ? error.message : '我的工作加载失败'
+    errorText.value = error instanceof Error ? error.message : t('workbench.loadFailed')
   } finally {
     loading.value = false
   }
@@ -278,7 +276,7 @@ async function handleLogout() {
     authStore.setLocalSession(false)
     appStore.setCloudStatus('offline')
     logoutLoading.value = false
-    message.success('已退出登录')
+    message.success(t('workbench.logoutSuccess'))
   }
 }
 
@@ -290,10 +288,10 @@ void loadMyWork()
     <header class="workbench-header">
       <div class="header-title">
         <span class="header-icon"><CalendarOutlined /></span>
-        <h1>我的工作</h1>
+        <h1>{{ t('workbench.myWork') }}</h1>
       </div>
 
-      <nav class="work-tabs" aria-label="我的工作筛选">
+      <nav class="work-tabs" :aria-label="t('workbench.myWork')">
         <button
           v-for="tab in tabs"
           :key="tab.key"
@@ -316,15 +314,15 @@ void loadMyWork()
             <div class="account-info">
               <strong>{{ displayName }}</strong>
               <span v-if="username && username !== displayName">{{ username }}</span>
-              <small>已登录</small>
+              <small>{{ t('workbench.loggedIn') }}</small>
             </div>
             <button type="button" class="logout-button" :disabled="logoutLoading" @click="handleLogout">
               <LogoutOutlined />
-              <span>{{ logoutLoading ? '退出中...' : '退出登录' }}</span>
+              <span>{{ logoutLoading ? t('workbench.loggingOut') : t('workbench.logout') }}</span>
             </button>
           </div>
         </template>
-        <button type="button" class="user-trigger" aria-label="账号信息">
+        <button type="button" class="user-trigger" :aria-label="t('workbench.accountInfo')">
           <a-avatar v-if="avatarSource" :src="avatarSource" :size="36" />
           <a-avatar v-else :size="36" class="fallback-avatar">{{ avatarText }}</a-avatar>
         </button>
@@ -333,18 +331,18 @@ void loadMyWork()
 
     <main class="workbench-body">
       <div class="filter-row">
-        <a-input v-model:value="keyword" allow-clear placeholder="搜索标题" class="title-search">
+        <a-input v-model:value="keyword" allow-clear :placeholder="t('workbench.searchTitle')" class="title-search">
           <template #prefix><SearchOutlined /></template>
         </a-input>
         <a-select
           v-model:value="selectedPriority"
           allow-clear
-          placeholder="优先级"
+          :placeholder="t('workbench.priority')"
           :options="priorityOptions"
           class="priority-filter"
         />
-        <a-tooltip title="刷新">
-          <a-button class="refresh-button" :loading="loading" aria-label="刷新" @click="loadMyWork">
+        <a-tooltip :title="t('workbench.refresh')">
+          <a-button class="refresh-button" :loading="loading" :aria-label="t('workbench.refresh')" @click="loadMyWork">
             <template #icon><ReloadOutlined /></template>
           </a-button>
         </a-tooltip>
@@ -358,7 +356,7 @@ void loadMyWork()
         class="load-error"
       >
         <template #action>
-          <a-button size="small" @click="loadMyWork">重试</a-button>
+          <a-button size="small" @click="loadMyWork">{{ t('workbench.retry') }}</a-button>
         </template>
       </a-alert>
 
@@ -375,7 +373,7 @@ void loadMyWork()
               {{ group.name.trim().charAt(0) || 'G' }}
             </span>
             <strong>{{ group.name }}</strong>
-            <small>{{ group.items.length }} 项</small>
+            <small>{{ t('workbench.items', { count: group.items.length }) }}</small>
           </button>
 
           <a-table
@@ -397,9 +395,9 @@ void loadMyWork()
                   class="assign-button"
                   @click="openAssignment(record)"
                 >
-                  导入任务
+                  {{ t('workbench.importTask') }}
                 </button>
-                <span v-else class="assigned-text">已导入</span>
+                <span v-else class="assigned-text">{{ t('workbench.imported') }}</span>
               </template>
 
               <template v-else-if="column.key === 'title'">
@@ -462,7 +460,7 @@ void loadMyWork()
         </section>
       </div>
 
-      <a-empty v-else-if="!errorText" description="暂无工作项" class="empty-state" />
+      <a-empty v-else-if="!errorText" :description="t('workbench.empty')" class="empty-state" />
     </main>
 
     <CreateLocalTaskModal

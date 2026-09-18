@@ -5,26 +5,43 @@ import { message } from 'ant-design-vue'
 import {
   AppstoreOutlined,
   CalendarOutlined,
+  CheckOutlined,
   CloseOutlined,
   DeploymentUnitOutlined,
   DownOutlined,
   EllipsisOutlined,
   FlagOutlined,
   FolderOpenOutlined,
+  FullscreenOutlined,
+  FullscreenExitOutlined,
   PlusOutlined,
+  TeamOutlined,
 } from '@ant-design/icons-vue'
 import apiClient from '@/api/client'
+import { useContentFullscreen } from '@/composables/useContentFullscreen'
+import MarkdownEditor from '@/components/MarkdownEditor.vue'
+import codexLogo from '@/assets/icons/codex-logo.svg'
+import vibeCodingLogo from '@/assets/icons/vibe-coding-logo.svg'
+import cliExecutionLogo from '@/assets/icons/task-composer-cli.svg'
 import { useCreateTaskDefaults } from '@/composables/useCreateTaskDefaults'
+import { useCliKickoffNavigation } from '@/composables/useCliKickoff'
 import { isDesktopRuntime, selectDirectory } from '@/composables/useDesktop'
+import { useCliModelOptions } from '@/composables/useCliModelOptions'
 import {
-  formatPastedImageContent,
-  useTaskImageAttachments,
-} from '@/composables/useTaskImageAttachments'
+  loadCodexCapability,
+  openTaskInCodex,
+  type CodexCapability,
+} from '@/composables/useTaskCodex'
+import { useTaskImageAttachments } from '@/composables/useTaskImageAttachments'
 import { usePipelineStore } from '@/stores/pipeline'
-import type { Pipeline } from '@/types/pipeline'
+import { useExpertGroupStore } from '@/stores/expert-group'
+import type { Pipeline, TaskExecutionMode } from '@/types/pipeline'
 import type { LocalProject } from '@/types/project'
 import type { CloudWorkItem } from '@/types/workitem'
-import { isPipelineCloud } from '@/utils/pipeline'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
+const { openCliConversation } = useCliKickoffNavigation()
 
 const props = defineProps<{
   open: boolean
@@ -34,6 +51,8 @@ const props = defineProps<{
 const emit = defineEmits<{ 'update:open': [value: boolean]; created: [uuid: string] }>()
 const pipelineStore = usePipelineStore()
 const { pipelines } = storeToRefs(pipelineStore)
+const expertGroupStore = useExpertGroupStore()
+const { items: expertGroups } = storeToRefs(expertGroupStore)
 const loading = ref(false)
 const saving = ref(false)
 const { getCreateTaskDefaults, saveCreateTaskDefaults } = useCreateTaskDefaults()
@@ -42,14 +61,18 @@ const {
   buildDraftAttachmentInputs,
   clear: clearImageAttachments,
   isSaving: isSavingPastedImages,
-  removeAttachmentMarkers,
 } = useTaskImageAttachments()
-const descriptionRef = ref<HTMLTextAreaElement>()
+const descriptionEditor = ref<{ getValue: () => string; resize?: () => void }>()
 const projects = ref<LocalProject[]>([])
+const codexCapability = ref<CodexCapability>({ available: false })
 const form = reactive({
   title: '',
   description: '',
   pipeline_uuid: '',
+  execution_mode: '' as TaskExecutionMode,
+  execution_tool: '',
+  model_name: '',
+	expert_group_uuid: '',
   project_uuid: '',
   child_project_uuids: [] as string[],
   work_dir: '',
@@ -58,15 +81,38 @@ const form = reactive({
   planned_start_date: '',
   planned_end_date: '',
 })
-const moreOpen = ref(false)
-const moreChipRef = ref<HTMLElement | null>(null)
-const moreMenuRef = ref<HTMLElement | null>(null)
+const chipRowRef = ref<HTMLElement | null>(null)
 const showDates = ref(false)
 const showChildren = ref(false)
 const showDirs = ref(false)
+const { fullscreen } = useContentFullscreen()
+watch(fullscreen, async () => {
+  await nextTick()
+  descriptionEditor.value?.resize?.()
+})
 
 const selectedPipeline = computed(() =>
   pipelines.value.find((item) => item.uuid === form.pipeline_uuid),
+)
+const selectedExpertGroup = computed(() => expertGroups.value.find((item) => item.uuid === form.expert_group_uuid))
+const isCodexSelected = computed(
+  () => form.execution_mode === 'vibe_coding' && form.execution_tool === 'codex',
+)
+const isCLISelected = computed(() => form.execution_mode === 'cli')
+
+const {
+  cliLoading,
+  cliOptions,
+  loadCliOptions,
+  loadModelOptions,
+  modelLoading,
+  modelOptions,
+} = useCliModelOptions()
+const cliSelectOptions = computed(() =>
+  cliOptions.value.map((cli) => ({ value: cli.type, label: cli.name, disabled: !cli.installed })),
+)
+const modelSelectOptions = computed(() =>
+  modelOptions.value.map((model) => ({ value: model, label: model })),
 )
 const selectedProject = computed(() =>
   projects.value.find((item) => item.uuid === form.project_uuid),
@@ -91,10 +137,28 @@ const allWorkDirs = computed(() => {
 })
 
 function projectLabel(project?: LocalProject) {
-  return project?.name || '所属项目'
+  return project?.name || t('workflows.task.create.project')
 }
 function pipelineLabel(pipeline?: Pipeline) {
-  return pipeline?.name || '流水线'
+  return pipeline?.name || t('workflows.task.create.pipeline')
+}
+function executionChipLabel() {
+  if (isCodexSelected.value) return t('workflows.task.create.directExecuteCodex')
+  if (isCLISelected.value) {
+    return form.execution_tool
+      ? `${t('workflows.task.assign.cliMode')} · ${form.execution_tool}`
+      : t('workflows.task.assign.cliMode')
+  }
+  if (form.execution_mode === 'pipeline') return pipelineLabel(selectedPipeline.value)
+	if (form.execution_mode === 'expert_group') return selectedExpertGroup.value?.name || t('agents.expertTeam')
+  return t('workflows.task.create.executionMode')
+}
+// form.priority 保存的是后端约定的中文枚举值，展示时必须走词条，避免英文界面出现中文。
+function priorityLabel(priority?: string) {
+  if (priority === 'high' || priority === '高') return t('workflows.task.priority.high')
+  if (priority === 'medium' || priority === '中') return t('workflows.task.priority.medium')
+  if (priority === 'low' || priority === '低') return t('workflows.task.priority.low')
+  return ''
 }
 function reset() {
   clearImageAttachments()
@@ -102,6 +166,10 @@ function reset() {
     title: props.initialWorkItem?.title || '',
     description: props.initialWorkItem?.description || '',
     pipeline_uuid: '',
+    execution_mode: '',
+    execution_tool: '',
+    model_name: '',
+	  expert_group_uuid: '',
     project_uuid: '',
     child_project_uuids: [],
     work_dir: '',
@@ -110,86 +178,34 @@ function reset() {
     planned_start_date: '',
     planned_end_date: '',
   })
-  moreOpen.value = false
   showDates.value = false
   showChildren.value = false
   showDirs.value = false
+  fullscreen.value = false
 }
 
-async function handleDescriptionPaste(event: ClipboardEvent) {
-  if (!event.clipboardData) return
-  const files = [...event.clipboardData.items]
-    .filter((item) => item.type.startsWith('image/'))
-    .map((item) => item.getAsFile())
-    .filter((file): file is File => Boolean(file))
-  if (!files.length) return
-  if (isSavingPastedImages.value) {
-    event.preventDefault()
-    message.warning('上一批图片正在保存，请稍后再粘贴')
-    return
-  }
-  const textarea = descriptionRef.value
-  const value = form.description
-  const start = textarea?.selectionStart ?? value.length
-  const end = textarea?.selectionEnd ?? start
-  const pastedText = event.clipboardData.getData('text/plain')
-  const pastedHtml = event.clipboardData.getData('text/html')
-  event.preventDefault()
-  let insertedImageMarkers = false
-  try {
-    const attachments = addImages(files)
-    insertPastedDescription(
-      pastedText,
-      pastedHtml,
-      attachments.map((attachment) => attachment.marker),
-      start,
-      end,
-    )
-    insertedImageMarkers = true
-    await nextTick()
-    descriptionRef.value?.focus()
-  } catch (error) {
-    if (insertedImageMarkers) form.description = removeAttachmentMarkers(form.description)
-    clearImageAttachments()
-    message.error(error instanceof Error ? error.message : '图片粘贴失败')
-  }
-}
-
-function insertPastedDescription(
-  text: string,
-  html: string,
-  markers: string[],
-  start: number,
-  end: number,
-) {
-  const value = form.description
-  const insertStart = Math.min(start, value.length)
-  const insertEnd = Math.min(Math.max(end, insertStart), value.length)
-  const inserted = formatPastedImageContent(
-    text,
-    html,
-    markers,
-    value.slice(0, insertStart),
-    value.slice(insertEnd),
-  )
-  form.description = `${value.slice(0, insertStart)}${inserted}${value.slice(insertEnd)}`
-  const caret = insertStart + inserted.length
-  nextTick(() => {
-    descriptionRef.value?.focus()
-    descriptionRef.value?.setSelectionRange(caret, caret)
-  })
+async function handleDescriptionImages(files: File[]) {
+  if (isSavingPastedImages.value) throw new Error(t('workflows.task.create.savingImages'))
+  return addImages(files).map((attachment) => attachment.marker)
 }
 
 async function load() {
   loading.value = true
-  const [pipelineResult, projectResult] = await Promise.allSettled([
+  const [pipelineResult, expertResult, projectResult, codexResult] = await Promise.allSettled([
     pipelineStore.loadPipelines(true),
+	expertGroupStore.load(true),
     apiClient.get<{ items: LocalProject[] }>('/projects'),
+    loadCodexCapability(),
+    loadCliOptions(),
   ])
   projects.value = projectResult.status === 'fulfilled' ? projectResult.value.items || [] : []
+  codexCapability.value = codexResult.status === 'fulfilled'
+    ? codexResult.value
+    : { available: false, message: t('workflows.task.codex.capabilityUnavailable') }
   if (pipelineResult.status === 'rejected')
-    message.warning('流水线加载失败，可不指定流水线创建任务')
-  if (projectResult.status === 'rejected') message.warning('项目加载失败，仍可直接选择工作目录')
+    message.warning(t('workflows.task.create.pipelineLoadFailed'))
+	if (expertResult.status === 'rejected') message.warning(t('expertGroups.loadFailed'))
+  if (projectResult.status === 'rejected') message.warning(t('workflows.task.create.projectLoadFailed'))
   applyCreateTaskDefaults()
   loading.value = false
 }
@@ -210,6 +226,7 @@ function applyCreateTaskDefaults() {
     pipelines.value.some((item) => item.uuid === defaults.pipeline_uuid)
   ) {
     form.pipeline_uuid = defaults.pipeline_uuid
+    form.execution_mode = 'pipeline'
   }
 }
 
@@ -220,7 +237,55 @@ function chooseProject(uuid: string) {
 }
 
 function choosePipeline(uuid: string) {
+  form.execution_mode = 'pipeline'
   form.pipeline_uuid = uuid
+  form.execution_tool = ''
+  form.model_name = ''
+	form.expert_group_uuid = ''
+}
+
+function chooseExpertGroup(uuid: string) {
+  form.execution_mode = 'expert_group'
+  form.expert_group_uuid = uuid
+  form.pipeline_uuid = ''
+  form.execution_tool = ''
+  form.model_name = ''
+}
+
+function chooseCodex() {
+  form.execution_mode = 'vibe_coding'
+  form.execution_tool = 'codex'
+  form.pipeline_uuid = ''
+  form.model_name = ''
+	form.expert_group_uuid = ''
+}
+
+// Vibe Coding 行与工具行等价：当前只有 Codex 一种工具，能力不可用时不允许选中。
+function chooseVibeCodingRow() {
+  if (!codexCapability.value.available) return
+  chooseCodex()
+}
+
+// CLI 直接执行：CLI 与模型都由用户当场选定，任务创建后直接进入进行中。
+function chooseCLIType(cliType: string) {
+  form.execution_mode = 'cli'
+  form.execution_tool = cliType
+  form.model_name = ''
+  form.pipeline_uuid = ''
+	form.expert_group_uuid = ''
+  void loadModelOptions(cliType)
+}
+
+function chooseCLIModel(model: string) {
+  form.model_name = model
+}
+
+function clearExecutionMode() {
+  form.execution_mode = ''
+  form.execution_tool = ''
+  form.model_name = ''
+  form.pipeline_uuid = ''
+	form.expert_group_uuid = ''
 }
 
 async function chooseMainDirectory() {
@@ -231,7 +296,7 @@ async function chooseMainDirectory() {
       form.project_uuid = ''
     }
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '无法打开目录选择器')
+    message.error(error instanceof Error ? error.message : t('workflows.task.create.directoryPickerFailed'))
   }
 }
 
@@ -241,12 +306,12 @@ async function addDirectory() {
       const selected = await selectDirectory(form.work_dir)
       if (!selected) return
       if (allWorkDirs.value.some((dir) => dir.toLowerCase() === selected.toLowerCase())) {
-        message.warning('该目录已在工作目录中')
+        message.warning(t('workflows.task.create.duplicateDirectory'))
         return
       }
       form.additional_dirs.push(selected)
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '无法打开目录选择器')
+      message.error(error instanceof Error ? error.message : t('workflows.task.create.directoryPickerFailed'))
     }
   } else {
     form.additional_dirs.push('')
@@ -254,12 +319,25 @@ async function addDirectory() {
 }
 
 async function create() {
-  if (!form.title.trim()) return message.warning('请输入任务标题')
-  if (!form.work_dir.trim()) return message.warning('请选择所属项目或主工作目录')
-  if (isSavingPastedImages.value) return message.warning('图片正在保存，请稍后创建任务')
+  form.description = descriptionEditor.value?.getValue() ?? form.description
+  if (!form.title.trim()) return message.warning(t('workflows.task.create.titleRequired'))
+  if (!form.work_dir.trim()) return message.warning(t('workflows.task.create.directoryRequired'))
+  if (isSavingPastedImages.value) return message.warning(t('workflows.task.create.waitImages'))
   if (form.additional_dirs.some((item) => !item.trim()))
-    return message.warning('请填写或移除空的关联目录')
+    return message.warning(t('workflows.task.create.emptyRelatedDirectory'))
+  if (form.execution_mode === 'pipeline' && !form.pipeline_uuid)
+    return message.warning(t('workflows.task.create.executionTargetRequired'))
+  if (form.execution_mode === 'vibe_coding' && form.execution_tool !== 'codex')
+    return message.warning(t('workflows.task.create.executionTargetRequired'))
+  if (form.execution_mode === 'cli' && (!form.execution_tool || !form.model_name))
+    return message.warning(t('workflows.task.create.executionTargetRequired'))
+	if (form.execution_mode === 'expert_group' && !selectedExpertGroup.value?.ready)
+	  return message.warning(t('expertGroups.notReady'))
   saving.value = true
+  let createdTaskUuid = ''
+  // 弹窗关闭后 form 可能被重置，先固定本次创建的执行方式。
+  const createdExecutionMode = form.execution_mode
+  const shouldOpenCodex = form.execution_mode === 'vibe_coding'
   try {
     const attachments = await buildDraftAttachmentInputs(form.description)
     const result = await apiClient.post<{ uuid: string }>('/tasks', {
@@ -267,6 +345,10 @@ async function create() {
       content: form.description,
       description: form.description,
       pipeline_uuid: form.pipeline_uuid || undefined,
+      execution_mode: form.execution_mode || undefined,
+      execution_tool: form.execution_tool || undefined,
+      model_name: form.model_name || undefined,
+	  expert_group_uuid: form.expert_group_uuid || undefined,
       project_uuid: form.project_uuid || undefined,
       child_project_uuids: form.child_project_uuids,
       work_dir: form.work_dir,
@@ -274,38 +356,74 @@ async function create() {
       priority: form.priority || undefined,
       planned_start_date: form.planned_start_date || undefined,
       planned_end_date: form.planned_end_date || undefined,
-      status: props.initialStatus || 'pending',
+      // CLI 直接执行创建后立即进入进行中，等待用户在对话里发出第一条指令；
+      // Vibe Coding 保持待开始，由外部编辑器流程驱动。
+      status:
+        form.execution_mode === 'cli'
+          ? 'active'
+          : form.execution_mode === 'vibe_coding'
+            ? 'pending'
+            : props.initialStatus || 'pending',
       work_item_type: props.initialWorkItem?.type,
       work_item_id: props.initialWorkItem?.id,
       attachments,
+      // 需求 2204：CLI 任务创建后要直接出现在对话列表里并被选中，因此随创建写入通知。
+      create_notification: createdExecutionMode === 'cli',
     })
     saveCreateTaskDefaults({
       project_uuid: form.project_uuid,
       work_dir: form.work_dir,
       pipeline_uuid: form.pipeline_uuid,
     })
-    message.success('本地任务已创建')
+    message.success(t('workflows.task.create.created'))
+    createdTaskUuid = result.uuid
     emit('created', result.uuid)
     emit('update:open', false)
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '任务创建失败')
+    message.error(error instanceof Error ? error.message : t('workflows.task.feedback.taskCreateFailed'))
   } finally {
     saving.value = false
   }
+  if (!createdTaskUuid) return
+  // 需求 2204（评论 5）：CLI 任务确定创建后跳到对话界面，由对话页自动向 CLI
+  // 发送 task.md 引用与起始提示词，不再预填输入框。
+  if (createdExecutionMode === 'cli') {
+    await openCliConversation(createdTaskUuid)
+    return
+  }
+  if (!shouldOpenCodex) return
+
+  const openResult = await openTaskInCodex(createdTaskUuid)
+  if (openResult.opened) {
+    message.success(t('workflows.task.create.codexOpened'))
+  } else if (openResult.copied) {
+    message.warning(t('workflows.task.create.codexCopiedFallback'))
+  } else {
+    message.warning(t('workflows.task.create.codexUnavailableAfterCreate'))
+  }
 }
 
-// 点击按钮/菜单以外的区域时收起更多菜单
-function onOutsideClick(event: MouseEvent) {
-  const target = event.target as Node
-  if (moreChipRef.value?.contains(target) || moreMenuRef.value?.contains(target)) return
-  moreOpen.value = false
+// chip 下拉统一向下展开：按 chip 行下沿到视口底部的距离限制菜单高度，
+// 避免菜单被自动翻转向上，或被弹窗面板与视口裁剪。
+function syncChipMenuMaxHeight() {
+  const row = chipRowRef.value
+  if (!row) return
+  const available = window.innerHeight - row.getBoundingClientRect().bottom - 24
+  document.documentElement.style.setProperty(
+    '--chip-menu-max-height',
+    `${Math.max(140, Math.min(380, available))}px`,
+  )
 }
 
-watch(moreOpen, (open) => {
-  if (open) document.addEventListener('click', onOutsideClick)
-  else document.removeEventListener('click', onOutsideClick)
+function handleChipMenuOpenChange(open: boolean) {
+  if (open) syncChipMenuMaxHeight()
+}
+
+onUnmounted(() => {
+  document.body.style.overflow = ''
+  window.removeEventListener('resize', syncChipMenuMaxHeight)
+  document.documentElement.style.removeProperty('--chip-menu-max-height')
 })
-onUnmounted(() => document.removeEventListener('click', onOutsideClick))
 
 watch(pipelines, (items) => {
   if (!items.some((item) => item.uuid === form.pipeline_uuid)) {
@@ -316,61 +434,71 @@ watch(pipelines, (items) => {
 watch(
   () => props.open,
   (open) => {
+    document.body.style.overflow = open ? 'hidden' : ''
     if (open) {
       reset()
       void load()
+      void nextTick(syncChipMenuMaxHeight)
+      window.addEventListener('resize', syncChipMenuMaxHeight)
+    } else {
+      window.removeEventListener('resize', syncChipMenuMaxHeight)
     }
   },
 )
 </script>
 
 <template>
-  <a-modal
-    :open="open"
-    width="879px"
-    :footer="null"
-    :closable="false"
-    :mask-closable="false"
-    centered
-    wrap-class-name="linear-task-modal"
-    @cancel="emit('update:open', false)"
-  >
-    <a-spin :spinning="loading">
+  <Teleport to="body">
+    <div
+      v-if="open"
+      class="linear-task-root"
+      :class="{ 'is-fullscreen': fullscreen }"
+      role="dialog"
+      aria-modal="true"
+      @keydown.esc="emit('update:open', false)"
+    >
+      <div v-show="!fullscreen" class="linear-task-mask" />
+      <div class="linear-task-panel">
+        <a-spin :spinning="loading">
       <header class="task-modal-header">
-        <strong>新建任务</strong
-        ><button
-          type="button"
-          aria-label="关闭新建任务弹窗"
-          @click="emit('update:open', false)"
-        >
-          <CloseOutlined />
-        </button>
+        <strong>{{ t('workflows.task.create.title') }}</strong
+        ><div class="task-modal-header-actions">
+          <button type="button" :aria-label="fullscreen ? t('workflows.task.common.exitFullscreen') : t('workflows.task.common.fullscreen')" @click="fullscreen = !fullscreen">
+            <FullscreenExitOutlined v-if="fullscreen" /><FullscreenOutlined v-else />
+          </button>
+          <button type="button" :aria-label="t('workflows.task.create.close')" @click="emit('update:open', false)"><CloseOutlined /></button>
+        </div>
       </header>
       <section class="task-primary">
         <a-input
           v-model:value="form.title"
           :maxlength="50"
           :bordered="false"
-          placeholder="自定义名称"
+          :placeholder="t('workflows.task.create.customName')"
           class="title-input"
         />
         <div class="description-box">
-          <a-textarea
-            ref="descriptionRef"
-            v-model:value="form.description"
-            :auto-size="false"
-            :bordered="false"
-            placeholder="添加描述…"
-            class="description-input"
-            @paste="handleDescriptionPaste"
+          <MarkdownEditor
+            v-if="open"
+            ref="descriptionEditor"
+            v-model="form.description"
+            cache-id="create-local-task-description"
+            :placeholder="t('workflows.task.create.description')"
+            :on-upload-images="handleDescriptionImages"
           />
         </div>
       </section>
       <div
+        ref="chipRowRef"
         class="chip-row"
         :class="{ 'has-expanded': showDates || showChildren || showDirs }"
       >
-        <a-dropdown trigger="click">
+        <a-dropdown
+          trigger="click"
+          placement="bottomLeft"
+          overlay-class-name="chip-select-menu"
+          @open-change="handleChipMenuOpenChange"
+        >
           <button
             type="button"
             class="chip"
@@ -385,7 +513,7 @@ watch(
               <a-menu-item
                 key="none"
                 @click="form.project_uuid = ''"
-                >不选择项目</a-menu-item
+                >{{ t('workflows.task.create.noProject') }}</a-menu-item
               >
               <a-menu-divider />
               <a-menu-item
@@ -403,14 +531,19 @@ watch(
           type="button"
           class="chip"
           :class="{ selected: form.work_dir }"
-          title="选择任务主工作目录（必选）"
+          :title="t('workflows.task.create.mainDirectory')"
           @click="chooseMainDirectory"
         >
           <FolderOpenOutlined class="chip-icon" />
-          <span class="chip-label">{{ form.work_dir || '选择工作目录' }}</span>
+          <span class="chip-label">{{ form.work_dir || t('workflows.task.create.chooseDirectory') }}</span>
           <b>*</b>
         </button>
-        <a-dropdown trigger="click">
+        <a-dropdown
+          trigger="click"
+          placement="bottomLeft"
+          overlay-class-name="chip-select-menu chip-select-menu--rows"
+          @open-change="handleChipMenuOpenChange"
+        >
           <button
             type="button"
             class="chip"
@@ -425,12 +558,12 @@ watch(
                 medium: form.priority === '中',
                 low: form.priority === '低',
               }"
-              >{{ form.priority }}</span
+              >{{ priorityLabel(form.priority) }}</span
             >
             <span
               v-else
               class="chip-label"
-              >选择优先级</span
+              >{{ t('workflows.task.create.choosePriority') }}</span
             >
             <DownOutlined />
           </button>
@@ -439,95 +572,274 @@ watch(
               <a-menu-item
                 key=""
                 @click="form.priority = ''"
-                >不选择</a-menu-item
+                >{{ t('workflows.task.create.none') }}</a-menu-item
               >
               <a-menu-item
                 key="high"
                 @click="form.priority = '高'"
-                >🔴 高</a-menu-item
+                >🔴 {{ t('workflows.task.priority.high') }}</a-menu-item
               >
               <a-menu-item
                 key="medium"
                 @click="form.priority = '中'"
-                >🟡 中</a-menu-item
+                >🟡 {{ t('workflows.task.priority.medium') }}</a-menu-item
               >
               <a-menu-item
                 key="low"
                 @click="form.priority = '低'"
-                >🔵 低</a-menu-item
+                >🔵 {{ t('workflows.task.priority.low') }}</a-menu-item
               >
             </a-menu>
           </template>
         </a-dropdown>
-        <a-dropdown trigger="click">
+        <a-dropdown
+          trigger="click"
+          placement="bottomLeft"
+          overlay-class-name="chip-select-menu execution-mode-dropdown"
+          @open-change="handleChipMenuOpenChange"
+        >
           <button
             type="button"
-            class="chip pipeline-chip"
-            :class="{ selected: selectedPipeline }"
+            class="chip execution-chip"
+            :class="{ selected: form.execution_mode }"
           >
-            <DeploymentUnitOutlined class="chip-icon" />
             <img
-              v-if="selectedPipeline?.avatar"
+              v-if="isCodexSelected"
+              class="chip-avatar"
+              :src="codexLogo"
+              alt=""
+            />
+            <img
+              v-else-if="selectedPipeline?.avatar"
               class="chip-avatar"
               :src="selectedPipeline.avatar"
               alt=""
             />
-            <span class="chip-label">{{ pipelineLabel(selectedPipeline) }}</span>
+			<img v-else-if="selectedExpertGroup?.avatar" class="chip-avatar" :src="selectedExpertGroup.avatar" alt="" />
+            <DeploymentUnitOutlined v-else class="chip-icon" />
+            <span class="chip-label">{{ executionChipLabel() }}</span>
             <DownOutlined />
           </button>
           <template #overlay>
-            <a-menu class="pipeline-menu">
-              <a-menu-item
-                key="none"
-                @click="choosePipeline('')"
-                >暂不指定流水线</a-menu-item
-              >
+            <a-menu>
+              <a-menu-item-group>
+                <template #title>
+                  <span class="execution-group-title">
+                    <DeploymentUnitOutlined />
+                    <span>{{ t('workflows.task.common.pipeline') }}</span>
+                  </span>
+                </template>
+                <a-menu-item
+                  v-for="pipeline in pipelines"
+                  :key="pipeline.uuid"
+                  @click="choosePipeline(pipeline.uuid)"
+                >
+                  <span
+                    class="execution-row execution-row--pipeline"
+                    :class="{ 'is-selected': form.pipeline_uuid === pipeline.uuid }"
+                    :title="pipeline.name"
+                  >
+                    <span class="execution-avatar">
+                      <img
+                        v-if="pipeline.avatar"
+                        :src="pipeline.avatar"
+                        alt=""
+                      />
+                      <span v-else>{{ pipeline.name.slice(0, 1) }}</span>
+                    </span>
+                    <span class="execution-name">{{ pipeline.name }}</span>
+                    <CheckOutlined
+                      v-if="form.pipeline_uuid === pipeline.uuid"
+                      class="execution-check"
+                    />
+                  </span>
+                </a-menu-item>
+              </a-menu-item-group>
+			  <a-menu-item-group>
+				<template #title>
+				  <span class="execution-group-title">
+					<TeamOutlined />
+					<span>{{ t('agents.expertTeam') }}</span>
+				  </span>
+				</template>
+				<a-menu-item v-for="group in expertGroups" :key="`expert-${group.uuid}`" :disabled="!group.ready" @click="chooseExpertGroup(group.uuid)">
+				  <span class="execution-row execution-row--pipeline" :class="{ 'is-selected': form.expert_group_uuid === group.uuid }" :title="group.name">
+					<span class="execution-avatar"><img v-if="group.avatar" :src="group.avatar" alt="" /><span v-else>{{ group.name.slice(0, 1) }}</span></span>
+					<span class="execution-name">{{ group.name }}</span>
+					<span class="execution-hint">{{ group.ready ? t('expertGroups.ready') : t('expertGroups.notReady') }}</span>
+					<CheckOutlined v-if="form.expert_group_uuid === group.uuid" class="execution-check" />
+				  </span>
+				</a-menu-item>
+			  </a-menu-item-group>
+              <a-menu-item-group>
+                <template #title>
+                  <span class="execution-group-title">
+                    <img
+                      class="execution-group-logo"
+                      :src="cliExecutionLogo"
+                      alt=""
+                    />
+                    <span>{{ t('workflows.task.common.directExecution') }}</span>
+                  </span>
+                </template>
+                <!-- CLI 调用：CLI 与模型下拉在面板内全宽堆叠，与需求设计图一致 -->
+                <a-menu-item
+                  key="cli"
+                  class="execution-option"
+                >
+                  <div
+                    class="execution-block"
+                    :class="{ 'is-selected': isCLISelected }"
+                  >
+                    <div class="execution-row">
+                      <span class="execution-avatar execution-avatar--soft">
+                        <img
+                          class="execution-logo execution-logo--cli"
+                          :src="cliExecutionLogo"
+                          alt=""
+                        />
+                      </span>
+                      <span class="execution-name">{{ t('workflows.task.assign.cliMode') }}</span>
+                      <span class="execution-hint">{{ t('workflows.task.assign.cliCardHint') }}</span>
+                      <CheckOutlined
+                        v-if="isCLISelected"
+                        class="execution-check"
+                        aria-hidden="true"
+                      />
+                    </div>
+                    <!-- 阻止点击冒泡，避免选中 CLI/模型时关闭整个执行方式菜单。 -->
+                    <div
+                      class="cli-runtime cli-runtime--stacked"
+                      @click.stop
+                    >
+                      <a-select
+                        class="cli-runtime__select"
+                        :value="form.execution_tool || undefined"
+                        :placeholder="t('workflows.task.assign.chooseCli')"
+                        :options="cliSelectOptions"
+                        :loading="cliLoading"
+                        @change="chooseCLIType"
+                      />
+                      <a-select
+                        class="cli-runtime__select"
+                        :value="form.model_name || undefined"
+                        :placeholder="
+                          form.execution_tool
+                            ? t('workflows.task.assign.chooseModel')
+                            : t('workflows.task.assign.chooseCliFirst')
+                        "
+                        :options="modelSelectOptions"
+                        :loading="modelLoading"
+                        :disabled="!form.execution_tool"
+                        @change="chooseCLIModel"
+                      />
+                    </div>
+                    <p
+                      v-if="!cliLoading && !cliSelectOptions.some((item) => !item.disabled)"
+                      class="execution-hint execution-hint--block"
+                    >
+                      {{ t('workflows.task.assign.noCli') }}
+                    </p>
+                  </div>
+                </a-menu-item>
+                <!-- Vibe Coding：工具行内嵌在条目下方，与需求设计图一致 -->
+                <a-menu-item
+                  key="vibe_coding"
+                  class="execution-option"
+                >
+                  <div
+                    class="execution-block"
+                    :class="{ 'is-selected': form.execution_mode === 'vibe_coding' }"
+                  >
+                    <div
+                      class="execution-row"
+                      :class="{ 'is-disabled': !codexCapability.available }"
+                      @click="chooseVibeCodingRow"
+                    >
+                      <span class="execution-avatar execution-avatar--soft">
+                        <img
+                          class="execution-logo execution-logo--vibe"
+                          :src="vibeCodingLogo"
+                          alt=""
+                        />
+                      </span>
+                      <span class="execution-name">{{ t('workflows.task.create.vibeCodingMode') }}</span>
+                      <span class="execution-hint">{{ t('workflows.task.create.vibeCodingHint') }}</span>
+                      <CheckOutlined
+                        v-if="form.execution_mode === 'vibe_coding'"
+                        class="execution-check"
+                        aria-hidden="true"
+                      />
+                    </div>
+                    <a-tooltip
+                      :title="
+                        codexCapability.available
+                          ? ''
+                          : codexCapability.message || t('workflows.task.codex.capabilityUnavailable')
+                      "
+                      placement="right"
+                    >
+                      <button
+                        type="button"
+                        class="execution-tool"
+                        :class="{ 'is-selected': isCodexSelected }"
+                        :disabled="!codexCapability.available"
+                        @click="chooseCodex"
+                      >
+                        <img
+                          class="execution-logo execution-logo--codex"
+                          :src="codexLogo"
+                          alt=""
+                        />
+                        <span>{{ t('workflows.task.create.codex') }}</span>
+                      </button>
+                    </a-tooltip>
+                  </div>
+                </a-menu-item>
+              </a-menu-item-group>
               <a-menu-divider />
               <a-menu-item
-                v-for="pipeline in pipelines"
-                :key="pipeline.uuid"
-                @click="choosePipeline(pipeline.uuid)"
+                key="none"
+                @click="clearExecutionMode"
               >
-                <span class="menu-primary">{{ pipeline.name }}</span>
-                <small
-                  >{{ isPipelineCloud(pipeline) ? '团队同步' : '本地流水线' }} ·
-                  {{ pipeline.steps?.length || 0 }} 步</small
-                >
+                <span class="execution-row">{{ t('workflows.task.create.none') }}</span>
               </a-menu-item>
             </a-menu>
           </template>
         </a-dropdown>
-        <button
-          ref="moreChipRef"
-          type="button"
-          class="more-chip"
-          aria-label="显示更多任务信息"
-          @click="moreOpen = !moreOpen"
-        >
-          <EllipsisOutlined />
-        </button>
-        <div
-          v-if="moreOpen"
-          ref="moreMenuRef"
-          class="more-menu"
+        <a-dropdown
+          trigger="click"
+          placement="bottomRight"
+          overlay-class-name="chip-select-menu chip-select-menu--rows"
+          @open-change="handleChipMenuOpenChange"
         >
           <button
             type="button"
-            @click="showDates = !showDates"
+            class="more-chip"
+            :aria-label="t('workflows.task.create.more')"
           >
-            <CalendarOutlined />预期开始/结束日期</button
-          ><button
-            type="button"
-            @click="showChildren = !showChildren"
-          >
-            <AppstoreOutlined />关联项目</button
-          ><button
-            type="button"
-            @click="showDirs = !showDirs"
-          >
-            <FolderOpenOutlined />关联目录
+            <EllipsisOutlined />
           </button>
-        </div>
+          <template #overlay>
+            <a-menu>
+              <a-menu-item
+                key="dates"
+                @click="showDates = !showDates"
+                ><CalendarOutlined />{{ t('workflows.task.create.expectedDates') }}</a-menu-item
+              >
+              <a-menu-item
+                key="children"
+                @click="showChildren = !showChildren"
+                ><AppstoreOutlined />{{ t('workflows.task.create.relatedProject') }}</a-menu-item
+              >
+              <a-menu-item
+                key="dirs"
+                @click="showDirs = !showDirs"
+                ><FolderOpenOutlined />{{ t('workflows.task.create.relatedDirectory') }}</a-menu-item
+              >
+            </a-menu>
+          </template>
+        </a-dropdown>
       </div>
 
       <section class="expanded-fields">
@@ -535,16 +847,16 @@ watch(
           v-if="showDates"
           class="expanded-row"
         >
-          <span>预期开始</span
+          <span>{{ t('workflows.task.create.expectedStart') }}</span
           ><a-date-picker
             v-model:value="form.planned_start_date"
             value-format="YYYY-MM-DD"
-            placeholder="请选择日期"
+            :placeholder="t('workflows.task.create.chooseDate')"
             size="small"
           /><button
             type="button"
             class="expanded-close"
-            aria-label="隐藏预期开始日期"
+            :aria-label="t('workflows.task.create.hideStart')"
             @click="showDates = false"
           >
             <CloseOutlined />
@@ -554,16 +866,16 @@ watch(
           v-if="showDates"
           class="expanded-row"
         >
-          <span>预期结束</span
+          <span>{{ t('workflows.task.create.expectedEnd') }}</span
           ><a-date-picker
             v-model:value="form.planned_end_date"
             value-format="YYYY-MM-DD"
-            placeholder="请选择日期"
+            :placeholder="t('workflows.task.create.chooseDate')"
             size="small"
           /><button
             type="button"
             class="expanded-close"
-            aria-label="隐藏预期结束日期"
+            :aria-label="t('workflows.task.create.hideEnd')"
             @click="showDates = false"
           >
             <CloseOutlined />
@@ -573,18 +885,18 @@ watch(
           v-if="showChildren"
           class="expanded-row children-row"
         >
-          <span>关联项目</span
+          <span>{{ t('workflows.task.create.relatedProject') }}</span
           ><a-select
             v-model:value="form.child_project_uuids"
             mode="multiple"
             :max-tag-count="1"
             :options="childProjectOptions"
-            placeholder="请选择"
+            :placeholder="t('workflows.task.create.choose')"
             size="small"
           /><button
             type="button"
             class="expanded-close"
-            aria-label="隐藏关联项目"
+            :aria-label="t('workflows.task.create.hideProject')"
             @click="showChildren = false"
           >
             <CloseOutlined />
@@ -595,7 +907,7 @@ watch(
           class="expanded-row dirs-row"
           :class="{ 'has-directories': form.additional_dirs.length > 0 }"
         >
-          <span>关联目录</span>
+          <span>{{ t('workflows.task.create.relatedDirectory') }}</span>
           <div class="directory-content">
             <div
               v-if="form.additional_dirs.length"
@@ -606,7 +918,7 @@ watch(
                 :key="`${dir}-${index}`"
                 class="directory-item"
               >
-                <span :title="dir || '未填写'">{{ dir || '未填写' }}</span>
+                <span :title="dir || t('workflows.task.create.notEntered')">{{ dir || t('workflows.task.create.notEntered') }}</span>
                 <button
                   type="button"
                   @click="form.additional_dirs.splice(index, 1)"
@@ -619,13 +931,13 @@ watch(
               size="small"
               class="directory-add"
               @click="addDirectory"
-              ><PlusOutlined />添加关联目录</a-button
+              ><PlusOutlined />{{ t('workflows.task.create.addRelatedDirectory') }}</a-button
             >
           </div>
           <button
             type="button"
             class="expanded-close"
-            aria-label="隐藏关联目录"
+            :aria-label="t('workflows.task.create.hideRelatedDirectory')"
             @click="showDirs = false"
           >
             <CloseOutlined />
@@ -635,20 +947,26 @@ watch(
 
       <footer class="task-modal-footer">
         <span v-if="selectedPipeline"
-          >已预选“{{ selectedPipeline.name }}”，任务启动时配置 CLI/模型并生成执行副本</span
-        ><span v-else>流水线可稍后在任务开始前指定</span>
+          >{{ t('workflows.task.create.selectedPipeline', { name: selectedPipeline.name }) }}</span
+        ><span v-else-if="isCLISelected && form.execution_tool && form.model_name"
+          >{{ t('workflows.task.create.cliSelected', { cli: form.execution_tool, model: form.model_name }) }}</span
+        ><span v-else-if="form.execution_mode === 'vibe_coding' && form.execution_tool">{{ t('workflows.task.create.vibeCodex') }}</span
+        ><span v-else-if="form.execution_mode">{{ t('workflows.task.create.executionTargetRequired') }}</span
+        ><span v-else>{{ t('workflows.task.create.pipelineLater') }}</span>
         <div>
-          <a-button @click="emit('update:open', false)">取消</a-button
+          <a-button @click="emit('update:open', false)">{{ t('common.actions.cancel') }}</a-button
           ><a-button
             type="primary"
             :loading="saving"
             @click="create"
-            >创建任务</a-button
+            >{{ t('workflows.task.import.create') }}</a-button
           >
         </div>
       </footer>
-    </a-spin>
-  </a-modal>
+        </a-spin>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -666,6 +984,8 @@ watch(
   font-weight: 600;
   line-height: 24px;
 }
+
+.task-modal-header-actions { display: flex; align-items: center; gap: 4px; }
 
 .task-modal-header button,
 .expanded-close {
@@ -790,6 +1110,7 @@ watch(
   font-size: 16px;
 }
 
+/* 需求设计图中 chip 不展示下拉箭头（触发器仍保留 DownOutlined，仅做视觉隐藏） */
 .chip :deep(.anticon-down) {
   display: none;
 }
@@ -844,6 +1165,278 @@ watch(
   object-fit: cover;
 }
 
+/* 选中底色铺满整行，行内左右内边距与分组标题对齐 */
+.execution-row {
+  display: flex;
+  height: 36px;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  padding: 0 12px;
+  border-radius: 8px;
+  box-sizing: border-box;
+  line-height: 22px;
+}
+
+.execution-row.is-selected {
+  border-color: #3157e2;
+  background: #e5efff;
+}
+
+.execution-avatar {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 50%;
+  color: #3157e2;
+  background: #e5efff;
+  font-size: 12px;
+  line-height: 24px;
+}
+
+.execution-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.execution-logo {
+  display: block;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+}
+
+.execution-logo--vibe {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  margin: 0 3px;
+}
+
+.execution-logo--cli {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  margin: 0 3px;
+}
+
+/* 直接执行条目：CLI 下拉与 Vibe Coding 工具在面板内展开，行高自适应 */
+:global(.execution-mode-dropdown .ant-dropdown-menu-item.execution-option) {
+  height: auto;
+  min-height: 0;
+  padding: 0;
+  line-height: normal;
+}
+
+.execution-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 0 8px;
+  border-radius: 10px;
+}
+
+.execution-block.is-selected {
+  background: #f7faff;
+}
+
+.execution-block.is-selected > .execution-row {
+  border-color: #3157e2;
+  background: #e5efff;
+}
+
+.execution-row.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.execution-avatar--soft {
+  border-radius: 8px;
+  background: #f5f5f5;
+}
+
+/* CLI 与模型下拉在面板内全宽堆叠 */
+.cli-runtime {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.cli-runtime--stacked {
+  grid-template-columns: minmax(0, 1fr);
+  padding: 0 4px;
+}
+
+.cli-runtime__select {
+  width: 100%;
+}
+
+.execution-hint--block {
+  margin: 0;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+/* Vibe Coding 内嵌的工具行 */
+.execution-tool {
+  display: inline-flex;
+  height: 32px;
+  align-self: flex-start;
+  align-items: center;
+  gap: 6px;
+  margin: 0 4px 0 12px;
+  border: 1px solid #e5e7eb;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: #262626;
+  background: #fff;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.execution-tool.is-selected {
+  border-color: #3157e2;
+  background: #e5efff;
+}
+
+.execution-tool:disabled {
+  color: #bfbfbf;
+  cursor: not-allowed;
+}
+
+.execution-tool .execution-logo--codex {
+  margin: 0;
+}
+
+.execution-logo--codex {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin: 0 2px;
+}
+
+.execution-name {
+  min-width: 0;
+  flex: 0 0 auto;
+  overflow: hidden;
+  color: #262626;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.execution-row--pipeline .execution-name {
+  flex: 1;
+}
+
+.execution-hint {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: #8c8c8c;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.execution-check {
+  margin-left: auto;
+  color: #3157e2;
+  font-size: 14px;
+}
+
+/* chip 下拉共用一套菜单外观：内边距、圆角、阴影、悬停底色一致。
+   高度上限由 syncChipMenuMaxHeight 按视口可用空间写入，保证向下展开时不被裁剪。 */
+:global(.chip-select-menu .ant-dropdown-menu) {
+  min-width: 240px;
+  max-height: var(--chip-menu-max-height, 380px);
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+
+:global(.chip-select-menu .ant-dropdown-menu-item),
+:global(.chip-select-menu .ant-dropdown-menu-submenu-title) {
+  border-radius: 8px;
+}
+
+:global(.chip-select-menu .ant-dropdown-menu-item:hover),
+:global(.chip-select-menu .ant-dropdown-menu-submenu-title:hover),
+:global(.chip-select-menu .ant-dropdown-menu-submenu-active .ant-dropdown-menu-submenu-title) {
+  background: #f5f6f8;
+}
+
+/* 优先级、更多菜单：行高与执行方式菜单保持一致 */
+:global(.chip-select-menu--rows .ant-dropdown-menu-item) {
+  height: 36px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: #262626;
+  font-size: 14px;
+  line-height: 36px;
+}
+
+:global(.chip-select-menu--rows .ant-dropdown-menu-item .anticon) {
+  margin-right: 8px;
+  color: #8c8c8c;
+}
+
+/* 执行方式菜单需要容纳图标、名称与说明，单独放宽 */
+:global(.execution-mode-dropdown .ant-dropdown-menu) {
+  min-width: 300px;
+}
+
+/* 行内边距由 .execution-row 控制，选项容器不再留白，选中底色可铺满整行 */
+:global(.execution-mode-dropdown .ant-dropdown-menu-item),
+:global(.execution-mode-dropdown .ant-dropdown-menu-submenu-title) {
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 8px;
+  color: #262626;
+  line-height: 36px;
+}
+
+:global(.execution-mode-dropdown .ant-dropdown-menu-item:hover),
+:global(.execution-mode-dropdown .ant-dropdown-menu-submenu-title:hover),
+:global(.execution-mode-dropdown .ant-dropdown-menu-submenu-active .ant-dropdown-menu-submenu-title) {
+  background: #f5f6f8;
+}
+
+:global(.execution-mode-dropdown .ant-dropdown-menu-item-group-title) {
+  padding: 8px 12px 4px;
+  color: #8c8c8c;
+  font-size: 14px;
+}
+
+/* 分组标题前的图标，与需求设计图一致 */
+.execution-group-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.execution-group-logo {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  object-fit: contain;
+}
+
+:global(.execution-mode-dropdown .ant-dropdown-menu-item-group-list) {
+  margin: 0;
+  padding: 0;
+}
+
 .more-chip {
   width: 32px;
   margin-left: auto;
@@ -851,38 +1444,6 @@ watch(
   padding: 0;
   border-radius: 50%;
   color: #262626;
-}
-
-.more-menu {
-  position: absolute;
-  z-index: 30;
-  top: 48px;
-  right: 24px;
-  width: 200px;
-  padding: 5px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
-}
-
-.more-menu button {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 0;
-  border-radius: 6px;
-  color: #4b5563;
-  background: transparent;
-  cursor: pointer;
-  font-size: 12px;
-  text-align: left;
-}
-
-.more-menu button:hover {
-  background: #f8fafc;
 }
 
 .expanded-fields {
@@ -1040,19 +1601,13 @@ watch(
   gap: 8px;
 }
 
-:global(.linear-task-modal .ant-modal) {
-  max-width: calc(100vw - 32px);
-}
 
-:global(.linear-task-modal .ant-modal-content) {
-  overflow: visible;
-  padding: 0;
-  border-radius: 16px;
-}
 
 :global(.linear-task-modal .ant-modal-body) {
   padding: 0;
 }
+
+
 
 :global(.linear-task-modal .ant-dropdown-menu-item) {
   min-width: 220px;
@@ -1063,7 +1618,6 @@ watch(
   color: #374151;
 }
 
-.pipeline-menu small,
 :global(.ant-dropdown-menu-item small) {
   display: block;
   max-width: 270px;
@@ -1087,5 +1641,84 @@ watch(
   .task-modal-footer > span {
     display: none;
   }
+}
+</style>
+
+<style>
+.linear-task-root {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1000;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+}
+.linear-task-mask {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+.linear-task-panel {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: 879px;
+  max-width: calc(100% - 32px);
+  max-height: calc(100% - 32px);
+  flex-direction: column;
+  overflow: hidden;
+  background: #fff;
+  border-radius: 16px;
+}
+.linear-task-root.is-fullscreen .linear-task-panel {
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+  border-radius: 0;
+}
+.linear-task-root.is-fullscreen .linear-task-panel .ant-spin-nested-loading,
+.linear-task-root.is-fullscreen .linear-task-panel .ant-spin-container {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+.linear-task-root.is-fullscreen .task-primary {
+  display: flex;
+  min-height: 180px;
+  flex: 1;
+  flex-direction: column;
+}
+.linear-task-root.is-fullscreen .description-box {
+  display: flex;
+  height: auto !important;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+.linear-task-root.is-fullscreen .markdown-editor,
+.linear-task-root.is-fullscreen .vditor,
+.linear-task-root.is-fullscreen .vditor-content,
+.linear-task-root.is-fullscreen .vditor-ir {
+  height: 100% !important;
+  min-height: 0;
+}
+.linear-task-root.is-fullscreen .vditor {
+  display: flex;
+  flex-direction: column;
+}
+.linear-task-root.is-fullscreen .vditor-content {
+  flex: 1;
+  overflow: auto;
 }
 </style>

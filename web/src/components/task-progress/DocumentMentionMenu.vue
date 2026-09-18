@@ -1,127 +1,152 @@
 <template>
-  <div v-if="open" class="document-mention-menu" role="listbox" aria-label="选择 Agent 产出文档">
-    <div class="mention-title">
-      <span>选择 Agent 产出文档</span>
-      <span v-if="query">匹配“{{ query }}”</span>
-    </div>
-    <div v-if="loading" class="mention-state"><a-spin size="small" />正在读取文档…</div>
-    <div v-else-if="error" class="mention-state mention-error">
-      <span>{{ error }}</span>
-      <button type="button" @mousedown.prevent="loadFiles">重试</button>
-    </div>
-    <div v-else-if="!filteredFiles.length" class="mention-state">暂无匹配的 Agent 产出文档</div>
-    <template v-else>
-      <button
-        v-for="(file, index) in filteredFiles"
-        :key="file.absolute_path"
-        type="button"
-        class="mention-item"
-        :class="{ active: index === activeIndex }"
-        role="option"
-        :aria-selected="index === activeIndex"
-        @mouseenter="activeIndex = index"
-        @mousedown.prevent="selectFile(file)"
-      >
-        <span class="agent-badge">{{ initials(file.owner_step_name) }}</span>
-        <span class="mention-copy">
-          <strong>{{ file.name }}</strong>
-          <span>{{ file.owner_step_name || 'Agent' }}</span>
+  <Transition name="mention-pop">
+    <div
+      v-if="open"
+      ref="menuRef"
+      class="document-mention-menu"
+      role="listbox"
+      :aria-label="t('workflows.task.progress.chooseDocuments')"
+    >
+      <div class="mention-title">
+        <span class="mention-title-label">{{ t('workflows.task.progress.chooseDocuments') }}</span>
+        <span v-if="normalizedQuery" class="mention-title-meta">
+          {{ t('workflows.task.progress.queryMatch', { query: normalizedQuery }) }}
         </span>
-        <span class="mention-type">{{ file.file_type || '文件' }}</span>
-      </button>
-    </template>
-    <div v-if="!loading && !error && filteredFiles.length" class="mention-footer">↑↓ 选择 · Enter 插入 · Esc 关闭</div>
-  </div>
+        <span v-else-if="status === 'ready'" class="mention-title-meta">
+          {{ t('workflows.task.progress.mentionFileCount', { count: items.length }) }}
+        </span>
+      </div>
+      <div v-if="status === 'loading'" class="mention-state">
+        <a-spin size="small" />
+        <span>{{ t('workflows.task.progress.readingDocuments') }}</span>
+      </div>
+      <div v-else-if="status === 'error'" class="mention-state mention-error">
+        <span>{{ error || t('workflows.task.progress.documentsLoadFailed') }}</span>
+        <button type="button" @mousedown.prevent="emit('retry')">
+          {{ t('common.actions.retry') }}
+        </button>
+      </div>
+      <template v-else>
+        <button
+          v-for="(file, index) in items"
+          :key="file.absolute_path"
+          :ref="(element) => setItemRef(element, index)"
+          type="button"
+          class="mention-item"
+          :class="{ active: index === activeIndex }"
+          role="option"
+          :aria-selected="index === activeIndex"
+          @mouseenter="activeIndex = index"
+          @mousedown.prevent="selectFile(file)"
+        >
+          <span class="agent-badge">{{ initials(sourceLabel(file)) }}</span>
+          <span class="mention-copy">
+            <strong class="mention-name">
+              <span
+                v-for="(segment, segmentIndex) in splitDocumentMentionHighlight(file.name, file.nameRanges)"
+                :key="segmentIndex"
+                :class="{ 'mention-hit': segment.matched }"
+              >{{ segment.text }}</span>
+            </strong>
+            <span class="mention-owner">{{ sourceLabel(file) }}</span>
+          </span>
+          <span class="mention-type">{{ file.file_type || t('workflows.task.progress.file') }}</span>
+        </button>
+      </template>
+      <div v-if="status === 'ready' && items.length" class="mention-footer">
+        {{ t('workflows.task.progress.keyboardHint') }}
+      </div>
+    </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import apiClient from '@/api/client'
-import type { TaskFileNode, TaskFilesResponse } from '@/types/task-files'
+import { computed, ref, watch, type ComponentPublicInstance } from 'vue'
 import { initials } from './utils'
+import { splitDocumentMentionHighlight } from './documentMention'
+import type { DocumentMentionCandidate } from './documentMention'
+import type { TaskFilesIndexStatus } from '@/composables/useTaskFilesIndex'
+import { useAppI18n } from '@/i18n'
 
-interface MentionFile extends TaskFileNode {
-  absolute_path: string
-  owner_step_uuid: string
-}
+const { t } = useAppI18n()
 
 const props = defineProps<{
   open: boolean
-  taskUuid: string
   query: string
+  items: DocumentMentionCandidate[]
+  status: TaskFilesIndexStatus
+  error: string
 }>()
 
 const emit = defineEmits<{
   close: []
-  select: [file: MentionFile]
+  select: [file: DocumentMentionCandidate]
+  retry: []
 }>()
 
-const loading = ref(false)
-const error = ref('')
-const files = ref<MentionFile[]>([])
+const menuRef = ref<HTMLElement>()
+const itemRefs = ref<HTMLElement[]>([])
 const activeIndex = ref(0)
-let loadRequestId = 0
 
-const filteredFiles = computed(() => {
-  const keyword = props.query.trim().toLocaleLowerCase()
-  const result = keyword
-    ? files.value.filter(file => (
-      file.name.toLocaleLowerCase().includes(keyword)
-      || (file.owner_step_name || '').toLocaleLowerCase().includes(keyword)
-      || file.path.toLocaleLowerCase().includes(keyword)
-    ))
-    : files.value
-  return result.slice(0, 50)
-})
+const normalizedQuery = computed(() => props.query.trim())
 
-watch(() => props.open, (open) => {
-  if (open) void loadFiles()
-})
+watch(
+  () => props.items,
+  () => {
+    // 候选集合每次都是重新计算的新数组，重置选中项与 DOM 引用，避免指向已移除的条目
+    activeIndex.value = 0
+    itemRefs.value = []
+  },
+)
 
-watch(() => props.query, () => {
+watch(normalizedQuery, () => {
   activeIndex.value = 0
 })
 
-watch(() => filteredFiles.value.length, (length) => {
-  if (!length) activeIndex.value = 0
-  else if (activeIndex.value >= length) activeIndex.value = length - 1
+watch(
+  () => props.items.length,
+  (length) => {
+    if (!length) {
+      activeIndex.value = 0
+      return
+    }
+    if (activeIndex.value >= length) activeIndex.value = length - 1
+  },
+)
+
+watch(activeIndex, (index) => {
+  const menu = menuRef.value
+  const item = itemRefs.value[index]
+  if (!menu || !item) return
+  // 只滚动菜单自身，不用 scrollIntoView，避免连带滚动外层会话区域
+  const itemTop = item.offsetTop
+  const itemBottom = itemTop + item.offsetHeight
+  if (itemTop < menu.scrollTop) {
+    menu.scrollTop = itemTop
+    return
+  }
+  if (itemBottom > menu.scrollTop + menu.clientHeight) {
+    menu.scrollTop = itemBottom - menu.clientHeight
+  }
 })
 
-async function loadFiles() {
-  if (!props.taskUuid) return
-  const requestId = ++loadRequestId
-  loading.value = true
-  error.value = ''
-  try {
-    const response = await apiClient.get<TaskFilesResponse>(
-      `/tasks/${encodeURIComponent(props.taskUuid)}/files`,
-    )
-    if (requestId !== loadRequestId) return
-    files.value = flattenAgentFiles(response.tree || [])
-    activeIndex.value = 0
-  } catch (loadError) {
-    if (requestId !== loadRequestId) return
-    error.value = loadError instanceof Error ? loadError.message : '文档列表加载失败'
-  } finally {
-    if (requestId === loadRequestId) loading.value = false
-  }
+function setItemRef(element: Element | ComponentPublicInstance | null, index: number) {
+  if (element instanceof HTMLElement) itemRefs.value[index] = element
 }
 
-function flattenAgentFiles(nodes: TaskFileNode[]): MentionFile[] {
-  const result: MentionFile[] = []
-  for (const node of nodes) {
-    if (node.is_dir) {
-      result.push(...flattenAgentFiles(node.children || []))
-      continue
-    }
-    if (node.absolute_path && node.owner_step_uuid) {
-      result.push(node as MentionFile)
-    }
-  }
-  return result
+/** 文件来源：优先展示产出步骤，CLI 直接执行等无归属的文件退化为所在目录 */
+function sourceLabel(file: DocumentMentionCandidate) {
+  if (file.owner_step_name) return file.owner_step_name
+  const directory = file.path
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(Boolean)
+    .slice(0, -1)
+    .join('/')
+  return directory || t('workflows.task.progress.taskRoot')
 }
 
-function selectFile(file: MentionFile) {
+function selectFile(file: DocumentMentionCandidate) {
   emit('select', file)
 }
 
@@ -132,27 +157,20 @@ function handleKeydown(event: KeyboardEvent) {
     emit('close')
     return true
   }
-  if (!filteredFiles.value.length) {
-    if (['ArrowDown', 'ArrowUp', 'Enter', 'Tab'].includes(event.key)) {
-      event.preventDefault()
-      return true
-    }
-    return false
-  }
-  if (event.key === 'ArrowDown') {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault()
-    activeIndex.value = (activeIndex.value + 1) % filteredFiles.value.length
-    return true
-  }
-  if (event.key === 'ArrowUp') {
-    event.preventDefault()
-    activeIndex.value = (activeIndex.value - 1 + filteredFiles.value.length) % filteredFiles.value.length
+    const count = props.items.length
+    if (!count) return true
+    const step = event.key === 'ArrowDown' ? 1 : -1
+    activeIndex.value = (activeIndex.value + step + count) % count
     return true
   }
   if (event.key === 'Enter' || event.key === 'Tab') {
+    const file = props.items[activeIndex.value]
+    // 加载中或加载失败时没有候选，交回外层让 Enter 继续提交消息
+    if (!file) return false
     event.preventDefault()
-    const file = filteredFiles.value[activeIndex.value]
-    if (file) selectFile(file)
+    selectFile(file)
     return true
   }
   return false
@@ -165,15 +183,35 @@ defineExpose({ handleKeydown })
 .document-mention-menu {
   position: absolute;
   z-index: 30;
-  right: 12px;
-  bottom: 48px;
-  left: 12px;
-  max-height: 310px;
+  /* 贴住输入框上沿展开：用 100% 跟随容器高度，输入框随内容变高时不会被遮挡 */
+  bottom: calc(100% + 8px);
+  left: 24px;
+  width: min(340px, calc(100% - 48px));
+  max-height: 248px;
   overflow-y: auto;
-  border: 1px solid #d9e2ef;
-  border-radius: 12px;
+  overscroll-behavior: contain;
+  border: 0.5px solid #e5e5e5;
+  border-radius: 16px;
   background: #fff;
-  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.18);
+  box-shadow:
+    0 4px 16px 0 rgba(0, 0, 0, 0.08),
+    0 1px 4px 0 rgba(0, 0, 0, 0.04);
+  transform-origin: bottom center;
+}
+.mention-pop-enter-active {
+  transition:
+    opacity 180ms ease-out,
+    transform 180ms ease-out;
+}
+.mention-pop-leave-active {
+  transition:
+    opacity 140ms ease-in,
+    transform 140ms ease-in;
+}
+.mention-pop-enter-from,
+.mention-pop-leave-to {
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
 }
 .mention-title,
 .mention-footer {
@@ -181,19 +219,24 @@ defineExpose({ handleKeydown })
   align-items: center;
   justify-content: space-between;
   padding: 8px 12px;
-  color: #98a2b3;
+  color: #8c95a8;
   font-size: 11px;
 }
 .mention-title {
   position: sticky;
   z-index: 1;
   top: 0;
-  border-bottom: 1px solid #eef2f6;
+  border-bottom: 1px solid #f0f0f0;
   background: #fff;
 }
-.mention-title span:first-child {
-  color: #475467;
+.mention-title-label {
+  color: #595959;
   font-weight: 600;
+}
+.mention-title-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .mention-state {
   display: flex;
@@ -202,33 +245,43 @@ defineExpose({ handleKeydown })
   justify-content: center;
   gap: 8px;
   padding: 12px;
-  color: #98a2b3;
+  color: #8c95a8;
   font-size: 12px;
 }
 .mention-error {
-  color: #d4380d;
+  color: #fb363f;
 }
 .mention-error button {
   border: 0;
-  color: #1677ff;
+  color: #3157e2;
   background: transparent;
   cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
 }
 .mention-item {
   display: flex;
-  width: 100%;
+  width: calc(100% - 16px);
+  margin: 0 8px;
   align-items: center;
   gap: 10px;
-  padding: 8px 12px;
+  padding: 7px 8px;
   border: 0;
+  border-radius: 8px;
   color: #344054;
-  background: #fff;
+  background: transparent;
   cursor: pointer;
+  font-family: inherit;
   text-align: left;
+  transition: background-color 140ms ease;
 }
 .mention-item:hover,
 .mention-item.active {
-  background: #f0f6ff;
+  background: #f2f2f2;
+}
+.mention-item:focus-visible {
+  outline: 2px solid #3157e2;
+  outline-offset: -2px;
 }
 .agent-badge {
   display: inline-flex;
@@ -237,9 +290,9 @@ defineExpose({ handleKeydown })
   flex: 0 0 28px;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
+  border-radius: 999px;
   color: #3157e2;
-  background: #eaf0ff;
+  background: #e5efff;
   font-size: 11px;
   font-weight: 600;
 }
@@ -249,34 +302,45 @@ defineExpose({ handleKeydown })
   flex: 1;
   flex-direction: column;
 }
-.mention-copy strong,
-.mention-copy span {
+.mention-name,
+.mention-owner {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.mention-copy strong {
-  color: #1d2939;
+.mention-name {
+  color: #262626;
   font-size: 13px;
   font-weight: 500;
 }
-.mention-copy span {
-  color: #98a2b3;
+.mention-hit {
+  color: #3157e2;
+  font-weight: 600;
+}
+.mention-owner {
+  color: #8c95a8;
   font-size: 11px;
 }
 .mention-type {
   flex: 0 0 auto;
   padding: 2px 6px;
   border-radius: 4px;
-  color: #667085;
-  background: #f2f4f7;
+  color: #595959;
+  background: #edeff2;
   font-size: 10px;
 }
 .mention-footer {
   position: sticky;
   bottom: 0;
   justify-content: flex-end;
-  border-top: 1px solid #eef2f6;
+  border-top: 1px solid #f0f0f0;
   background: #fff;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mention-pop-enter-active,
+  .mention-pop-leave-active,
+  .mention-item {
+    transition: none;
+  }
 }
 </style>

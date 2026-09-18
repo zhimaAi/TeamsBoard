@@ -12,8 +12,16 @@ export interface TaskRelatedProject {
 }
 
 export type TaskWithDetails = LocalTask & {
+  execution_mode?: import('@/types/pipeline').TaskExecutionMode
+  execution_tool?: string
+  // CLI 直接执行：模型记录在隐式步骤上，由 getTask 展开为 execution_model。
+  execution_model?: string
   selected_pipeline_uuid?: string
   pipeline_avatar_snapshot?: string
+  selected_expert_group_uuid?: string
+  expert_group_snapshot_uuid?: string
+  expert_group_name_snapshot?: string
+  expert_group_avatar_snapshot?: string
   project_name?: string
   project_uuid?: string
   project_icon?: string

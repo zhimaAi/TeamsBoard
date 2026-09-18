@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"goteams-client/internal/applog"
+	"goteams-client/internal/i18n"
 )
 
 // Folder is the interface directory within the collection.
@@ -31,14 +32,14 @@ type Folder struct {
 func (h *Handler) ListFolders(c *gin.Context) {
 	collectionID, err := strconv.ParseInt(c.Query("collection_id"), 10, 64)
 	if err != nil || collectionID <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "collection_id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "api_collection_id_invalid", "")
 		return
 	}
 	rows, err := h.dbRef.Get().QueryContext(c.Request.Context(),
 		`SELECT id, collection_id, parent_id, name, description, sort_order, created_at, updated_at
 		 FROM gt_api_folders WHERE collection_id=? ORDER BY sort_order, id`, collectionID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询目录失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer rows.Close()
@@ -48,7 +49,7 @@ func (h *Handler) ListFolders(c *gin.Context) {
 		var item Folder
 		if err := rows.Scan(&item.ID, &item.CollectionID, &item.ParentID, &item.Name,
 			&item.Description, &item.SortOrder, &item.CreatedAt, &item.UpdatedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "扫描目录失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		list = append(list, item)
@@ -64,12 +65,12 @@ func (h *Handler) CreateFolder(c *gin.Context) {
 		Description  string `json:"description"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	input.Name = strings.TrimSpace(input.Name)
 	if input.CollectionID <= 0 || input.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "collection_id 和 name 不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "api_folder_collection_name_required", "")
 		return
 	}
 	now := nowMillis()
@@ -80,18 +81,18 @@ func (h *Handler) CreateFolder(c *gin.Context) {
 		input.CollectionID, input.ParentID, input.Name, input.Description,
 		input.CollectionID, input.ParentID, now, now)
 	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "创建目录失败: " + err.Error()})
+		i18n.Error(c, http.StatusConflict, "common_server_error", "")
 		return
 	}
 	id, err := result.LastInsertId()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取新建目录 ID 失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	var sortOrder int
 	if err := h.dbRef.Get().QueryRowContext(c.Request.Context(),
 		`SELECT sort_order FROM gt_api_folders WHERE id=?`, id).Scan(&sortOrder); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取新目录排序失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	c.JSON(http.StatusCreated, Folder{
@@ -107,13 +108,13 @@ func (h *Handler) ReorderFolders(c *gin.Context) {
 		FolderIDs    []int64 `json:"folder_ids"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil || input.CollectionID <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "collection_id 和 folder_ids 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "api_folder_ids_invalid", "")
 		return
 	}
 
 	tx, err := h.dbRef.Get().BeginTx(c.Request.Context(), nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "开始排序事务失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer tx.Rollback()
@@ -121,7 +122,7 @@ func (h *Handler) ReorderFolders(c *gin.Context) {
 	rows, err := tx.QueryContext(c.Request.Context(),
 		`SELECT id FROM gt_api_folders WHERE collection_id=? AND parent_id=0`, input.CollectionID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询目录失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	existing := make(map[int64]struct{}, len(input.FolderIDs))
@@ -129,30 +130,30 @@ func (h *Handler) ReorderFolders(c *gin.Context) {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "扫描目录失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		existing[id] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取目录失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	rows.Close()
 
 	if len(existing) != len(input.FolderIDs) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "folder_ids 必须包含集合内的全部根目录"})
+		i18n.Error(c, http.StatusBadRequest, "api_collection_folders_required", "")
 		return
 	}
 	seen := make(map[int64]struct{}, len(input.FolderIDs))
 	for _, id := range input.FolderIDs {
 		if _, ok := existing[id]; !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "folder_ids 包含不属于当前集合的目录"})
+			i18n.Error(c, http.StatusBadRequest, "api_folder_outside_collection", "")
 			return
 		}
 		if _, duplicate := seen[id]; duplicate {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "folder_ids 不能包含重复目录"})
+			i18n.Error(c, http.StatusBadRequest, "api_folder_duplicate", "")
 			return
 		}
 		seen[id] = struct{}{}
@@ -163,12 +164,12 @@ func (h *Handler) ReorderFolders(c *gin.Context) {
 		if _, err := tx.ExecContext(c.Request.Context(),
 			`UPDATE gt_api_folders SET sort_order=?, updated_at=? WHERE id=? AND collection_id=? AND parent_id=0`,
 			order, now, id, input.CollectionID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "更新目录排序失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "提交目录排序失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"updated": len(input.FolderIDs)})
@@ -177,7 +178,7 @@ func (h *Handler) ReorderFolders(c *gin.Context) {
 func (h *Handler) UpdateFolder(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "")
 		return
 	}
 	var input struct {
@@ -185,23 +186,23 @@ func (h *Handler) UpdateFolder(c *gin.Context) {
 		Description string `json:"description"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil || strings.TrimSpace(input.Name) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name 不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "api_name_required", "")
 		return
 	}
 	result, err := h.dbRef.Get().ExecContext(c.Request.Context(),
 		`UPDATE gt_api_folders SET name=?, description=?, updated_at=? WHERE id=?`,
 		strings.TrimSpace(input.Name), input.Description, nowMillis(), id)
 	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "更新目录失败: " + err.Error()})
+		i18n.Error(c, http.StatusConflict, "common_server_error", "")
 		return
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取更新影响行数失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if affected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "目录不存在"})
+		i18n.Error(c, http.StatusNotFound, "api_folder_not_found", "")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"id": id, "updated": true})
@@ -210,37 +211,37 @@ func (h *Handler) UpdateFolder(c *gin.Context) {
 func (h *Handler) DeleteFolder(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "")
 		return
 	}
 	tx, err := h.dbRef.Get().BeginTx(c.Request.Context(), nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer tx.Rollback()
 	// Deleting the directory will not delete the interface by mistake: requests in the directory are moved back to the root of the collection.
 	if _, err = tx.ExecContext(c.Request.Context(),
 		`UPDATE gt_api_requests SET folder_id=0, updated_at=? WHERE folder_id=?`, nowMillis(), id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "移动目录内接口失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	result, err := tx.ExecContext(c.Request.Context(), `DELETE FROM gt_api_folders WHERE id=?`, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除目录失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取删除影响行数失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if affected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "目录不存在"})
+		i18n.Error(c, http.StatusNotFound, "api_folder_not_found", "")
 		return
 	}
 	if err = tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "提交事务失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"id": id, "deleted": true})
@@ -268,7 +269,7 @@ type RunHistory struct {
 func (h *Handler) ListHistory(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "")
 		return
 	}
 	if !h.requireStoredRequestInScope(c, id) {
@@ -284,7 +285,7 @@ func (h *Handler) ListHistory(c *gin.Context) {
 		        duration_ms, error_summary, started_at
 		 FROM gt_api_runs WHERE api_id=? ORDER BY started_at DESC LIMIT ?`, id, limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询执行历史失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer rows.Close()
@@ -298,7 +299,7 @@ func (h *Handler) ListHistory(c *gin.Context) {
 			&item.Method, &item.URL, &requestHeadersJSON, &item.RequestBodyPreview,
 			&item.ResponseStatus, &responseHeadersJSON, &item.ResponseBody, &truncated,
 			&item.DurationMS, &item.ErrorSummary, &item.StartedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "扫描执行历史失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		vars, perr := parseStringMap(requestHeadersJSON)
@@ -317,7 +318,7 @@ func (h *Handler) ListHistory(c *gin.Context) {
 func (h *Handler) ClearHistory(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "")
 		return
 	}
 	if !h.requireStoredRequestInScope(c, id) {
@@ -325,12 +326,12 @@ func (h *Handler) ClearHistory(c *gin.Context) {
 	}
 	result, err := h.dbRef.Get().ExecContext(c.Request.Context(), `DELETE FROM gt_api_runs WHERE api_id=?`, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "清理执行历史失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取清理影响行数失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"deleted": affected})
@@ -342,11 +343,11 @@ func (h *Handler) requireStoredRequestInScope(c *gin.Context, requestID int64) b
 		`SELECT collection_id, folder_id FROM gt_api_requests WHERE id=?`, requestID,
 	).Scan(&collectionID, &folderID)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "请求不存在"})
+		i18n.Error(c, http.StatusNotFound, "api_request_not_found", "")
 		return false
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return false
 	}
 	return true
@@ -358,12 +359,12 @@ func (h *Handler) ParseCurl(c *gin.Context) {
 		Curl string `json:"curl"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil || strings.TrimSpace(input.Curl) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "curl 不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "api_curl_required", "")
 		return
 	}
 	draft, err := parseCurlCommand(input.Curl)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Curl 解析失败: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	c.JSON(http.StatusOK, draft)

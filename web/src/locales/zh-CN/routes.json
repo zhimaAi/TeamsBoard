@@ -1,0 +1,13 @@
+{
+  "commands": "命令概览",
+  "board": "看板",
+  "workflowImport": "导入任务",
+  "taskDetail": "任务详情",
+  "tasks": "对话",
+  "agents": "专家流水线",
+  "projects": "项目",
+  "knowledge": "知识库",
+  "apis": "接口管理",
+  "settings": "配置中心",
+  "tools": "工具中心"
+}

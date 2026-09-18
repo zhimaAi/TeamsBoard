@@ -1,0 +1,986 @@
+{
+  "api_affected_rows_failed": {
+    "other": "读取删除影响行数失败"
+  },
+  "api_auth_read_failed": {
+    "other": "读取请求认证信息失败"
+  },
+  "api_collection_delete_failed": {
+    "other": "删除集合失败"
+  },
+  "api_collection_environment_delete_failed": {
+    "other": "删除集合环境失败"
+  },
+  "api_collection_environment_query_failed": {
+    "other": "查询集合环境失败"
+  },
+  "api_collection_folder_delete_failed": {
+    "other": "删除集合目录失败"
+  },
+  "api_collection_folders_required": {
+    "other": "folder_ids 必须包含集合内的全部根目录"
+  },
+  "api_collection_history_delete_failed": {
+    "other": "删除集合执行历史失败"
+  },
+  "api_collection_id_invalid": {
+    "other": "collection_id 参数无效"
+  },
+  "api_collection_id_required": {
+    "other": "collection_id 参数不能为空"
+  },
+  "api_collection_name_required": {
+    "other": "集合名称不能为空"
+  },
+  "api_collection_not_found": {
+    "other": "集合不存在"
+  },
+  "api_collection_query_failed": {
+    "other": "查询集合失败"
+  },
+  "api_collection_request_delete_failed": {
+    "other": "删除集合下请求失败"
+  },
+  "api_collection_request_query_failed": {
+    "other": "查询集合接口失败"
+  },
+  "api_collection_scan_failed": {
+    "other": "扫描集合数据失败"
+  },
+  "api_collection_self_parent": {
+    "other": "不能将集合移动到自身下"
+  },
+  "api_curl_parse_failed": {
+    "other": "Curl 解析失败"
+  },
+  "api_curl_required": {
+    "other": "curl 不能为空"
+  },
+  "api_directory_delete_failed": {
+    "other": "删除目录失败"
+  },
+  "api_directory_move_failed": {
+    "other": "移动目录内接口失败"
+  },
+  "api_directory_sort_read_failed": {
+    "other": "读取新目录排序失败"
+  },
+  "api_environment_create_failed": {
+    "other": "创建环境失败"
+  },
+  "api_environment_delete_failed": {
+    "other": "删除环境失败"
+  },
+  "api_environment_id_failed": {
+    "other": "获取新建环境 ID 失败"
+  },
+  "api_environment_not_found": {
+    "other": "环境不存在"
+  },
+  "api_environment_query_failed": {
+    "other": "查询环境失败"
+  },
+  "api_environment_save_failed": {
+    "other": "保存环境变量失败"
+  },
+  "api_environment_scan_failed": {
+    "other": "扫描环境数据失败"
+  },
+  "api_environment_secret_read_failed": {
+    "other": "读取环境 Secret 失败"
+  },
+  "api_environment_secret_save_failed": {
+    "other": "安全保存环境变量失败"
+  },
+  "api_environment_update_failed": {
+    "other": "更新环境失败"
+  },
+  "api_environment_variables_serialize_failed": {
+    "other": "序列化 variables 失败"
+  },
+  "api_folder_collection_name_required": {
+    "other": "collection_id 和 name 不能为空"
+  },
+  "api_folder_duplicate": {
+    "other": "folder_ids 不能包含重复目录"
+  },
+  "api_folder_id_invalid": {
+    "other": "folder_id 参数无效"
+  },
+  "api_folder_ids_invalid": {
+    "other": "collection_id 和 folder_ids 参数无效"
+  },
+  "api_folder_not_found": {
+    "other": "目录不存在"
+  },
+  "api_folder_outside_collection": {
+    "other": "folder_ids 包含不属于当前集合的目录"
+  },
+  "api_history_affected_rows_failed": {
+    "other": "获取清理影响行数失败"
+  },
+  "api_history_cleanup_failed": {
+    "other": "清理执行历史失败"
+  },
+  "api_history_not_found": {
+    "other": "执行记录不存在"
+  },
+  "api_history_query_failed": {
+    "other": "查询执行历史失败"
+  },
+  "api_history_scan_failed": {
+    "other": "扫描执行历史失败"
+  },
+  "api_name_required": {
+    "other": "name 不能为空"
+  },
+  "api_no_fields": {
+    "other": "没有要更新的字段"
+  },
+  "api_parent_id_invalid": {
+    "other": "parent_id 参数无效"
+  },
+  "api_request_auth_query_failed": {
+    "other": "查询请求认证信息失败"
+  },
+  "api_request_body_invalid": {
+    "other": "请求体无效"
+  },
+  "api_request_create_failed": {
+    "other": "创建请求失败"
+  },
+  "api_request_delete_failed": {
+    "other": "删除请求失败"
+  },
+  "api_request_failed": {
+    "other": "请求失败"
+  },
+  "api_request_id_failed": {
+    "other": "获取新建请求 ID 失败"
+  },
+  "api_request_not_found": {
+    "other": "请求不存在"
+  },
+  "api_request_query_failed": {
+    "other": "查询请求失败"
+  },
+  "api_request_scan_failed": {
+    "other": "扫描请求数据失败"
+  },
+  "api_request_update_failed": {
+    "other": "更新请求失败"
+  },
+  "api_request_url_invalid": {
+    "other": "请求 URL 无效"
+  },
+  "api_secret_save_failed": {
+    "other": "安全保存认证信息失败"
+  },
+  "api_sql_auth_serialize_failed": {
+    "other": "序列化 auth 失败"
+  },
+  "api_sql_body_form_serialize_failed": {
+    "other": "序列化 body_form 失败"
+  },
+  "api_sql_headers_serialize_failed": {
+    "other": "序列化 headers 失败"
+  },
+  "api_sql_query_serialize_failed": {
+    "other": "序列化 query 失败"
+  },
+  "api_transaction_begin_failed": {
+    "other": "开启事务失败"
+  },
+  "api_transaction_commit_failed": {
+    "other": "提交事务失败"
+  },
+  "api_transaction_failed": {
+    "other": "事务操作失败"
+  },
+  "auth_account_manager_missing": {
+    "other": "账号管理器未初始化"
+  },
+  "auth_cloud_url_invalid": {
+    "other": "云端地址无效"
+  },
+  "auth_credentials_required": {
+    "other": "用户名和密码不能为空"
+  },
+  "auth_custom_url_required": {
+    "other": "请输入自定义云端地址"
+  },
+  "auth_desktop_loopback_required": {
+    "other": "桌面关闭只接受本机请求"
+  },
+  "auth_desktop_token_invalid": {
+    "other": "无效的桌面令牌"
+  },
+  "auth_login_failed": {
+    "other": "登录失败"
+  },
+  "auth_official_url_invalid": {
+    "other": "官方云端 API 地址无效，请检查 api_base_url"
+  },
+  "auth_official_url_missing": {
+    "other": "官方云端 API 地址未配置，请先设置 api_base_url 或使用自定义地址登录"
+  },
+  "auth_profile_switch_failed": {
+    "other": "切换本地数据目录失败"
+  },
+  "auth_session_create_failed": {
+    "other": "创建账号会话失败"
+  },
+  "auth_ticket_invalid": {
+    "other": "无效的 ticket"
+  },
+  "auth_ticket_required": {
+    "other": "缺少 ticket 参数"
+  },
+  "command_docker_command_not_allowed": {
+    "other": "不允许执行的 Docker 子命令"
+  },
+  "command_docker_projects_query_failed": {
+    "other": "查询 Docker 项目失败"
+  },
+  "command_docker_projects_scan_failed": {
+    "other": "扫描 Docker 项目数据失败"
+  },
+  "command_git_command_not_allowed": {
+    "other": "不允许执行的 Git 子命令"
+  },
+  "command_git_project_or_ssh_not_found": {
+    "other": "Git 项目或关联的 SSH 配置不存在"
+  },
+  "command_git_project_query_failed": {
+    "other": "查询 Git 项目失败"
+  },
+  "command_git_projects_query_failed": {
+    "other": "查询 Git 项目失败"
+  },
+  "command_git_projects_scan_failed": {
+    "other": "扫描 Git 项目数据失败"
+  },
+  "command_history_detail_query_failed": {
+    "other": "查询命令记录失败"
+  },
+  "command_history_id_invalid": {
+    "other": "id 参数无效"
+  },
+  "command_history_query_failed": {
+    "other": "查询命令历史失败"
+  },
+  "command_history_record_not_found": {
+    "other": "命令记录不存在"
+  },
+  "command_history_scan_failed": {
+    "other": "扫描命令历史数据失败"
+  },
+  "command_request_invalid": {
+    "other": "请求参数无效"
+  },
+  "command_run_id_failed": {
+    "other": "获取命令运行记录 ID 失败"
+  },
+  "command_run_record_failed": {
+    "other": "记录命令执行失败"
+  },
+  "command_ssh_credential_read_failed": {
+    "other": "读取 SSH 凭据失败"
+  },
+  "command_ssh_store_uninitialized": {
+    "other": "SSH 密钥存储未初始化"
+  },
+  "common_access_token_invalid": {
+    "other": "无效的访问令牌"
+  },
+  "common_command_not_allowed": {
+    "other": "不允许执行的命令"
+  },
+  "common_invalid_id": {
+    "other": "无效的 ID"
+  },
+  "common_language_not_supported": {
+    "other": "暂不支持该语言，已自动回退为中文"
+  },
+  "common_not_authenticated": {
+    "other": "当前未登录"
+  },
+  "common_record_not_found": {
+    "other": "记录不存在"
+  },
+  "common_request_invalid": {
+    "other": "请求参数无效"
+  },
+  "common_runtime_unavailable": {
+    "other": "本地任务运行时未初始化"
+  },
+  "common_server_error": {
+    "other": "服务暂时不可用，请稍后重试"
+  },
+  "common_session_expired": {
+    "other": "会话已过期"
+  },
+  "configcenter_api_base_url_required": {
+    "other": "api_base_url 不能为空"
+  },
+  "configcenter_api_key_save_failed": {
+    "other": "保存 API Key 失败"
+  },
+  "configcenter_config_dir_create_failed": {
+    "other": "创建配置目录失败"
+  },
+  "configcenter_config_init_failed": {
+    "other": "初始化配置文件失败"
+  },
+  "configcenter_config_path_uninitialized": {
+    "other": "配置文件路径未初始化"
+  },
+  "configcenter_config_read_failed": {
+    "other": "读取配置文件失败"
+  },
+  "configcenter_config_write_failed": {
+    "other": "保存配置文件失败"
+  },
+  "configcenter_connection_ok": {
+    "other": "连接成功"
+  },
+  "configcenter_database_lookup_failed": {
+    "other": "读取数据库配置失败"
+  },
+  "configcenter_database_not_found": {
+    "other": "数据库配置不存在"
+  },
+  "configcenter_database_required": {
+    "other": "name 不能为空"
+  },
+  "configcenter_database_secret_save_failed": {
+    "other": "保存数据库密码失败"
+  },
+  "configcenter_database_test_failed": {
+    "other": "数据库连接测试失败"
+  },
+  "configcenter_database_update_failed": {
+    "other": "更新数据库配置失败"
+  },
+  "configcenter_docker_required": {
+    "other": "name 和 compose_file_path 不能为空"
+  },
+  "configcenter_docker_update_failed": {
+    "other": "更新 Docker 项目失败"
+  },
+  "configcenter_git_required": {
+    "other": "name、ssh_profile_id 和 remote_work_dir 不能为空"
+  },
+  "configcenter_invalid_id": {
+    "other": "无效的 ID"
+  },
+  "configcenter_model_profile_required": {
+    "other": "name 和 provider_id 不能为空"
+  },
+  "configcenter_model_provider_required": {
+    "other": "name 和 provider_id 不能为空"
+  },
+  "configcenter_model_update_failed": {
+    "other": "更新模型配置失败"
+  },
+  "configcenter_name_required": {
+    "other": "name 不能为空"
+  },
+  "configcenter_no_fields": {
+    "other": "没有要更新的字段"
+  },
+  "configcenter_provider_update_failed": {
+    "other": "更新模型服务商失败"
+  },
+  "configcenter_remote_work_dir_required": {
+    "other": "remote_work_dir 不能为空"
+  },
+  "configcenter_request_invalid": {
+    "other": "请求参数无效"
+  },
+  "configcenter_secret_ref_write_failed": {
+    "other": "密钥引用写入失败，请编辑后重新填写"
+  },
+  "configcenter_secret_save_failed": {
+    "other": "保存敏感配置失败"
+  },
+  "configcenter_ssh_lookup_failed": {
+    "other": "读取 SSH 配置失败"
+  },
+  "configcenter_ssh_not_found": {
+    "other": "SSH 配置不存在"
+  },
+  "configcenter_ssh_profile_required": {
+    "other": "ssh_profile_id 不能为空"
+  },
+  "configcenter_ssh_required": {
+    "other": "name 和 host 不能为空"
+  },
+  "configcenter_ssh_resolve_failed": {
+    "other": "解析 SSH 配置失败"
+  },
+  "configcenter_ssh_secret_save_failed": {
+    "other": "保存 SSH 密码失败"
+  },
+  "configcenter_ssh_test_failed": {
+    "other": "SSH 连接测试失败"
+  },
+  "configcenter_ssh_update_failed": {
+    "other": "更新 SSH 配置失败"
+  },
+  "knowledge_delete_transaction_failed": {
+    "other": "提交删除事务失败"
+  },
+  "knowledge_document_conflict": {
+    "other": "文档已被其他程序或页面修改，请重新加载或另存为新文档"
+  },
+  "knowledge_document_content_read_failed": {
+    "other": "读取文档内容失败"
+  },
+  "knowledge_document_create_failed": {
+    "other": "创建文档失败"
+  },
+  "knowledge_document_delete_failed": {
+    "other": "删除文档失败"
+  },
+  "knowledge_document_list_scan_failed": {
+    "other": "扫描文档数据失败"
+  },
+  "knowledge_document_not_found": {
+    "other": "文档不存在"
+  },
+  "knowledge_document_query_failed": {
+    "other": "查询文档失败"
+  },
+  "knowledge_document_record_delete_failed": {
+    "other": "删除文档记录失败"
+  },
+  "knowledge_document_restore_failed": {
+    "other": "恢复文档失败"
+  },
+  "knowledge_document_scan_failed": {
+    "other": "扫描文档数据失败"
+  },
+  "knowledge_document_update_failed": {
+    "other": "更新文档失败"
+  },
+  "knowledge_file_write_failed": {
+    "other": "写入文件失败"
+  },
+  "knowledge_folder_create_failed": {
+    "other": "创建文件夹失败"
+  },
+  "knowledge_folder_delete_failed": {
+    "other": "删除文件夹失败"
+  },
+  "knowledge_folder_descendant": {
+    "other": "不能将文件夹移动到其子目录下"
+  },
+  "knowledge_folder_id_failed": {
+    "other": "获取新建文件夹 ID 失败"
+  },
+  "knowledge_folder_id_invalid": {
+    "other": "folder_id 参数无效"
+  },
+  "knowledge_folder_level_check_failed": {
+    "other": "校验文件夹层级失败"
+  },
+  "knowledge_folder_move_children_failed": {
+    "other": "移动子文件夹失败"
+  },
+  "knowledge_folder_move_docs_failed": {
+    "other": "移动文档失败"
+  },
+  "knowledge_folder_not_found": {
+    "other": "文件夹不存在"
+  },
+  "knowledge_folder_query_failed": {
+    "other": "查询文件夹失败"
+  },
+  "knowledge_folder_scan_failed": {
+    "other": "扫描文件夹数据失败"
+  },
+  "knowledge_folder_self_parent": {
+    "other": "不能将文件夹移动到自身下"
+  },
+  "knowledge_folder_update_failed": {
+    "other": "更新文件夹失败"
+  },
+  "knowledge_history_content_read_failed": {
+    "other": "读取历史内容失败"
+  },
+  "knowledge_history_delete_failed": {
+    "other": "删除历史记录失败"
+  },
+  "knowledge_history_file_write_failed": {
+    "other": "写入历史文件失败"
+  },
+  "knowledge_history_id_failed": {
+    "other": "获取历史版本 ID 失败"
+  },
+  "knowledge_history_id_invalid": {
+    "other": "historyId 参数无效"
+  },
+  "knowledge_history_not_found": {
+    "other": "历史版本不存在"
+  },
+  "knowledge_history_query_failed": {
+    "other": "查询历史版本失败"
+  },
+  "knowledge_history_save_failed": {
+    "other": "保存历史版本失败"
+  },
+  "knowledge_history_scan_failed": {
+    "other": "扫描历史数据失败"
+  },
+  "knowledge_name_required": {
+    "other": "name 不能为空"
+  },
+  "knowledge_old_content_read_failed": {
+    "other": "读取旧文档内容失败"
+  },
+  "knowledge_parameter_required": {
+    "other": "参数不能为空"
+  },
+  "knowledge_storage_failed": {
+    "other": "获取知识库存储失败"
+  },
+  "knowledge_storage_unavailable": {
+    "other": "知识库存储不可用"
+  },
+  "knowledge_title_required": {
+    "other": "title 不能为空"
+  },
+  "knowledge_trash_document_not_found": {
+    "other": "回收站中不存在该文档"
+  },
+  "knowledge_trash_document_query_failed": {
+    "other": "查询回收站文档失败"
+  },
+  "knowledge_trash_query_failed": {
+    "other": "查询回收站失败"
+  },
+  "knowledge_trash_scan_failed": {
+    "other": "扫描回收站数据失败"
+  },
+  "knowledge_uuid_required": {
+    "other": "uuid 参数不能为空"
+  },
+  "localserver_active_sessions": {
+    "other": "任务仍有正在执行的 CLI 会话，请先终止后再删除"
+  },
+  "localserver_agent_upload_local_only": {
+    "other": "仅本地 Agent 支持上传头像"
+  },
+  "localserver_api_not_found": {
+    "other": "接口不存在"
+  },
+  "localserver_attachment_count_exceeded": {
+    "description": "Maximum number of uploaded files; Count is the limit.",
+    "other": "最多可上传 {{.Count}} 个文件"
+  },
+  "localserver_attachment_current_task_only": {
+    "other": "只能读取当前任务的附件"
+  },
+  "localserver_attachment_marker_duplicate": {
+    "other": "附件位置标记重复"
+  },
+  "localserver_attachment_marker_invalid": {
+    "other": "附件位置标记无效"
+  },
+  "localserver_attachment_marker_missing": {
+    "other": "附件位置标记未在任务描述中找到"
+  },
+  "localserver_attachment_marker_required": {
+    "other": "附件必须全部包含位置标记"
+  },
+  "localserver_attachment_not_found": {
+    "other": "附件不存在"
+  },
+  "localserver_attachment_path_invalid": {
+    "other": "附件路径无效"
+  },
+  "localserver_attachment_size_exceeded": {
+    "other": "文件大小不能超过 10MB"
+  },
+  "localserver_attachment_total_too_large": {
+    "other": "上传文件总大小不能超过 30MB"
+  },
+  "localserver_avatar_store_not_ready": {
+    "other": "本地头像存储尚未初始化"
+  },
+  "localserver_bad_request": {
+    "other": "请求参数无效"
+  },
+  "localserver_cli_type_required": {
+    "other": "cli_type 不能为空"
+  },
+  "localserver_cloud_client_not_ready": {
+    "other": "云端客户端未初始化"
+  },
+  "localserver_cloud_import_login_required": {
+    "other": "导入云端工作项需要先登录"
+  },
+  "localserver_cloud_pipeline_cache_failed": {
+    "other": "云端流水线本地缓存失败"
+  },
+  "localserver_cloud_session_expired": {
+    "other": "云端登录已失效，请重新登录"
+  },
+  "localserver_cloud_work_item_not_found": {
+    "other": "云端工作项不存在"
+  },
+  "localserver_codex_skill_install_failed": {
+    "other": "内置 teamsboard Skill 安装失败，Codex 功能暂不可用，请重启应用或检查日志"
+  },
+  "localserver_codex_skill_not_managed": {
+    "other": "检测到同名但非 TeamsBoard 管理的 teamsboard Skill，为避免覆盖，Codex 功能已禁用"
+  },
+  "localserver_codex_task_prompt": {
+    "description": "SkillPath and TaskUUID identify the managed TeamsBoard task.",
+    "other": "[$teamsboard]({{.SkillPath}})\n\n请使用 teamsboard Skill 处理以下 TeamsBoard 本地任务。\n任务 UUID：{{.TaskUUID}}\n本会话持续绑定该任务；后续每轮均按 Skill 规则同步，直到会话结束。"
+  },
+  "localserver_current_session_unavailable": {
+    "other": "当前 Agent 编排尚无可继续的 CLI 会话"
+  },
+  "localserver_database_not_ready": {
+    "other": "本地任务数据库尚未就绪"
+  },
+  "localserver_execution_mode_conflict": {
+    "other": "任务已经指派其他执行方式"
+  },
+  "localserver_execution_mode_invalid": {
+    "other": "任务执行方式无效"
+  },
+  "localserver_execution_mode_required": {
+    "other": "任务启动前必须选择执行方式"
+  },
+  "localserver_execution_mode_target_invalid": {
+    "other": "请选择 CLI 与模型"
+  },
+  "localserver_execution_mode_unchanged": {
+    "other": "请选择与当前配置不同的执行方式"
+  },
+  "localserver_execution_mode_unsupported": {
+    "other": "该执行方式暂未支持"
+  },
+  "localserver_execution_switch_stop_failed": {
+    "other": "无法停止当前执行，执行方式未切换"
+  },
+  "localserver_execution_switch_start_failed": {
+    "other": "执行方式已切换，但自动启动失败，请重试"
+  },
+  "localserver_execution_switch_unavailable": {
+    "other": "任务执行服务尚未就绪，无法切换执行方式"
+  },
+  "localserver_expert_group_invalid": {
+    "other": "专家团或成员配置无效"
+  },
+  "localserver_expert_group_mode_required": {
+    "other": "任务未指派给专家团"
+  },
+  "localserver_expert_group_not_found": {
+    "other": "专家团不存在"
+  },
+  "localserver_expert_group_not_ready": {
+    "other": "专家团配置不完整，请设置团长、至少一名成员及完整 CLI 和模型"
+  },
+  "localserver_expert_group_required": {
+    "other": "任务启动前必须选择专家团"
+  },
+  "localserver_expert_member_not_found": {
+    "other": "所选 Agent 不在当前专家团中"
+  },
+  "localserver_expert_routing_pending": {
+    "other": "专家团正在自动路由，请稍后重试"
+  },
+  "localserver_file_data_decode_failed": {
+    "other": "文件数据解码失败"
+  },
+  "localserver_file_data_invalid": {
+    "other": "文件数据格式无效"
+  },
+  "localserver_file_empty": {
+    "other": "文件内容为空"
+  },
+  "localserver_file_not_found": {
+    "other": "文件不存在"
+  },
+  "localserver_file_path_empty": {
+    "other": "任务目录为空"
+  },
+  "localserver_file_path_invalid": {
+    "other": "文件路径无效"
+  },
+  "localserver_file_path_outside": {
+    "other": "文件路径不在任务目录范围内"
+  },
+  "localserver_file_path_symlink": {
+    "other": "文件路径不允许包含符号链接"
+  },
+  "localserver_icon_not_found": {
+    "other": "图标不存在"
+  },
+  "localserver_icon_store_not_ready": {
+    "other": "本地图标存储尚未初始化"
+  },
+  "localserver_icon_too_large": {
+    "other": "图片大小不能超过 2MB"
+  },
+  "localserver_icon_type_invalid": {
+    "other": "仅支持 PNG、JPEG、WebP 图片"
+  },
+  "localserver_id_invalid": {
+    "other": "无效的 ID"
+  },
+  "localserver_ids_required": {
+    "other": "ids 不能为空"
+  },
+  "localserver_image_content_mismatch": {
+    "other": "图片内容与文件格式不匹配"
+  },
+  "localserver_import_sync_warning": {
+    "other": "任务已导入，但云端投影同步失败"
+  },
+  "localserver_internal_error": {
+    "other": "服务暂时不可用，请稍后重试"
+  },
+  "localserver_invalid_task_status": {
+    "other": "无效的任务状态"
+  },
+  "localserver_json_content_type_required": {
+    "other": "Content-Type 必须为 application/json"
+  },
+  "localserver_json_invalid": {
+    "other": "请求 JSON 无效"
+  },
+  "localserver_json_single_object_required": {
+    "other": "请求 JSON 只能包含一个对象"
+  },
+  "localserver_lane_tasks_exist": {
+    "description": "Cannot delete a task status while Count tasks use it.",
+    "other": "该状态下还有 {{.Count}} 个任务，无法删除"
+  },
+  "localserver_no_update_fields": {
+    "other": "无更新字段"
+  },
+  "localserver_not_authenticated": {
+    "other": "未登录"
+  },
+  "localserver_not_found": {
+    "other": "记录不存在"
+  },
+  "localserver_notification_not_found": {
+    "other": "通知不存在"
+  },
+  "localserver_notification_pipeline_required": {
+    "other": "创建任务通知需要先选择流水线"
+  },
+  "localserver_path_required": {
+    "other": "path 不能为空"
+  },
+  "localserver_pipeline_id_invalid": {
+    "other": "云端流水线 ID 无效"
+  },
+  "localserver_pipeline_not_found": {
+    "other": "流水线不存在"
+  },
+  "localserver_pipeline_required": {
+    "other": "请选择流水线"
+  },
+  "localserver_pipeline_upload_local_only": {
+    "other": "仅本地流水线支持上传图标"
+  },
+  "localserver_pipeline_uuid_required": {
+    "other": "pipeline_uuid 不能为空"
+  },
+  "localserver_project_in_use": {
+    "other": "项目已被任务使用"
+  },
+  "localserver_project_not_found": {
+    "other": "项目不存在"
+  },
+  "localserver_prompt_required": {
+    "other": "prompt_snapshot 不能为空"
+  },
+  "localserver_question_required": {
+    "other": "问题内容不能为空"
+  },
+  "localserver_readable_file_type": {
+    "description": "Unsupported file extension; FileType is the extension.",
+    "other": "不支持读取 {{.FileType}} 类型的文件内容，仅支持文本和图片文件"
+  },
+  "localserver_request_invalid": {
+    "other": "请求参数无效"
+  },
+  "localserver_skill_activity_content_invalid": {
+    "other": "动态内容长度必须为 1 至 65536 个字符"
+  },
+  "localserver_skill_activity_type_invalid": {
+    "other": "动态类型仅支持 question 或 result"
+  },
+  "localserver_skill_caller_forbidden": {
+    "other": "仅允许本机 TeamsBoard Skill 调用"
+  },
+  "localserver_skill_loopback_required": {
+    "other": "TeamsBoard Skill 仅允许通过 loopback 调用"
+  },
+  "localserver_skill_status_invalid": {
+    "other": "状态仅支持 pending、in_progress、blocked、done"
+  },
+  "localserver_skill_thread_id_invalid": {
+    "other": "thread_id 最多 256 个字符"
+  },
+  "localserver_skill_tool_invalid": {
+    "other": "当前任务仅允许 Codex 上报动态"
+  },
+  "localserver_status_not_found": {
+    "other": "状态不存在"
+  },
+  "localserver_step_not_found": {
+    "other": "步骤不存在"
+  },
+  "localserver_task_content_too_large": {
+    "other": "任务内容或粘贴图片过大"
+  },
+  "localserver_task_created_started": {
+    "other": "任务已创建并开始执行"
+  },
+  "localserver_task_created_warning": {
+    "other": "任务已创建，但读取任务详情失败"
+  },
+  "localserver_task_not_codex": {
+    "other": "任务未指派给 Vibe Coding / Codex"
+  },
+  "localserver_task_not_found": {
+    "other": "任务不存在"
+  },
+  "localserver_task_not_vibe_coding": {
+    "other": "任务未指派给 Vibe Coding"
+  },
+  "localserver_task_uuid_invalid": {
+    "other": "任务 UUID 无效"
+  },
+  "localserver_task_work_dir_required": {
+    "other": "任务未配置主工作目录"
+  },
+  "localserver_vibe_coding_assigned_activity": {
+    "other": "已指派至 Vibe Coding"
+  },
+  "localserver_vibe_session_thread_id_invalid": {
+    "other": "Codex thread_id 必须是有效的 UUID"
+  },
+  "localserver_vibe_session_type_invalid": {
+    "other": "当前仅支持绑定 Codex 会话"
+  },
+  "localserver_vibe_session_type_mismatch": {
+    "other": "会话类型与任务的 Vibe Coding 工具不一致"
+  },
+  "localserver_title_required": {
+    "other": "title 不能为空"
+  },
+  "localserver_upload_file_missing": {
+    "other": "缺少文件"
+  },
+  "localserver_web_dist_missing": {
+    "other": "未找到 web/dist，请先执行 npm run build 或打开发前端"
+  },
+  "localserver_work_item_id_invalid": {
+    "other": "工作项 ID 无效"
+  },
+  "localserver_workspace_invalid": {
+    "other": "工作目录无效"
+  },
+  "localserver_workspace_required": {
+    "other": "至少需要一个工作目录"
+  },
+  "localserver_workspace_unavailable": {
+    "other": "任务工作目录不可用"
+  },
+  "taskgit_branch_invalid": {
+    "other": "Git 分支无效或不存在"
+  },
+  "taskgit_directory_unavailable": {
+    "other": "任务工作目录不可用"
+  },
+  "taskgit_not_repository": {
+    "other": "任务工作目录不是 Git 仓库"
+  },
+  "taskgit_read_failed": {
+    "other": "读取 Git 分支失败"
+  },
+  "taskgit_switch_checked_out": {
+    "description": "Target branch is already checked out in another Git worktree.",
+    "other": "该分支已在其他工作树中检出，无法切换"
+  },
+  "taskgit_switch_dirty": {
+    "description": "Git refused to switch because the working tree has local changes.",
+    "other": "工作区有未提交修改，无法切换分支"
+  },
+  "taskgit_switch_failed": {
+    "other": "切换 Git 分支失败"
+  },
+  "taskgit_switch_merging": {
+    "description": "Git refused to switch because a merge is in progress.",
+    "other": "当前仓库正在合并，无法切换分支"
+  },
+  "taskgit_switch_rebasing": {
+    "description": "Git refused to switch because a rebase is in progress.",
+    "other": "当前仓库正在变基，无法切换分支"
+  },
+  "taskgit_task_running": {
+    "other": "此工作目录中有任务执行，暂时不能切换 Git 分支"
+  },
+  "tool_database_not_found": {
+    "other": "数据库配置不存在"
+  },
+  "tool_database_profile_required": {
+    "other": "database_profile_id 不能为空"
+  },
+  "tool_menu_items_required": {
+    "other": "items 不能为空"
+  },
+  "tool_menu_key_duplicate": {
+    "description": "Duplicate menu identifier; Key is the menu identifier.",
+    "other": "重复的菜单 key: {{.Key}}"
+  },
+  "tool_menu_key_unknown": {
+    "description": "Unknown menu identifier; Key is the menu identifier.",
+    "other": "未知的菜单 key: {{.Key}}"
+  },
+  "tool_menu_order_duplicate": {
+    "other": "重复的菜单排序值"
+  },
+  "tool_menu_order_invalid": {
+    "description": "Menu sort order is invalid; Key is the menu identifier.",
+    "other": "菜单排序值超出范围: {{.Key}}"
+  },
+  "tool_menu_request_invalid": {
+    "other": "请求体格式错误"
+  },
+  "tool_read_only": {
+    "other": "数据库工具为只读模式，禁止写入或变更操作"
+  },
+  "tool_result_columns_failed": {
+    "other": "读取结果列失败"
+  },
+  "tool_result_iteration_failed": {
+    "other": "遍历查询结果失败"
+  },
+  "tool_result_scan_failed": {
+    "other": "读取查询结果失败"
+  },
+  "tool_sql_empty": {
+    "other": "SQL 不能为空"
+  },
+  "tool_sql_forbidden": {
+    "description": "Disallowed SQL operation; Operation is the SQL verb.",
+    "other": "禁止 {{.Operation}} 操作"
+  },
+  "tool_sql_read_only": {
+    "other": "只读操作"
+  },
+  "tool_sql_unsupported": {
+    "other": "不支持的 SQL 操作：数据库工具仅允许只读查询（SELECT/EXPLAIN/SHOW/DESC）"
+  }
+}

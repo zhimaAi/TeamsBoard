@@ -2,6 +2,9 @@
 import { ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import apiClient from '@/api/client'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 interface DiscoveredCLI {
   type: string
@@ -97,7 +100,7 @@ async function loadCLIs() {
       await loadModels(firstInstalled.type)
     }
   } catch (error) {
-    message.error(error instanceof Error ? error.message : 'CLI 探测失败')
+    message.error(error instanceof Error ? error.message : t('components.cliSelect.detectFailed'))
   } finally {
     loading.value = false
   }
@@ -114,7 +117,7 @@ async function loadModels(cliType: string) {
     fetched = result.models || []
   } catch (error) {
     if (seq === modelReqSeq) {
-      message.error(error instanceof Error ? error.message : '模型列表加载失败')
+      message.error(error instanceof Error ? error.message : t('components.cliSelect.modelsLoadFailed'))
     }
   } finally {
     if (seq !== modelReqSeq) return
@@ -137,7 +140,7 @@ async function selectCli(type: string) {
 
 function handleConfirm() {
   if (!selectedType.value) {
-    message.warning('请选择一个 CLI 工具')
+    message.warning(t('components.cliSelect.chooseCliWarning'))
     return
   }
   const cli = selectedCli()
@@ -160,15 +163,15 @@ function handleCancel() {
 <template>
   <a-modal
     :open="open"
-    title="选择执行 CLI"
+    :title="t('components.cliSelect.title')"
     :width="560"
     :mask-closable="false"
     @ok="handleConfirm"
     @cancel="handleCancel"
   >
     <template #footer>
-      <a-button @click="handleCancel">取消</a-button>
-      <a-button type="primary" :disabled="!selectedType" @click="handleConfirm">开始执行</a-button>
+      <a-button @click="handleCancel">{{ t('common.actions.cancel') }}</a-button>
+      <a-button type="primary" :disabled="!selectedType" @click="handleConfirm">{{ t('components.cliSelect.start') }}</a-button>
     </template>
 
     <a-spin :spinning="loading">
@@ -186,38 +189,38 @@ function handleCancel() {
           >
             <div class="cli-card__header">
               <span class="cli-card__name">{{ cli.name }}</span>
-              <a-tag v-if="!cli.installed" color="default">未安装</a-tag>
-              <a-tag v-else-if="selectedType === cli.type" color="green">已选择</a-tag>
+              <a-tag v-if="!cli.installed" color="default">{{ t('components.cliSelect.notInstalled') }}</a-tag>
+              <a-tag v-else-if="selectedType === cli.type" color="green">{{ t('components.cliSelect.selected') }}</a-tag>
             </div>
             <div v-if="cli.installed" class="cli-card__meta">
               <span v-if="cli.version" class="cli-card__version">{{ cli.version }}</span>
             </div>
             <div v-else class="cli-card__meta">
-              <span class="cli-card__hint">请先安装并加入 PATH</span>
+              <span class="cli-card__hint">{{ t('components.cliSelect.installHint') }}</span>
             </div>
           </div>
         </div>
 
         <div v-if="selectedCli()?.installed" class="cli-model-section">
-          <div class="cli-model-section__label">模型配置</div>
+          <div class="cli-model-section__label">{{ t('components.cliSelect.modelConfig') }}</div>
           <a-spin :spinning="modelsLoading">
             <a-select
               v-if="!useCustomModel && mergedModels(models).length > 0"
               v-model:value="selectedModel"
-              placeholder="选择模型"
+              :placeholder="t('components.cliSelect.chooseModel')"
               style="width: 100%"
               show-search
               :filter-option="(input: string, option: any) => (option?.value || '').toLowerCase().includes(input.toLowerCase())"
             >
               <a-select-option v-for="m in mergedModels(models)" :key="m.name" :value="m.name">
                 {{ m.name }}
-                <a-tag v-if="m.custom" color="blue" size="small" style="margin-left: 6px">自定义</a-tag>
+                <a-tag v-if="m.custom" color="blue" size="small" style="margin-left: 6px">{{ t('components.cliSelect.custom') }}</a-tag>
               </a-select-option>
             </a-select>
             <a-input
               v-else
               v-model:value="customModel"
-              placeholder="输入模型名称（可留空使用 CLI 默认模型）"
+              :placeholder="t('components.cliSelect.customPlaceholder')"
               allow-clear
             />
           </a-spin>
@@ -227,9 +230,9 @@ function handleCancel() {
               class="cli-model-section__toggle"
               @click="useCustomModel = !useCustomModel"
             >
-              {{ useCustomModel ? '← 从列表选择' : '手动输入模型' }}
+              {{ useCustomModel ? t('components.cliSelect.chooseFromList') : t('components.cliSelect.manualInput') }}
             </a>
-            <span v-if="useCustomModel" class="cli-model-section__hint">留空则使用 CLI 默认模型，输入后会自动记录到列表</span>
+            <span v-if="useCustomModel" class="cli-model-section__hint">{{ t('components.cliSelect.customHint') }}</span>
           </div>
         </div>
       </div>

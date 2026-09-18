@@ -19,7 +19,7 @@
       </h4>
       <a-tooltip
         v-if="task.status === 'blocked'"
-        :title="task.blocked_reason || '执行异常导致任务阻塞'"
+        :title="task.blocked_reason || t('workflows.board.blockedFallback')"
       >
         <span class="blocked-badge">!</span>
       </a-tooltip>
@@ -30,30 +30,49 @@
         class="card-agent"
       >
         <img
-          v-if="task.pipeline_avatar_snapshot"
-          :src="task.pipeline_avatar_snapshot"
+          v-if="agentAvatar"
+          :src="agentAvatar"
           alt=""
         />
-        {{ agentName(task) }}
+        <span class="card-agent-name" :title="agentName(task)">
+          {{ agentName(task) }}
+        </span>
       </span>
       <span
         v-else
         class="card-agent unassigned"
       >
-        未指派流水线
+        <span
+          class="card-agent-name"
+          :title="t('workflows.task.common.unassignedExecution')"
+        >
+          {{ t('workflows.task.common.unassignedExecution') }}
+        </span>
       </span>
       <span
         v-if="task.updated_at"
         class="card-updated"
+        :title="t('workflows.board.updatedAt', { time: relativeTime(task.updated_at) })"
+        :aria-label="t('workflows.board.updatedAt', { time: relativeTime(task.updated_at) })"
       >
-        更新于 {{ relativeTime(task.updated_at) }}
+        {{ relativeTime(task.updated_at) }}
       </span>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { TaskBoardTask } from '@/types/task-board'
+import { useAppI18n } from '@/i18n'
+import { useLocale } from '@/composables/useLocale'
+import { useCliNames } from '@/composables/useCliNames'
+import cliExecutionLogo from '@/assets/icons/task-composer-cli.svg'
+
+const { t } = useAppI18n()
+const { locale } = useLocale()
+const { cliDisplayName, ensureLoaded } = useCliNames()
+void ensureLoaded()
 
 const props = withDefaults(defineProps<{
   task: TaskBoardTask
@@ -72,8 +91,21 @@ function handleDragStart(event: DragEvent) {
 }
 
 function agentName(task: TaskBoardTask) {
+  if (task.execution_mode === 'vibe_coding' && task.execution_tool === 'codex') return 'Codex'
+	if (task.execution_mode === 'expert_group') return task.expert_group_name_snapshot || ''
+  // 需求 2204：CLI 直接执行的任务在看板卡片上显示 CLI 名称，与其他执行方式保持一致，
+  // 不再落到「未指派执行方式」。看板列表接口不透出模型，卡片也不展示模型。
+  if (task.execution_mode === 'cli') return cliDisplayName(task.execution_tool || '')
   return task.pipeline_name_snapshot || task.agent_name_snapshot || ''
 }
+
+/** 卡片头像：CLI 用固定 logo，其余沿用各自快照。 */
+const agentAvatar = computed(() => {
+  const task = props.task
+  if (task.execution_mode === 'cli') return cliExecutionLogo
+  if (task.execution_mode === 'expert_group') return task.expert_group_avatar_snapshot
+  return task.pipeline_avatar_snapshot
+})
 
 function priorityClass(priority?: string): 'high' | 'medium' | 'low' {
   if (priority === '高' || priority === 'high') return 'high'
@@ -82,24 +114,24 @@ function priorityClass(priority?: string): 'high' | 'medium' | 'low' {
 }
 
 function priorityLabel(priority?: string) {
-  if (priority === '高' || priority === 'high') return '高'
-  if (priority === '中' || priority === 'medium') return '中'
-  return '低'
+  if (priority === '高' || priority === 'high') return t('workflows.task.priority.high')
+  if (priority === '中' || priority === 'medium') return t('workflows.task.priority.medium')
+  return t('workflows.task.priority.low')
 }
 
 function relativeTime(timestamp: number) {
   const value = timestamp < 1e12 ? timestamp * 1000 : timestamp
   const elapsed = Math.max(0, Date.now() - value)
   const minutes = Math.floor(elapsed / 60000)
-  if (minutes < 1) return '刚刚'
-  if (minutes < 60) return `${minutes}分钟前`
+  if (minutes < 1) return t('workflows.board.justNow')
+  if (minutes < 60) return t('workflows.board.minutesAgo', { count: minutes })
 
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}小时前`
+  if (hours < 24) return t('workflows.board.hoursAgo', { count: hours })
 
   const days = Math.floor(hours / 24)
-  if (days < 30) return `${days}天前`
-  return new Date(value).toLocaleDateString('zh-CN')
+  if (days < 30) return t('workflows.board.daysAgo', { count: days })
+  return new Date(value).toLocaleDateString(locale.value)
 }
 </script>
 
@@ -166,9 +198,9 @@ function relativeTime(timestamp: number) {
 }
 
 .card-footer {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   font-size: 12px;
   line-height: 20px;
@@ -176,20 +208,28 @@ function relativeTime(timestamp: number) {
 
 .card-agent {
   display: flex;
-  max-width: 72%;
+  min-width: 0;
   overflow: hidden;
   align-items: center;
   gap: 7px;
   color: #8c8c8c;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .card-agent img {
   width: 16px;
   height: 16px;
+  flex: 0 0 16px;
   border-radius: 50%;
   object-fit: cover;
+}
+
+.card-agent-name {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-agent.unassigned {
@@ -223,7 +263,6 @@ function relativeTime(timestamp: number) {
 }
 
 .card-updated {
-  flex-shrink: 0;
   color: #8c8c8c;
   white-space: nowrap;
 }

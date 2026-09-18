@@ -1,0 +1,19 @@
+{
+  "actions": {
+    "cancel": "Cancel",
+    "close": "Close",
+    "confirm": "Confirm",
+    "delete": "Delete",
+    "edit": "Edit",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "save": "Save"
+  },
+  "states": {
+    "noData": "No data"
+  },
+  "feedback": {
+    "languageChangedRetry": "The language changed. Retry to get the message in the current language.",
+    "completedAfterLanguageChange": "The operation completed. Refresh to see the latest message in the current language."
+  }
+}

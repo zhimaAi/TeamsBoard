@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
+
 defineProps<{
   title: string
   description?: string
@@ -8,7 +12,7 @@ defineProps<{
 <template>
   <div class="placeholder-page">
     <a-card :title="title">
-      <a-empty :description="description || `${title}功能开发中`" />
+      <a-empty :description="description || t('components.placeholder.developing', { title })" />
     </a-card>
   </div>
 </template>

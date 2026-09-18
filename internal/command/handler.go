@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/ssh"
 
+	"goteams-client/internal/i18n"
 	"goteams-client/internal/secrets"
 	"goteams-client/internal/storage"
 )
@@ -114,7 +115,7 @@ func (h *Handler) ListGitProjects(c *gin.Context) {
 		 LEFT JOIN gt_ssh_profiles s ON s.id = p.ssh_profile_id
 		 ORDER BY p.id ASC`)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询 Git 项目失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer rows.Close()
@@ -123,7 +124,7 @@ func (h *Handler) ListGitProjects(c *gin.Context) {
 	for rows.Next() {
 		var p GitProject
 		if err := rows.Scan(&p.ID, &p.Name, &p.SSHProfileID, &p.SSHName, &p.RemoteWorkDir, &p.CreatedAt, &p.UpdatedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "扫描 Git 项目数据失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		list = append(list, p)
@@ -144,15 +145,15 @@ func (h *Handler) RunGitCommand(c *gin.Context) {
 		Args      []string `json:"args"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	if input.Command == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "command 不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	if !gitWhitelist[input.Command] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "不允许执行的 Git 子命令: " + input.Command})
+		i18n.Error(c, http.StatusBadRequest, "common_command_not_allowed", "")
 		return
 	}
 
@@ -167,21 +168,21 @@ func (h *Handler) RunGitCommand(c *gin.Context) {
 		 WHERE p.id = ?`, input.ProjectID).
 		Scan(&remoteWorkDir, &sshConfig.Host, &sshConfig.Port, &sshConfig.Username, &secretRef, &sshConfig.KeyPath)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Git 项目或关联的 SSH 配置不存在"})
+		i18n.Error(c, http.StatusNotFound, "common_record_not_found", "")
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询 Git 项目失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if secretRef != "" {
 		if h.secretStore == nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "SSH 密钥存储未初始化"})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		sshConfig.Password, err = h.secretStore.Get(secretRef)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取 SSH 凭据失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 	}
@@ -202,7 +203,7 @@ func (h *Handler) ListDockerProjects(c *gin.Context) {
 	rows, err := h.dbRef.Get().QueryContext(c.Request.Context(),
 		`SELECT id, name, ssh_profile_id, compose_file_path, created_at, updated_at FROM gt_docker_projects ORDER BY id ASC`)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询 Docker 项目失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer rows.Close()
@@ -211,7 +212,7 @@ func (h *Handler) ListDockerProjects(c *gin.Context) {
 	for rows.Next() {
 		var p DockerProject
 		if err := rows.Scan(&p.ID, &p.Name, &p.SSHProfileID, &p.ComposeFilePath, &p.CreatedAt, &p.UpdatedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "扫描 Docker 项目数据失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		list = append(list, p)
@@ -232,15 +233,15 @@ func (h *Handler) RunDockerCommand(c *gin.Context) {
 		Args      []string `json:"args"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	if input.Command == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "command 不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	if !dockerWhitelist[input.Command] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "不允许执行的 Docker 子命令: " + input.Command})
+		i18n.Error(c, http.StatusBadRequest, "common_command_not_allowed", "")
 		return
 	}
 
@@ -255,21 +256,21 @@ func (h *Handler) RunDockerCommand(c *gin.Context) {
 		 WHERE p.id = ?`, input.ProjectID).
 		Scan(&composeFilePath, &sshConfig.Host, &sshConfig.Port, &sshConfig.Username, &secretRef, &sshConfig.KeyPath)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Docker 项目或关联的 SSH 配置不存在"})
+		c.JSON(http.StatusNotFound, gin.H{"error": i18n.T(c, "command_git_project_or_ssh_not_found")})
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询 Docker 项目失败: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "command_docker_projects_query_failed")})
 		return
 	}
 	if secretRef != "" {
 		if h.secretStore == nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "SSH 密钥存储未初始化"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "command_ssh_store_uninitialized")})
 			return
 		}
 		sshConfig.Password, err = h.secretStore.Get(secretRef)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取 SSH 凭据失败: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "command_ssh_credential_read_failed")})
 			return
 		}
 	}
@@ -318,7 +319,7 @@ func (h *Handler) ListHistory(c *gin.Context) {
 		rows, err = h.dbRef.Get().QueryContext(c.Request.Context(), query, pageSize, offset)
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询命令历史失败: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "command_history_query_failed")})
 		return
 	}
 	defer rows.Close()
@@ -328,7 +329,7 @@ func (h *Handler) ListHistory(c *gin.Context) {
 		var r CommandRun
 		var argsJSON string
 		if err := rows.Scan(&r.ID, &r.CommandType, &r.ProjectID, &r.Command, &argsJSON, &r.WorkDir, &r.Status, &r.ExitCode, &r.Output, &r.DurationMs, &r.StartedAt, &r.FinishedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "扫描命令历史数据失败: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "command_history_scan_failed")})
 			return
 		}
 		r.Args = parseStringSlice(argsJSON)
@@ -361,7 +362,7 @@ func (h *Handler) ListHistory(c *gin.Context) {
 func (h *Handler) GetHistoryDetail(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "command_history_id_invalid")})
 		return
 	}
 
@@ -371,11 +372,11 @@ func (h *Handler) GetHistoryDetail(c *gin.Context) {
 		`SELECT id, command_type, project_id, command, args_json, work_dir, status, exit_code, output, duration_ms, started_at, finished_at FROM gt_command_runs WHERE id=?`, id).
 		Scan(&r.ID, &r.CommandType, &r.ProjectID, &r.Command, &argsJSON, &r.WorkDir, &r.Status, &r.ExitCode, &r.Output, &r.DurationMs, &r.StartedAt, &r.FinishedAt)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "命令记录不存在"})
+		c.JSON(http.StatusNotFound, gin.H{"error": i18n.T(c, "command_history_record_not_found")})
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询命令记录失败: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "command_history_detail_query_failed")})
 		return
 	}
 
@@ -426,11 +427,11 @@ func (h *Handler) executeAndRecordSSH(
 		 VALUES (?, ?, ?, ?, ?, 'running', -1, '', 0, ?, 0)`,
 		commandType, projectID, command, argsJSON, remoteWorkDir, startedAt)
 	if err != nil {
-		return RunResult{Status: "failed", ExitCode: -1, Output: "记录命令执行失败: " + err.Error()}
+		return RunResult{Status: "failed", ExitCode: -1, Output: i18n.WithLocale(i18n.LocaleFromContext(ctx), "command_run_record_failed")}
 	}
 	runID, err := res.LastInsertId()
 	if err != nil {
-		return RunResult{Status: "failed", ExitCode: -1, Output: "获取命令运行记录 ID 失败: " + err.Error()}
+		return RunResult{Status: "failed", ExitCode: -1, Output: i18n.WithLocale(i18n.LocaleFromContext(ctx), "command_run_id_failed")}
 	}
 
 	execCtx, cancel := context.WithTimeout(ctx, commandTimeout)

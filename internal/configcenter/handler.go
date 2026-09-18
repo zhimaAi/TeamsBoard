@@ -13,6 +13,7 @@ import (
 
 	"goteams-client/internal/applog"
 	"goteams-client/internal/config"
+	"goteams-client/internal/i18n"
 	"goteams-client/internal/secrets"
 	"goteams-client/internal/storage"
 )
@@ -111,14 +112,14 @@ func (h *Handler) listConfig(table string) gin.HandlerFunc {
 		rows, err := h.dbRef.Get().Query(fmt.Sprintf(
 			"SELECT * FROM %s ORDER BY id DESC LIMIT ? OFFSET ?", table), pageSize, offset)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		defer rows.Close()
 
 		results, err := rowsToJSON(rows)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 
@@ -141,21 +142,21 @@ func (h *Handler) deleteConfig(table string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseID(c)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID"})
+			i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "")
 			return
 		}
 		result, err := h.dbRef.Get().Exec(fmt.Sprintf("DELETE FROM %s WHERE id = ?", table), id)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		rows, err := result.RowsAffected()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		if rows == 0 {
-			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
+			i18n.Error(c, http.StatusNotFound, "common_record_not_found", "")
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})

@@ -22,6 +22,7 @@ import (
 	"goteams-client/internal/applog"
 	"goteams-client/internal/cloud"
 	"goteams-client/internal/config"
+	"goteams-client/internal/i18n"
 	"goteams-client/internal/secrets"
 )
 
@@ -128,14 +129,14 @@ func (s *Server) loadBrowserSessions() {
 func (s *Server) handleBrowserTicket(c *gin.Context) {
 	ticket := c.Query("ticket")
 	if ticket == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 ticket 参数"})
+		i18n.Error(c, http.StatusBadRequest, "auth_ticket_required", "ticket_required")
 		return
 	}
 
 	// Consume the launch ticket atomically so it cannot be replayed by another
 	// process after the desktop window has established its session.
 	if !s.consumeBrowserTicket(ticket) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "无效的 ticket"})
+		i18n.Error(c, http.StatusForbidden, "auth_ticket_invalid", "ticket_invalid")
 		return
 	}
 
@@ -185,14 +186,14 @@ func (s *Server) consumeBrowserTicket(candidate string) bool {
 
 func (s *Server) handleDesktopShutdown(c *gin.Context) {
 	if !isLoopbackRequest(c.Request.RemoteAddr) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "desktop shutdown only accepts loopback requests"})
+		i18n.Error(c, http.StatusForbidden, "auth_desktop_loopback_required", "desktop_loopback_required")
 		return
 	}
 	token := c.GetHeader("X-GoTeams-Desktop-Token")
 	expected := s.config.DesktopToken
 	if expected == "" || len(token) != len(expected) ||
 		subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
-		c.JSON(http.StatusForbidden, gin.H{"error": "invalid desktop token"})
+		i18n.Error(c, http.StatusForbidden, "auth_desktop_token_invalid", "desktop_token_invalid")
 		return
 	}
 	c.Status(http.StatusAccepted)
@@ -209,11 +210,11 @@ func (s *Server) handleLogin(c *gin.Context) {
 		ServerURL  string `json:"server_url"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "request_invalid")
 		return
 	}
 	if body.Username == "" || body.Password == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "用户名和密码不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "auth_credentials_required", "credentials_required")
 		return
 	}
 
@@ -231,12 +232,12 @@ func (s *Server) handleLogin(c *gin.Context) {
 	case "custom":
 		serverURL := strings.TrimSpace(body.ServerURL)
 		if serverURL == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "请输入自定义云端地址"})
+			i18n.Error(c, http.StatusBadRequest, "auth_custom_url_required", "custom_url_required")
 			return
 		}
 		norm, err := normalizeServerURL(serverURL)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "云端地址无效: " + err.Error()})
+			i18n.Error(c, http.StatusBadRequest, "auth_cloud_url_invalid", "cloud_url_invalid")
 			return
 		}
 		normalized = norm
@@ -249,7 +250,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 		secretDir = profileDir
 	default: // official
 		if s.config.CloudClient == nil || !s.config.CloudClient.IsConfigured() {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "官方云端 API 地址未配置，请先设置 config.ini 中的 api_base_url 或使用自定义地址登录"})
+			i18n.Error(c, http.StatusBadRequest, "auth_official_url_missing", "official_url_missing")
 			return
 		}
 		client = s.config.CloudClient
@@ -264,7 +265,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 			}
 		}
 		if normalized == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "官方云端 API 地址无效，请检查 config.ini 中的 api_base_url"})
+			i18n.Error(c, http.StatusBadRequest, "auth_official_url_invalid", "official_url_invalid")
 			return
 		}
 		secretDir = profileDir
@@ -273,22 +274,18 @@ func (s *Server) handleLogin(c *gin.Context) {
 	// 2. Call the cloud to log in (any account is acceptable, as long as the password is correct)
 	loginResp, err := client.Login(c.Request.Context(), body.Username, body.Password)
 	if err != nil {
-		errMsg := "登录失败: " + err.Error()
-		if apiErr, ok := err.(*cloud.APIError); ok {
-			errMsg = "登录失败: " + apiErr.Message
-		}
-		c.JSON(http.StatusUnauthorized, gin.H{"error": errMsg})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": i18n.T(c, "auth_login_failed"), "code": "login_failed"})
 		return
 	}
 
 	// 3. Keep the fixed local Profile and create the optional cloud account session.
 	if err := s.switchProfile(c.Request.Context(), profileDir, secretDir); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "切换本地数据目录失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "auth_profile_switch_failed", "profile_switch_failed")
 		return
 	}
 
 	if s.config.AccountMgr == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "账号管理器未初始化"})
+		i18n.Error(c, http.StatusInternalServerError, "auth_account_manager_missing", "account_manager_missing")
 		return
 	}
 
@@ -310,7 +307,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 		opts,
 	)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建账号会话失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "auth_session_create_failed", "session_create_failed")
 		return
 	}
 

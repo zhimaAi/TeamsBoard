@@ -1,0 +1,8 @@
+{
+  "gitProjects": "Git 项目", "desktop": "客户端", "name": "名称", "type": "类型", "host": "主机", "port": "端口", "database": "数据库", "username": "用户名", "password": "密码", "sshTunnel": "SSH 隧道", "none": "不使用",
+  "databaseConnections": "数据库连接", "databaseDescription": "管理 MySQL / PostgreSQL 连接，可选用已配置的 SSH 隧道。密码只保存在系统安全存储中。", "sshConfig": "SSH 配置", "sshDescription": "供数据库隧道和远程命令使用。密码写入系统安全存储，不会在列表中返回。",
+  "desktopClient": "桌面客户端", "closeWindow": "关闭主窗口时", "closeHint": "最小化到系统托盘后，正在执行的任务会继续运行。", "hideToTray": "最小化到系统托盘", "quit": "退出 TeamsBoard", "readDesktopFailed": "读取桌面客户端设置失败", "saveDesktopFailed": "保存桌面客户端设置失败",
+  "modelProviders": "模型服务商", "modelConfigs": "模型配置", "provider": "服务商", "modelName": "模型名称", "profileName": "配置名称", "apiAddress": "API 地址", "openAICompatible": "OpenAI 兼容", "custom": "自定义", "maxTokens": "最大 Token",
+  "modelProviderDescription": "配置 OpenAI 兼容、Anthropic、Ollama 或自定义模型接口。密钥保存在系统安全存储中。", "modelConfigDescription": "选择服务商并配置具体模型参数，CLI 配置可引用这里的模型。", "modelProviderRequired": "请先新增模型服务商，再创建模型配置",
+  "exampleServer": "例如：测试服务器", "exampleDatabase": "例如：开发库", "exampleOpenAI": "例如：OpenAI", "exampleModelProfile": "例如：默认编码模型"
+}

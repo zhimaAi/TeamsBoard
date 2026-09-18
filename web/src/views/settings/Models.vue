@@ -2,42 +2,44 @@
 import { computed, onMounted, ref } from 'vue'
 import apiClient from '@/api/client'
 import ConfigResourceTable, { type ConfigField } from '@/components/ConfigResourceTable.vue'
+import { useAppI18n } from '@/i18n'
 
 type Item = Record<string, unknown>
 const providers = ref<Item[]>([])
 const providerTable = ref<InstanceType<typeof ConfigResourceTable> | null>(null)
+const { t } = useAppI18n()
 
-const providerFields: ConfigField[] = [
-  { key: 'name', label: '名称', required: true, placeholder: '例如：OpenAI' },
+const providerFields = computed<ConfigField[]>(() => [
+  { key: 'name', label: t('settings.name'), required: true, placeholder: t('settings.exampleOpenAI') },
   {
     key: 'provider_type',
-    label: '类型',
+    label: t('settings.type'),
     type: 'select',
     required: true,
     defaultValue: 'openai',
     options: [
-      { label: 'OpenAI 兼容', value: 'openai' },
+      { label: t('settings.openAICompatible'), value: 'openai' },
       { label: 'Anthropic', value: 'anthropic' },
       { label: 'Ollama', value: 'ollama' },
-      { label: '自定义', value: 'custom' },
+      { label: t('settings.custom'), value: 'custom' },
     ],
   },
-  { key: 'api_base_url', label: 'API 地址', placeholder: 'https://api.openai.com/v1' },
+  { key: 'api_base_url', label: t('settings.apiAddress'), placeholder: 'https://api.openai.com/v1' },
   { key: 'api_key', label: 'API Key', type: 'password', table: false },
-]
+])
 
 const profileFields = computed<ConfigField[]>(() => [
-  { key: 'name', label: '配置名称', required: true, placeholder: '例如：默认编码模型' },
+  { key: 'name', label: t('settings.profileName'), required: true, placeholder: t('settings.exampleModelProfile') },
   {
     key: 'provider_id',
-    label: '服务商',
+    label: t('settings.provider'),
     type: 'select',
     required: true,
     options: providers.value.map((item) => ({ label: String(item.name), value: Number(item.id) })),
   },
-  { key: 'model_name', label: '模型名称', required: true, placeholder: 'gpt-5' },
+  { key: 'model_name', label: t('settings.modelName'), required: true, placeholder: 'gpt-5' },
   { key: 'temperature', label: 'Temperature', type: 'number', defaultValue: 0.7 },
-  { key: 'max_tokens', label: '最大 Token', type: 'number', defaultValue: 4096 },
+  { key: 'max_tokens', label: t('settings.maxTokens'), type: 'number', defaultValue: 4096 },
 ])
 
 async function loadProviders() {
@@ -52,17 +54,17 @@ onMounted(loadProviders)
   <a-space direction="vertical" :size="16" style="width: 100%">
     <ConfigResourceTable
       ref="providerTable"
-      title="模型服务商"
+      :title="t('settings.modelProviders')"
       endpoint="/config/model-providers"
-      description="配置 OpenAI 兼容、Anthropic、Ollama 或自定义模型接口。密钥保存在系统安全存储中。"
+      :description="t('settings.modelProviderDescription')"
       :fields="providerFields"
       @changed="loadProviders"
     />
     <ConfigResourceTable
-      title="模型配置"
+      :title="t('settings.modelConfigs')"
       endpoint="/config/model-profiles"
-      description="选择服务商并配置具体模型参数，CLI 配置可引用这里的模型。"
-      empty-text="请先新增模型服务商，再创建模型配置"
+      :description="t('settings.modelConfigDescription')"
+      :empty-text="t('settings.modelProviderRequired')"
       :fields="profileFields"
     />
   </a-space>

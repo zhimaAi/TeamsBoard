@@ -2,16 +2,16 @@
   <div class="projects-page">
     <header class="page-bar">
       <div>
-        <h1>项目</h1>
+        <h1>{{ t('projects.title') }}</h1>
         <i aria-hidden="true" />
-        <small>管理本地可用项目</small>
+        <small>{{ t('projects.manageLocal') }}</small>
       </div>
     </header>
 
     <main class="projects-content">
       <div class="content-title">
         <div class="content-heading">
-          <h2>本地项目</h2>
+          <h2>{{ t('projects.localProjects') }}</h2>
           <span class="project-count">{{ projects.length }}</span>
         </div>
         <a-button
@@ -27,7 +27,7 @@
               class="add-project-icon"
             />
           </template>
-          添加
+          {{ t('projects.add') }}
         </a-button>
       </div>
 
@@ -38,12 +38,9 @@
             alt=""
             aria-hidden="true"
           />
-          <strong>项目用于绑定本地目录作为项目目录</strong>
+          <strong>{{ t('projects.guideTitle') }}</strong>
         </div>
-        <p>
-          新建任务时选择「所属项目」，会自动将该项目目录作为任务的工作目录；勾选「关联项目」也会自动把对应目录加入任务的关联目录，方便
-          Agent 在正确的代码目录中工作。
-        </p>
+        <p>{{ t('projects.guideDescription') }}</p>
       </div>
 
       <a-spin :spinning="loading">
@@ -93,7 +90,7 @@
                   <a-button
                     type="text"
                     size="small"
-                    :aria-label="`管理项目“${project.name}”`"
+                    :aria-label="t('projects.manageProject', { name: project.name })"
                     aria-haspopup="menu"
                     :aria-expanded="activeMenuUuid === project.uuid"
                   >
@@ -103,14 +100,14 @@
                     <a-menu>
                       <a-menu-item @click="openModal(project)">
                         <EditOutlined />
-                        编辑
+                        {{ t('projects.edit') }}
                       </a-menu-item>
                       <a-menu-item
                         danger
                         @click="remove(project)"
                       >
                         <DeleteOutlined />
-                        删除
+                        {{ t('projects.delete') }}
                       </a-menu-item>
                     </a-menu>
                   </template>
@@ -118,7 +115,7 @@
               </div>
             </div>
 
-            <p class="project-description">绑定本地目录，任务关联时作为工作目录</p>
+            <p class="project-description">{{ t('projects.cardDescription') }}</p>
 
             <div class="directory">
               <img
@@ -128,7 +125,7 @@
                 class="directory-icon"
               />
               <span :title="project.local_dir">{{ project.local_dir }}</span>
-              <em>项目目录</em>
+              <em>{{ t('projects.projectDirectory') }}</em>
             </div>
 
             <footer>
@@ -138,7 +135,7 @@
                   alt=""
                   aria-hidden="true"
                 />
-                <span>本地项目</span>
+                <span>{{ t('projects.localProject') }}</span>
               </span>
             </footer>
           </article>
@@ -146,7 +143,7 @@
 
         <a-empty
           v-if="!loading && !projects.length"
-          description="暂无项目，点击右上角“添加”创建"
+          :description="t('projects.emptyHint')"
         />
       </a-spin>
     </main>
@@ -179,6 +176,9 @@ import projectModalImageIcon from '@/assets/icons/project-modal-icon-image.svg'
 import { projectIconPreset } from '@/constants/project-icons'
 import ProjectFormModal from '@/views/projects/components/ProjectFormModal.vue'
 import type { LocalProject, ProjectIconKind } from '@/types/project'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 const PROJECT_CARD_ICONS: Partial<Record<ProjectIconKind, string>> = {
   folder: projectFolderIcon,
@@ -216,7 +216,7 @@ async function load(showLoading = true) {
   try {
     projects.value = (await apiClient.get<{ items: LocalProject[] }>('/projects')).items || []
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '项目加载失败')
+    message.error(error instanceof Error ? error.message : t('projects.loadFailed'))
   } finally {
     if (showLoading) loading.value = false
   }
@@ -232,8 +232,8 @@ function remove(project: LocalProject) {
   activeMenuUuid.value = ''
   deleteConfirm?.destroy()
   deleteConfirm = Modal.confirm({
-    title: `删除项目“${project.name}”？`,
-    content: '仅删除项目配置，不会删除本地目录和已有任务。',
+    title: t('projects.deleteTitle', { name: project.name }),
+    content: t('projects.deleteDescription'),
     okType: 'danger',
     onOk: async () => {
       await apiClient.delete(`/projects/${project.uuid}`)

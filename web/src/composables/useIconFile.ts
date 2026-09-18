@@ -1,4 +1,5 @@
 import { onBeforeUnmount, ref, shallowRef } from 'vue'
+import { t } from '@/i18n'
 
 export const MAX_ICON_FILE_SIZE = 2 * 1024 * 1024
 export const ICON_FILE_ACCEPT = 'image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp'
@@ -16,10 +17,10 @@ export function useIconFile() {
 
   function selectFile(nextFile: File) {
     if (!SUPPORTED_ICON_TYPES.has(nextFile.type)) {
-      throw new Error('仅支持 PNG、JPEG、WebP 图片')
+      throw new Error(t('components.errors.iconType'))
     }
     if (nextFile.size > MAX_ICON_FILE_SIZE) {
-      throw new Error('图片大小不能超过 2MB')
+      throw new Error(t('components.errors.iconSize'))
     }
 
     releasePreview()

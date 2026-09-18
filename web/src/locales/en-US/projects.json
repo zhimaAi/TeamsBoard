@@ -1,0 +1,39 @@
+{
+  "title": "Projects",
+  "newProject": "New project",
+  "editProject": "Edit project",
+  "loadFailed": "Failed to load projects",
+  "icon": "Project icon",
+  "selectCustomIcon": "Choose a custom project icon",
+  "selectPresetIcon": "Choose the {type} project icon",
+  "iconHint": "Recommended size: 100×100 px. PNG, JPEG, or WebP up to 2 MB.",
+  "name": "Project name",
+  "nameLimit": "(up to 30 characters)",
+  "namePlaceholder": "Enter a project name",
+  "directory": "Project directory",
+  "directoryHint": "(bind a local directory by choosing a folder)",
+  "directoryPlaceholder": "Choose a local project directory",
+  "selectDirectory": "Choose a local project directory",
+  "cancel": "Cancel",
+  "confirm": "Confirm",
+  "selectImageFailed": "Failed to choose image",
+  "openDirectoryFailed": "Failed to open the folder picker",
+  "selectImage": "Choose an image to upload",
+  "updated": "Project updated",
+  "created": "Project created",
+  "saveFailed": "Failed to save project"
+  ,"manageLocal": "Manage locally available projects"
+  ,"localProjects": "Local projects"
+  ,"add": "Add"
+  ,"guideTitle": "Projects bind local directories as project directories"
+  ,"guideDescription": "Selecting a project for a new task uses its directory as the working directory. Related projects also add their directories so agents can work in the correct codebase."
+  ,"manageProject": "Manage project “{name}”"
+  ,"edit": "Edit"
+  ,"delete": "Delete"
+  ,"cardDescription": "Bind a local directory for related tasks"
+  ,"projectDirectory": "Project directory"
+  ,"localProject": "Local project"
+  ,"emptyHint": "No projects. Select Add in the upper-right corner to create one."
+  ,"deleteTitle": "Delete project “{name}”?"
+  ,"deleteDescription": "Only the project configuration will be deleted. The local directory and existing tasks remain unchanged."
+}

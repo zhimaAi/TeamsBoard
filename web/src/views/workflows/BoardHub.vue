@@ -8,6 +8,9 @@ import TaskBoard from './components/TaskBoard.vue'
 // import Workbench from '@/views/workbench/index.vue'
 import boardViewIcon from '@/assets/board-view.svg'
 import teamViewIcon from '@/assets/team-view.svg'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 type BoardTab = 'local' | 'team'
 // const route = useRoute()
@@ -26,17 +29,17 @@ const boardRef = ref<{ openCreate: () => void }>()
 <template>
   <div class="board-hub">
     <header class="board-tabs">
-      <div class="board-heading"><h1>看板</h1></div>
+      <div class="board-heading"><h1>{{ t('workflows.board.title') }}</h1></div>
       <div class="board-actions">
-        <nav aria-label="看板视图切换">
-          <button :class="{ active: activeTab === 'local' }" @click="activeTab='local'"><img :src="boardViewIcon" alt="" />看板</button>
-          <a-tooltip title="功能开发中，即将上线">
+        <nav :aria-label="t('workflows.board.viewSwitch')">
+          <button :class="{ active: activeTab === 'local' }" @click="activeTab='local'"><img :src="boardViewIcon" alt="" />{{ t('workflows.board.title') }}</button>
+          <a-tooltip :title="t('workflows.board.comingSoon')">
             <span class="team-tab-wrapper">
-              <button :class="{ active: activeTab === 'team' }" disabled><img :src="teamViewIcon" alt="" />团队工作</button>
+              <button :class="{ active: activeTab === 'team' }" disabled><img :src="teamViewIcon" alt="" />{{ t('workflows.board.teamWork') }}</button>
             </span>
           </a-tooltip>
         </nav>
-        <a-button v-if="activeTab === 'local'" class="create-task" type="primary" @click="boardRef?.openCreate()"><template #icon><PlusOutlined /></template>新增任务</a-button>
+        <a-button v-if="activeTab === 'local'" class="create-task" type="primary" @click="boardRef?.openCreate()"><template #icon><PlusOutlined /></template>{{ t('workflows.board.newTask') }}</a-button>
       </div>
     </header>
     <main class="board-content" :class="{ 'team-content': activeTab === 'team' }">

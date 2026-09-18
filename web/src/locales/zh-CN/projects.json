@@ -1,0 +1,39 @@
+{
+  "title": "项目",
+  "newProject": "新建项目",
+  "editProject": "编辑项目",
+  "loadFailed": "项目加载失败",
+  "icon": "项目图标",
+  "selectCustomIcon": "选择自定义项目图标",
+  "selectPresetIcon": "选择 {type} 项目图标",
+  "iconHint": "建议尺寸 100×100px，支持 PNG、JPEG、WebP，大小不超过 2MB",
+  "name": "项目名称",
+  "nameLimit": "（最多 30 个字）",
+  "namePlaceholder": "请输入项目名称",
+  "directory": "项目目录",
+  "directoryHint": "（绑定本地目录，选择文件夹）",
+  "directoryPlaceholder": "请选择项目本地目录",
+  "selectDirectory": "选择项目本地目录",
+  "cancel": "取消",
+  "confirm": "确定",
+  "selectImageFailed": "图片选择失败",
+  "openDirectoryFailed": "无法打开目录选择器",
+  "selectImage": "请选择上传图片",
+  "updated": "项目已更新",
+  "created": "项目已创建",
+  "saveFailed": "项目保存失败"
+  ,"manageLocal": "管理本地可用项目"
+  ,"localProjects": "本地项目"
+  ,"add": "添加"
+  ,"guideTitle": "项目用于绑定本地目录作为项目目录"
+  ,"guideDescription": "新建任务时选择「所属项目」，会自动将该项目目录作为任务的工作目录；勾选「关联项目」也会自动把对应目录加入任务的关联目录，方便 Agent 在正确的代码目录中工作。"
+  ,"manageProject": "管理项目“{name}”"
+  ,"edit": "编辑"
+  ,"delete": "删除"
+  ,"cardDescription": "绑定本地目录，任务关联时作为工作目录"
+  ,"projectDirectory": "项目目录"
+  ,"localProject": "本地项目"
+  ,"emptyHint": "暂无项目，点击右上角“添加”创建"
+  ,"deleteTitle": "删除项目“{name}”？"
+  ,"deleteDescription": "仅删除项目配置，不会删除本地目录和已有任务。"
+}

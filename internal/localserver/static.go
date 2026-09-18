@@ -11,6 +11,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"goteams-client"
+
+	"goteams-client/internal/i18n"
 )
 
 // registerWebUI provides front-end build products embedded during compile time, and falls back to index.html for the front-end history route.
@@ -19,7 +21,7 @@ func registerWebUI(r *gin.Engine) {
 	webFS, diskRoot := resolveWebRoot()
 	r.NoRoute(func(c *gin.Context) {
 		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
-			c.JSON(http.StatusNotFound, gin.H{"error": "接口不存在"})
+			i18n.Error(c, http.StatusNotFound, "localserver_api_not_found", "api_not_found")
 			return
 		}
 		if webFS != nil {
@@ -30,9 +32,7 @@ func registerWebUI(r *gin.Engine) {
 			serveDisk(c, diskRoot)
 			return
 		}
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": "未找到 web/dist，请先执行 npm run build 或打开发前端",
-		})
+		i18n.Error(c, http.StatusServiceUnavailable, "localserver_web_dist_missing", "web_dist_missing")
 	})
 }
 
@@ -75,7 +75,7 @@ func serveEmbedded(c *gin.Context, webFS fs.FS) {
 	// Normalize forward slash paths used by embedded FS and prevent directory traversal
 	clean := path.Clean(rel)
 	if strings.HasPrefix(clean, "..") || filepath.Separator != '/' && strings.Contains(clean, string(filepath.Separator)) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "接口不存在"})
+		i18n.Error(c, http.StatusNotFound, "localserver_api_not_found", "api_not_found")
 		return
 	}
 
@@ -90,7 +90,7 @@ func serveEmbedded(c *gin.Context, webFS fs.FS) {
 		}
 		data, err = fs.ReadFile(webFS, "index.html")
 		if err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "未找到 web/dist"})
+			i18n.Error(c, http.StatusServiceUnavailable, "localserver_web_dist_missing", "web_dist_missing")
 			return
 		}
 		c.Data(http.StatusOK, mime.TypeByExtension(".html"), data)
@@ -106,7 +106,7 @@ func serveDisk(c *gin.Context, webRoot string) {
 	relativePath := strings.TrimPrefix(filepath.Clean(c.Request.URL.Path), string(filepath.Separator))
 	clean := filepath.Clean(relativePath)
 	if strings.HasPrefix(clean, "..") || filepath.IsAbs(clean) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "接口不存在"})
+		i18n.Error(c, http.StatusNotFound, "localserver_api_not_found", "api_not_found")
 		return
 	}
 	candidate := filepath.Join(webRoot, relativePath)

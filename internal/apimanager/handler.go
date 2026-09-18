@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"goteams-client/internal/applog"
+	"goteams-client/internal/i18n"
 	"goteams-client/internal/secrets"
 	"goteams-client/internal/storage"
 )
@@ -111,7 +112,7 @@ func (h *Handler) ListCollections(c *gin.Context) {
 	rows, err := h.dbRef.Get().QueryContext(c.Request.Context(),
 		`SELECT id, name, description, parent_id, created_at, updated_at FROM gt_api_collections ORDER BY id ASC`)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询集合失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer rows.Close()
@@ -120,7 +121,7 @@ func (h *Handler) ListCollections(c *gin.Context) {
 	for rows.Next() {
 		var col Collection
 		if err := rows.Scan(&col.ID, &col.Name, &col.Description, &col.ParentID, &col.CreatedAt, &col.UpdatedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "扫描集合数据失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		list = append(list, col)
@@ -130,7 +131,7 @@ func (h *Handler) ListCollections(c *gin.Context) {
 	if parentIDStr != "" {
 		parentID, err := strconv.ParseInt(parentIDStr, 10, 64)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "parent_id 参数无效"})
+			i18n.Error(c, http.StatusBadRequest, "api_parent_id_invalid", "")
 			return
 		}
 		filtered := make([]Collection, 0, len(list))
@@ -156,11 +157,11 @@ func (h *Handler) CreateCollection(c *gin.Context) {
 		ParentID    int64  `json:"parent_id"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	if input.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name 不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "api_name_required", "")
 		return
 	}
 
@@ -169,13 +170,13 @@ func (h *Handler) CreateCollection(c *gin.Context) {
 		`INSERT INTO gt_api_collections (name, description, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
 		input.Name, input.Description, input.ParentID, now, now)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建集合失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
 	id, err := res.LastInsertId()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取新建集合 ID 失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -202,7 +203,7 @@ func (h *Handler) CreateCollection(c *gin.Context) {
 func (h *Handler) UpdateCollection(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "")
 		return
 	}
 
@@ -214,7 +215,7 @@ func (h *Handler) UpdateCollection(c *gin.Context) {
 		ParentID    *int64  `json:"parent_id"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 
@@ -222,7 +223,7 @@ func (h *Handler) UpdateCollection(c *gin.Context) {
 	args := make([]interface{}, 0, 5)
 	if input.Name != nil {
 		if strings.TrimSpace(*input.Name) == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "集合名称不能为空"})
+			i18n.Error(c, http.StatusBadRequest, "api_collection_name_required", "")
 			return
 		}
 		setClauses = append(setClauses, "name=?")
@@ -234,14 +235,14 @@ func (h *Handler) UpdateCollection(c *gin.Context) {
 	}
 	if input.ParentID != nil {
 		if *input.ParentID == id {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "不能将集合移动到自身下"})
+			i18n.Error(c, http.StatusBadRequest, "api_collection_self_parent", "")
 			return
 		}
 		setClauses = append(setClauses, "parent_id=?")
 		args = append(args, *input.ParentID)
 	}
 	if len(setClauses) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "没有要更新的字段"})
+		i18n.Error(c, http.StatusBadRequest, "api_no_fields", "")
 		return
 	}
 
@@ -252,11 +253,11 @@ func (h *Handler) UpdateCollection(c *gin.Context) {
 	res, err := h.dbRef.Get().ExecContext(c.Request.Context(),
 		`UPDATE gt_api_collections SET `+strings.Join(setClauses, ", ")+` WHERE id=?`, args...)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新集合失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if affected, err := res.RowsAffected(); err == nil && affected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "集合不存在"})
+		i18n.Error(c, http.StatusNotFound, "api_collection_not_found", "")
 		return
 	}
 
@@ -268,12 +269,12 @@ func (h *Handler) UpdateCollection(c *gin.Context) {
 func (h *Handler) DeleteCollection(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "")
 		return
 	}
 	tx, err := h.dbRef.Get().BeginTx(c.Request.Context(), nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "开启事务失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer tx.Rollback()
@@ -282,7 +283,7 @@ func (h *Handler) DeleteCollection(c *gin.Context) {
 	requestRows, err := tx.QueryContext(c.Request.Context(),
 		`SELECT id FROM gt_api_requests WHERE collection_id=?`, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询集合接口失败"})
+		i18n.Error(c, http.StatusInternalServerError, "api_collection_request_query_failed", "")
 		return
 	}
 	for requestRows.Next() {
@@ -301,7 +302,7 @@ func (h *Handler) DeleteCollection(c *gin.Context) {
 	environmentRows, err := tx.QueryContext(c.Request.Context(),
 		`SELECT id, variables_json FROM gt_api_environments WHERE collection_id=?`, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询集合环境失败"})
+		i18n.Error(c, http.StatusInternalServerError, "api_collection_environment_query_failed", "")
 		return
 	}
 	for environmentRows.Next() {
@@ -322,36 +323,36 @@ func (h *Handler) DeleteCollection(c *gin.Context) {
 	// Execution history is local dependent data of the interface.
 	if _, err := tx.ExecContext(c.Request.Context(),
 		`DELETE FROM gt_api_runs WHERE api_id IN (SELECT id FROM gt_api_requests WHERE collection_id=?)`, id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除集合执行历史失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
 	//Delete all requests under the collection
 	if _, err := tx.ExecContext(c.Request.Context(),
 		`DELETE FROM gt_api_requests WHERE collection_id=?`, id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除集合下请求失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if _, err := tx.ExecContext(c.Request.Context(),
 		`DELETE FROM gt_api_folders WHERE collection_id=?`, id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除集合目录失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if _, err := tx.ExecContext(c.Request.Context(),
 		`DELETE FROM gt_api_environments WHERE collection_id=?`, id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除集合环境失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
 	// Delete the collection itself
 	if _, err := tx.ExecContext(c.Request.Context(),
 		`DELETE FROM gt_api_collections WHERE id=?`, id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除集合失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
 	if err := tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "提交事务失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if h.secretStore != nil {
@@ -377,12 +378,12 @@ func (h *Handler) DeleteCollection(c *gin.Context) {
 func (h *Handler) ListRequests(c *gin.Context) {
 	collectionIDStr := c.Query("collection_id")
 	if collectionIDStr == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "collection_id 参数不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "api_collection_id_required", "")
 		return
 	}
 	collectionID, err := strconv.ParseInt(collectionIDStr, 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "collection_id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "api_collection_id_invalid", "")
 		return
 	}
 
@@ -394,7 +395,7 @@ func (h *Handler) ListRequests(c *gin.Context) {
 	if folderIDStr != "" {
 		folderID, parseErr := strconv.ParseInt(folderIDStr, 10, 64)
 		if parseErr != nil || folderID < 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "folder_id 参数无效"})
+			i18n.Error(c, http.StatusBadRequest, "api_folder_id_invalid", "")
 			return
 		}
 		query += ` AND folder_id=?`
@@ -403,7 +404,7 @@ func (h *Handler) ListRequests(c *gin.Context) {
 	query += ` ORDER BY id ASC`
 	rows, err := h.dbRef.Get().QueryContext(c.Request.Context(), query, args...)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询请求失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer rows.Close()
@@ -415,7 +416,7 @@ func (h *Handler) ListRequests(c *gin.Context) {
 		if err := rows.Scan(&req.ID, &req.CollectionID, &req.FolderID, &req.Name, &req.Method, &req.URL,
 			&headersJSON, &queryJSON, &authJSON, &req.Body, &req.BodyType, &bodyFormJSON,
 			&req.EnvironmentID, &req.Description, &req.CreatedAt, &req.UpdatedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "扫描请求数据失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		decodeRequestJSON(&req, headersJSON, queryJSON, authJSON, bodyFormJSON)
@@ -433,7 +434,7 @@ func (h *Handler) ListRequests(c *gin.Context) {
 func (h *Handler) GetRequest(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "")
 		return
 	}
 
@@ -447,11 +448,11 @@ func (h *Handler) GetRequest(c *gin.Context) {
 			&headersJSON, &queryJSON, &authJSON, &req.Body, &req.BodyType, &bodyFormJSON,
 			&req.EnvironmentID, &req.Description, &req.CreatedAt, &req.UpdatedAt)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "请求不存在"})
+		i18n.Error(c, http.StatusNotFound, "api_request_not_found", "")
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询请求失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -478,11 +479,11 @@ func (h *Handler) CreateRequest(c *gin.Context) {
 		Description   string            `json:"description"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	if input.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name 不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "api_name_required", "")
 		return
 	}
 	if input.Method == "" {
@@ -495,23 +496,23 @@ func (h *Handler) CreateRequest(c *gin.Context) {
 
 	headersJSON, err := jsonStringMap(input.Headers)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "序列化 headers 失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	queryJSON, err := json.Marshal(input.Query)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "序列化 query 失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	publicAuth := publicAuthConfig(input.Auth)
 	authJSON, err := json.Marshal(publicAuth)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "序列化 auth 失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	bodyFormJSON, err := json.Marshal(input.BodyForm)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "序列化 body_form 失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -525,18 +526,18 @@ func (h *Handler) CreateRequest(c *gin.Context) {
 		string(queryJSON), string(authJSON), input.Body, input.BodyType, string(bodyFormJSON),
 		input.EnvironmentID, input.Description, now, now)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建请求失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
 	id, err := res.LastInsertId()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取新建请求 ID 失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if err := h.saveAuthSecret(id, input.Auth, false); err != nil {
 		_, _ = h.dbRef.Get().ExecContext(c.Request.Context(), `DELETE FROM gt_api_requests WHERE id=?`, id)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "安全保存认证信息失败"})
+		i18n.Error(c, http.StatusInternalServerError, "api_secret_save_failed", "")
 		return
 	}
 	req := APIRequest{
@@ -565,7 +566,7 @@ func (h *Handler) CreateRequest(c *gin.Context) {
 func (h *Handler) UpdateRequest(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "")
 		return
 	}
 
@@ -585,7 +586,7 @@ func (h *Handler) UpdateRequest(c *gin.Context) {
 		Description   *string           `json:"description"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 
@@ -600,11 +601,11 @@ func (h *Handler) UpdateRequest(c *gin.Context) {
 			&headersJSON, &queryJSON, &authJSON, &req.Body, &req.BodyType, &bodyFormJSON,
 			&req.EnvironmentID, &req.Description, &req.CreatedAt, &req.UpdatedAt)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "请求不存在"})
+		i18n.Error(c, http.StatusNotFound, "api_request_not_found", "")
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询请求失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	decodeRequestJSON(&req, headersJSON, queryJSON, authJSON, bodyFormJSON)
@@ -640,7 +641,7 @@ func (h *Handler) UpdateRequest(c *gin.Context) {
 		nextAuth := *input.Auth
 		preserveSecret := nextAuth.Type == req.Auth.Type && req.Auth.HasSecret && !authHasSecretValue(nextAuth)
 		if err := h.saveAuthSecret(id, nextAuth, preserveSecret); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "安全保存认证信息失败"})
+			i18n.Error(c, http.StatusInternalServerError, "api_secret_save_failed", "")
 			return
 		}
 		req.Auth = publicAuthConfig(nextAuth)
@@ -657,22 +658,22 @@ func (h *Handler) UpdateRequest(c *gin.Context) {
 	}
 	newHeadersJSON, err := jsonStringMap(req.Headers)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "序列化 headers 失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	newQueryJSON, err := json.Marshal(req.Query)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "序列化 query 失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	newAuthJSON, err := json.Marshal(req.Auth)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "序列化 auth 失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	newBodyFormJSON, err := json.Marshal(req.BodyForm)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "序列化 body_form 失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -686,7 +687,7 @@ func (h *Handler) UpdateRequest(c *gin.Context) {
 		string(newQueryJSON), string(newAuthJSON), req.Body, req.BodyType, string(newBodyFormJSON),
 		req.EnvironmentID, req.Description, now, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新请求失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -699,7 +700,7 @@ func (h *Handler) UpdateRequest(c *gin.Context) {
 func (h *Handler) DeleteRequest(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "")
 		return
 	}
 	var collectionID, folderID int64
@@ -707,30 +708,30 @@ func (h *Handler) DeleteRequest(c *gin.Context) {
 		`SELECT collection_id, folder_id FROM gt_api_requests WHERE id = ?`, id,
 	).Scan(&collectionID, &folderID)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "请求不存在"})
+		i18n.Error(c, http.StatusNotFound, "api_request_not_found", "")
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询请求失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	tx, err := h.dbRef.Get().BeginTx(c.Request.Context(), nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "开启事务失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(c.Request.Context(), `DELETE FROM gt_api_runs WHERE api_id=?`, id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除执行历史失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	res, err := tx.ExecContext(c.Request.Context(), `DELETE FROM gt_api_requests WHERE id=?`, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除请求失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "提交事务失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if h.secretStore != nil {
@@ -742,11 +743,11 @@ func (h *Handler) DeleteRequest(c *gin.Context) {
 	}
 	rowsAffected, err := res.RowsAffected()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取删除影响行数失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if rowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "请求不存在"})
+		i18n.Error(c, http.StatusNotFound, "api_request_not_found", "")
 		return
 	}
 
@@ -757,14 +758,14 @@ func (h *Handler) DeleteRequest(c *gin.Context) {
 func (h *Handler) ExecuteRequest(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "")
 		return
 	}
 	var input struct {
 		EnvironmentID int64 `json:"environment_id"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil && err != io.EOF {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 
@@ -778,17 +779,17 @@ func (h *Handler) ExecuteRequest(c *gin.Context) {
 			&headersJSON, &queryJSON, &authJSON, &request.Body, &request.BodyType, &bodyFormJSON,
 			&request.EnvironmentID, &request.Description, &request.CreatedAt, &request.UpdatedAt)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "请求不存在"})
+		i18n.Error(c, http.StatusNotFound, "api_request_not_found", "")
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	decodeRequestJSON(&request, headersJSON, queryJSON, authJSON, bodyFormJSON)
 	request.Auth, err = h.loadAuthSecret(request.ID, request.Auth)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取请求认证信息失败"})
+		i18n.Error(c, http.StatusInternalServerError, "api_auth_read_failed", "")
 		return
 	}
 
@@ -802,33 +803,33 @@ func (h *Handler) ExecuteRequest(c *gin.Context) {
 		err = h.dbRef.Get().QueryRowContext(c.Request.Context(),
 			`SELECT variables_json FROM gt_api_environments WHERE id=?`, effectiveEnvironmentID).Scan(&variablesJSON)
 		if err == sql.ErrNoRows {
-			c.JSON(http.StatusNotFound, gin.H{"error": "环境不存在"})
+			i18n.Error(c, http.StatusNotFound, "api_environment_not_found", "")
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		variables, err = h.resolveEnvironmentVariables(effectiveEnvironmentID, variablesJSON)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取环境 Secret 失败"})
+			i18n.Error(c, http.StatusInternalServerError, "api_environment_secret_read_failed", "")
 			return
 		}
 	}
 
 	requestURL, err := buildRequestURL(request.URL, request.Query, variables)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求 URL 无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	requestBody, bodyReader, contentType, err := buildRequestBody(request, variables)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	outbound, err := http.NewRequestWithContext(c.Request.Context(), strings.ToUpper(request.Method), requestURL, bodyReader)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "创建请求失败: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	for key, value := range request.Headers {
@@ -884,7 +885,7 @@ func (h *Handler) ExecuteRequest(c *gin.Context) {
 		safeResponseBody, boolToInt(truncated), durationMs, errorSummary, startedAt, finishedAt, finishedAt)
 
 	if requestErr != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "请求失败: " + errorSummary})
+		i18n.Error(c, http.StatusBadGateway, "api_request_failed", "")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -912,7 +913,7 @@ func (h *Handler) ListEnvironments(c *gin.Context) {
 	query += ` ORDER BY id ASC`
 	rows, err := h.dbRef.Get().QueryContext(c.Request.Context(), query, args...)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询环境失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer rows.Close()
@@ -923,7 +924,7 @@ func (h *Handler) ListEnvironments(c *gin.Context) {
 		var variablesJSON string
 		if err := rows.Scan(&env.ID, &env.CollectionID, &env.Name, &env.Description,
 			&variablesJSON, &env.CreatedAt, &env.UpdatedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "扫描环境数据失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		vars, perr := parseStringMap(variablesJSON)
@@ -950,11 +951,11 @@ func (h *Handler) CreateEnvironment(c *gin.Context) {
 		Variables    map[string]string `json:"variables"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	if input.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name 不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "api_name_required", "")
 		return
 	}
 	if input.Variables == nil {
@@ -967,26 +968,26 @@ func (h *Handler) CreateEnvironment(c *gin.Context) {
 		 (collection_id, name, description, variables_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
 		input.CollectionID, input.Name, input.Description, "{}", now, now)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建环境失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
 	id, err := res.LastInsertId()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取新建环境 ID 失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	storedVariables, err := h.saveEnvironmentVariables(id, input.Variables, nil)
 	if err != nil {
 		_, _ = h.dbRef.Get().ExecContext(c.Request.Context(), `DELETE FROM gt_api_environments WHERE id=?`, id)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "安全保存环境变量失败"})
+		i18n.Error(c, http.StatusInternalServerError, "api_environment_secret_save_failed", "")
 		return
 	}
 	variablesJSON, _ := jsonStringMap(storedVariables)
 	if _, err := h.dbRef.Get().ExecContext(c.Request.Context(),
 		`UPDATE gt_api_environments SET variables_json=? WHERE id=?`, variablesJSON, id); err != nil {
 		_, _ = h.dbRef.Get().ExecContext(c.Request.Context(), `DELETE FROM gt_api_environments WHERE id=?`, id)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存环境变量失败"})
+		i18n.Error(c, http.StatusInternalServerError, "api_environment_save_failed", "")
 		return
 	}
 	env := Environment{
@@ -1006,7 +1007,7 @@ func (h *Handler) CreateEnvironment(c *gin.Context) {
 func (h *Handler) UpdateEnvironment(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "")
 		return
 	}
 
@@ -1017,7 +1018,7 @@ func (h *Handler) UpdateEnvironment(c *gin.Context) {
 		Variables    map[string]string `json:"variables"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 
@@ -1030,11 +1031,11 @@ func (h *Handler) UpdateEnvironment(c *gin.Context) {
 		Scan(&env.ID, &env.CollectionID, &env.Name, &env.Description,
 			&variablesJSON, &env.CreatedAt, &env.UpdatedAt)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "环境不存在"})
+		i18n.Error(c, http.StatusNotFound, "api_environment_not_found", "")
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询环境失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -1054,7 +1055,7 @@ func (h *Handler) UpdateEnvironment(c *gin.Context) {
 		}
 		env.Variables, err = h.saveEnvironmentVariables(id, input.Variables, vars)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "安全保存环境变量失败"})
+			i18n.Error(c, http.StatusInternalServerError, "api_environment_secret_save_failed", "")
 			return
 		}
 	} else {
@@ -1067,7 +1068,7 @@ func (h *Handler) UpdateEnvironment(c *gin.Context) {
 
 	newVariablesJSON, err := jsonStringMap(env.Variables)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "序列化 variables 失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -1077,7 +1078,7 @@ func (h *Handler) UpdateEnvironment(c *gin.Context) {
 		 SET collection_id=?, name=?, description=?, variables_json=?, updated_at=? WHERE id=?`,
 		env.CollectionID, env.Name, env.Description, newVariablesJSON, now, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新环境失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -1091,13 +1092,13 @@ func (h *Handler) UpdateEnvironment(c *gin.Context) {
 func (h *Handler) DeleteEnvironment(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "")
 		return
 	}
 
 	tx, err := h.dbRef.Get().BeginTx(c.Request.Context(), nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "开启事务失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer tx.Rollback()
@@ -1105,24 +1106,24 @@ func (h *Handler) DeleteEnvironment(c *gin.Context) {
 	if err := tx.QueryRowContext(c.Request.Context(),
 		`SELECT variables_json FROM gt_api_environments WHERE id=?`, id).Scan(&variablesJSON); err != nil {
 		if err == sql.ErrNoRows {
-			c.JSON(http.StatusNotFound, gin.H{"error": "环境不存在"})
+			i18n.Error(c, http.StatusNotFound, "api_environment_not_found", "")
 		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "查询环境失败"})
+			i18n.Error(c, http.StatusInternalServerError, "api_environment_query_failed", "")
 		}
 		return
 	}
 	if _, err := tx.ExecContext(c.Request.Context(),
 		`UPDATE gt_api_requests SET environment_id=0, updated_at=? WHERE environment_id=?`, nowMillis(), id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "解除接口环境引用失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	res, err := tx.ExecContext(c.Request.Context(), `DELETE FROM gt_api_environments WHERE id=?`, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除环境失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "提交事务失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	variables, perr := parseStringMap(variablesJSON)
@@ -1133,11 +1134,11 @@ func (h *Handler) DeleteEnvironment(c *gin.Context) {
 	}
 	rowsAffected, err := res.RowsAffected()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取删除影响行数失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if rowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "环境不存在"})
+		i18n.Error(c, http.StatusNotFound, "api_environment_not_found", "")
 		return
 	}
 

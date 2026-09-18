@@ -1,6 +1,6 @@
 <template>
   <div class="markdown-preview-shell">
-    <a-empty v-if="!content.trim()" :description="emptyText" />
+    <a-empty v-if="!content.trim()" :description="emptyText || t('components.markdown.empty')" />
     <article
       v-else
       ref="previewRef"
@@ -16,6 +16,9 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import MarkdownIt from 'markdown-it'
 import apiClient from '@/api/client'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 const props = withDefaults(defineProps<{
   content?: string
@@ -23,7 +26,7 @@ const props = withDefaults(defineProps<{
   taskUuid?: string
 }>(), {
   content: '',
-  emptyText: '暂无 Markdown 内容',
+  emptyText: '',
   taskUuid: '',
 })
 const emit = defineEmits<{
@@ -72,6 +75,26 @@ markdown.renderer.rules.link_open = (tokens, index, options, env, self) => {
     : self.renderToken(tokens, index, options)
 }
 
+// `#[文件名]` 是输入框文档引用的持久化标记（见 task-progress/documentMention.ts）。
+// 在这里把它解析成行内节点，让历史消息也渲染成文件标签，而不是把内部语法直接摆给用户看。
+const DOC_REFERENCE_RE = /^#\[([^\]\n]{1,200})\]/
+
+markdown.inline.ruler.before('emphasis', 'doc_reference', (state, silent) => {
+  if (state.src.charCodeAt(state.pos) !== 0x23 /* # */) return false
+  const match = DOC_REFERENCE_RE.exec(state.src.slice(state.pos))
+  if (!match) return false
+  if (!silent) {
+    const token = state.push('doc_reference', '', 0)
+    // 同名文件重复引用会带 ` · N` 去重序号，展示时只保留文件名
+    token.content = match[1].split(' · ')[0]
+  }
+  state.pos += match[0].length
+  return true
+})
+
+markdown.renderer.rules.doc_reference = (tokens, index) =>
+  `<span class="markdown-doc-reference">${markdown.utils.escapeHtml(tokens[index].content)}</span>`
+
 // 渲染前归一化：统一换行符、折叠连续空行、去行尾空格，避免脏换行产生多余间距
 function normalizeMarkdown(text: string) {
   return text
@@ -113,7 +136,7 @@ async function hydrateAttachmentImages() {
       } catch {
         if (version !== hydrationVersion || !image.isConnected) return
         image.classList.add('attachment-load-failed')
-        image.title = '附件加载失败'
+        image.title = t('components.markdown.attachmentLoadFailed')
       }
     }),
   )
@@ -139,7 +162,7 @@ async function handleAttachmentClick(event: MouseEvent) {
     download.click()
     URL.revokeObjectURL(objectUrl)
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '附件下载失败')
+    message.error(error instanceof Error ? error.message : t('components.markdown.attachmentDownloadFailed'))
   }
 }
 
@@ -164,6 +187,26 @@ onBeforeUnmount(() => {
 
 .markdown-preview-shell :deep(.ant-empty) {
   margin-top: 96px;
+}
+
+/*
+ * 文档引用标签。与输入框内的引用标签、输入框上方的引用 chip 保持同一套视觉：
+ * 100px 圆角胶囊、浅灰底、深色字，只展示文件名，不暴露 #[...] 内部语法。
+ */
+.markdown-preview :deep(.markdown-doc-reference) {
+  display: inline-block;
+  max-width: 240px;
+  padding: 1px 8px;
+  border-radius: 100px;
+  color: rgba(0, 0, 0, 0.9);
+  background: #f2f2f2;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  vertical-align: -4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .markdown-preview {

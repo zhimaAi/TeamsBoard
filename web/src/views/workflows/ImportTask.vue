@@ -4,6 +4,9 @@ import { message } from 'ant-design-vue'
 import { useRouter } from 'vue-router'
 import apiClient from '@/api/client'
 import { isDesktopRuntime, selectDirectory } from '@/composables/useDesktop'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 interface WorkItem {
   type: 'requirement' | 'defect'
@@ -64,7 +67,7 @@ async function load() {
     workItems.value = workItemResult.items || []
     agents.value = agentResult.items || []
   } catch (error) {
-    errorText.value = error instanceof Error ? error.message : '云端数据加载失败'
+    errorText.value = error instanceof Error ? error.message : t('workflows.task.import.cloudLoadFailed')
   } finally {
     loading.value = false
   }
@@ -76,7 +79,7 @@ async function chooseAgent(id: number) {
   try {
     agentSnapshot.value = await apiClient.get<AgentSnapshot>(`/tasks/agents/${id}/snapshot`)
   } catch (error) {
-    message.error(error instanceof Error ? error.message : 'Agent 工作流加载失败')
+    message.error(error instanceof Error ? error.message : t('workflows.task.import.agentLoadFailed'))
   }
 }
 
@@ -96,20 +99,20 @@ async function chooseWorkDir(index: number) {
 
 async function createTask() {
   if (!selectedWorkItem.value) {
-    message.warning('请选择一个需求或缺陷')
+    message.warning(t('workflows.task.import.chooseWorkItem'))
     return
   }
   if (!selectedAgentID.value) {
-    message.warning('请选择执行 Agent')
+    message.warning(t('workflows.task.import.chooseAgent'))
     return
   }
   if (normalizedWorkDirs.value.length === 0 || normalizedWorkDirs.value.some(workDir => !workDir)) {
-    message.warning('请填写所有工作目录地址')
+    message.warning(t('workflows.task.import.workDirectoriesRequired'))
     return
   }
   const uniqueWorkDirs = new Set(normalizedWorkDirs.value.map(workDir => workDir.toLowerCase()))
   if (uniqueWorkDirs.size !== normalizedWorkDirs.value.length) {
-    message.warning('工作目录不能重复')
+    message.warning(t('workflows.task.import.duplicateDirectories'))
     return
   }
   creating.value = true
@@ -121,10 +124,10 @@ async function createTask() {
       work_dir: normalizedWorkDirs.value[0],
       work_dirs: normalizedWorkDirs.value,
     })
-    message.success('任务创建成功')
+    message.success(t('workflows.task.import.created'))
     router.push(`/workflows/task/${result.uuid}`)
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '任务创建失败')
+    message.error(error instanceof Error ? error.message : t('workflows.task.feedback.taskCreateFailed'))
   } finally {
     creating.value = false
   }
@@ -135,34 +138,34 @@ onMounted(load)
 
 <template>
   <div class="import-page">
-    <a-page-header title="导入需求 / 缺陷" sub-title="从云端工作项创建本地执行任务" @back="router.push('/workflows')" />
+    <a-page-header :title="t('workflows.task.import.title')" :sub-title="t('workflows.task.import.subtitle')" @back="router.push('/workflows')" />
 
     <a-alert
       v-if="errorText"
       type="error"
       show-icon
-      message="无法读取云端工作项或 Agent"
+      :message="t('workflows.task.import.alert')"
       :description="errorText"
       style="margin-bottom: 16px"
     >
-      <template #action><a-button danger @click="load">重试</a-button></template>
+      <template #action><a-button danger @click="load">{{ t('common.actions.retry') }}</a-button></template>
     </a-alert>
 
     <a-spin :spinning="loading">
       <div class="import-grid">
-        <a-card title="1. 选择需求或缺陷">
-          <template #extra><span class="muted">共 {{ filteredItems.length }} 项</span></template>
+        <a-card :title="t('workflows.task.import.chooseItemStep')">
+          <template #extra><span class="muted">{{ t('workflows.task.import.itemCount', { count: filteredItems.length }) }}</span></template>
           <a-space style="margin-bottom: 14px">
-            <a-input-search v-model:value="keyword" placeholder="搜索标题或编号" allow-clear />
+            <a-input-search v-model:value="keyword" :placeholder="t('workflows.task.import.search')" allow-clear />
             <a-radio-group v-model:value="typeFilter" button-style="solid">
-              <a-radio-button value="all">全部</a-radio-button>
-              <a-radio-button value="requirement">需求</a-radio-button>
-              <a-radio-button value="defect">缺陷</a-radio-button>
+              <a-radio-button value="all">{{ t('workflows.task.import.all') }}</a-radio-button>
+              <a-radio-button value="requirement">{{ t('workflows.task.import.requirement') }}</a-radio-button>
+              <a-radio-button value="defect">{{ t('workflows.task.import.defect') }}</a-radio-button>
             </a-radio-group>
           </a-space>
           <a-empty
             v-if="!loading && filteredItems.length === 0"
-            description="云端暂无可导入的需求或缺陷"
+            :description="t('workflows.task.import.emptyItems')"
           />
           <div v-else class="select-list">
             <button
@@ -174,7 +177,7 @@ onMounted(load)
               @click="selectedWorkItem = item"
             >
               <a-tag :color="item.type === 'defect' ? 'red' : 'blue'">
-                {{ item.type === 'defect' ? '缺陷' : '需求' }}
+                {{ item.type === 'defect' ? t('workflows.task.import.defect') : t('workflows.task.import.requirement') }}
               </a-tag>
               <span class="item-title">{{ item.title }}</span>
               <span class="muted">#{{ item.id }}</span>
@@ -182,8 +185,8 @@ onMounted(load)
           </div>
         </a-card>
 
-        <a-card title="2. 选择 Agent">
-          <a-empty v-if="!loading && agents.length === 0" description="暂无可用 Agent，请先在云端配置 Agent" />
+        <a-card :title="t('workflows.task.import.chooseAgentStep')">
+          <a-empty v-if="!loading && agents.length === 0" :description="t('workflows.task.import.emptyAgents')" />
           <div v-else class="agent-list">
             <button
               v-for="agent in agents"
@@ -196,13 +199,13 @@ onMounted(load)
               <span class="agent-color" :style="{ background: agent.color || '#3157e2' }" />
               <span>
                 <strong>{{ agent.name }}</strong>
-                <small>{{ agent.cli_type || '默认 CLI' }} · 工作流 v{{ agent.workflow_version || 1 }}</small>
+                <small>{{ agent.cli_type || t('workflows.task.import.defaultCli') }} · {{ t('workflows.task.import.workflowVersion', { version: agent.workflow_version || 1 }) }}</small>
               </span>
             </button>
           </div>
 
           <div v-if="agentSnapshot" class="workflow-preview">
-            <h4>工作流步骤</h4>
+            <h4>{{ t('workflows.task.import.workflowSteps') }}</h4>
             <a-steps
               direction="vertical"
               size="small"
@@ -213,14 +216,14 @@ onMounted(load)
         </a-card>
       </div>
 
-      <a-card title="3. 设置工作目录" class="work-dir-card">
+      <a-card :title="t('workflows.task.import.directoriesStep')" class="work-dir-card">
         <template #extra>
-          <a-button type="link" @click="addWorkDir">+ 添加工作目录</a-button>
+          <a-button type="link" @click="addWorkDir">{{ t('workflows.task.import.addDirectory') }}</a-button>
         </template>
         <div class="work-dir-list">
           <div v-for="(_, index) in workDirs" :key="index" class="work-dir-row">
             <a-form-item
-              :label="index === 0 ? '主工作目录地址' : `关联工作目录 ${index}`"
+              :label="index === 0 ? t('workflows.task.import.mainDirectory') : t('workflows.task.import.relatedDirectory', { index })"
               required
               class="work-dir-form-item"
             >
@@ -228,20 +231,20 @@ onMounted(load)
                 <a-input
                   v-model:value="workDirs[index]"
                   :placeholder="index === 0
-                    ? '请输入本机真实存在的目录，例如 D:\\work\\your-project'
-                    : '请输入需要关联处理的其他目录'"
+                    ? t('workflows.task.import.mainDirectoryPlaceholder')
+                    : t('workflows.task.import.relatedDirectoryPlaceholder')"
                   @press-enter="createTask"
                 />
-                <a-button v-if="isDesktopRuntime()" @click="chooseWorkDir(index)">浏览</a-button>
+                <a-button v-if="isDesktopRuntime()" @click="chooseWorkDir(index)">{{ t('workflows.task.import.browse') }}</a-button>
               </div>
             </a-form-item>
             <a-button v-if="index > 0" danger class="work-dir-remove" @click="removeWorkDir(index)">
-              移除
+              {{ t('workflows.task.import.remove') }}
             </a-button>
           </div>
         </div>
         <span class="muted">
-          创建时会逐一检查目录是否存在且为文件夹。CLI 在主目录中启动，Agent 可通过绝对路径处理所有关联目录。
+          {{ t('workflows.task.import.directoryHint') }}
         </span>
       </a-card>
 
@@ -249,12 +252,12 @@ onMounted(load)
 
     <div class="action-bar">
       <span v-if="isTaskReady">
-        将使用所选 Agent 为“{{ selectedWorkItem?.title }}”创建任务
+        {{ t('workflows.task.import.ready', { title: selectedWorkItem?.title || '' }) }}
       </span>
-      <span v-else class="muted">完成工作项、Agent 和工作目录配置后即可创建任务</span>
+      <span v-else class="muted">{{ t('workflows.task.import.notReady') }}</span>
       <a-space>
-        <a-button @click="router.push('/workflows')">取消</a-button>
-        <a-button type="primary" :loading="creating" @click="createTask">创建任务</a-button>
+        <a-button @click="router.push('/workflows')">{{ t('common.actions.cancel') }}</a-button>
+        <a-button type="primary" :loading="creating" @click="createTask">{{ t('workflows.task.import.create') }}</a-button>
       </a-space>
     </div>
   </div>

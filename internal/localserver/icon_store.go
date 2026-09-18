@@ -13,6 +13,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	"goteams-client/internal/i18n"
 )
 
 const (
@@ -106,12 +108,12 @@ func (s *IconStore) Remove(rawURL string) error {
 func (s *IconStore) Serve(c *gin.Context) {
 	filename := c.Param("filename")
 	if !managedIconFilenameExpr.MatchString(filename) {
-		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "图标不存在"})
+		i18n.Error(c, http.StatusNotFound, "localserver_icon_not_found", "icon_not_found")
 		return
 	}
 	path := filepath.Join(s.root, filename)
 	if info, err := os.Stat(path); err != nil || info.IsDir() {
-		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "图标不存在"})
+		i18n.Error(c, http.StatusNotFound, "localserver_icon_not_found", "icon_not_found")
 		return
 	}
 	c.Header("X-Content-Type-Options", "nosniff")

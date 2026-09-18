@@ -17,6 +17,7 @@ import (
 
 	"goteams-client/internal/config"
 	"goteams-client/internal/dbconn"
+	"goteams-client/internal/i18n"
 )
 
 // ========== Git project ==========
@@ -28,18 +29,18 @@ func (h *Handler) createGitProject(c *gin.Context) {
 		RemoteWorkDir string `json:"remote_work_dir"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_request_invalid")})
 		return
 	}
 	if body.Name == "" || body.SSHProfileID <= 0 || body.RemoteWorkDir == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name、ssh_profile_id 和 remote_work_dir 不能为空"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_git_required")})
 		return
 	}
 	var sshCount int
 	if err := h.dbRef.Get().QueryRow(
 		`SELECT COUNT(*) FROM gt_ssh_profiles WHERE id = ?`, body.SSHProfileID,
 	).Scan(&sshCount); err != nil || sshCount == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "SSH 配置不存在"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_ssh_not_found")})
 		return
 	}
 
@@ -47,7 +48,7 @@ func (h *Handler) createGitProject(c *gin.Context) {
 		[]string{"name", "ssh_profile_id", "remote_work_dir", "created_at", "updated_at"},
 		[]interface{}{body.Name, body.SSHProfileID, body.RemoteWorkDir, now(), now()})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "common_server_error")})
 		return
 	}
 
@@ -57,7 +58,7 @@ func (h *Handler) createGitProject(c *gin.Context) {
 func (h *Handler) updateGitProject(c *gin.Context) {
 	id, err := parseID(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_invalid_id")})
 		return
 	}
 	var body struct {
@@ -66,7 +67,7 @@ func (h *Handler) updateGitProject(c *gin.Context) {
 		RemoteWorkDir *string `json:"remote_work_dir"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_request_invalid")})
 		return
 	}
 
@@ -79,13 +80,13 @@ func (h *Handler) updateGitProject(c *gin.Context) {
 	if body.SSHProfileID != nil {
 		var sshCount int
 		if *body.SSHProfileID <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "ssh_profile_id 不能为空"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_ssh_profile_required")})
 			return
 		}
 		if err := h.dbRef.Get().QueryRow(
 			`SELECT COUNT(*) FROM gt_ssh_profiles WHERE id = ?`, *body.SSHProfileID,
 		).Scan(&sshCount); err != nil || sshCount == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "SSH 配置不存在"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_ssh_not_found")})
 			return
 		}
 		fields = append(fields, "ssh_profile_id")
@@ -93,20 +94,20 @@ func (h *Handler) updateGitProject(c *gin.Context) {
 	}
 	if body.RemoteWorkDir != nil {
 		if *body.RemoteWorkDir == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "remote_work_dir 不能为空"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_remote_work_dir_required")})
 			return
 		}
 		fields = append(fields, "remote_work_dir")
 		values = append(values, *body.RemoteWorkDir)
 	}
 	if len(fields) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "没有要更新的字段"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_no_fields")})
 		return
 	}
 	fields = append(fields, "updated_at")
 	values = append(values, now())
 	if err := h.bindAndUpdate("gt_git_projects", fields, values, id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "common_server_error")})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -124,11 +125,11 @@ func (h *Handler) createSSHProfile(c *gin.Context) {
 		KeyPath  string `json:"key_path"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_request_invalid")})
 		return
 	}
 	if body.Name == "" || body.Host == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name 和 host 不能为空"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_ssh_required")})
 		return
 	}
 	if body.Port == 0 {
@@ -139,7 +140,7 @@ func (h *Handler) createSSHProfile(c *gin.Context) {
 		[]string{"name", "host", "port", "username", "secret_ref", "key_path", "created_at", "updated_at"},
 		[]interface{}{body.Name, body.Host, body.Port, body.Username, "", body.KeyPath, now(), now()})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "common_server_error")})
 		return
 	}
 	if body.Password != "" {
@@ -153,12 +154,12 @@ func (h *Handler) createSSHProfile(c *gin.Context) {
 func (h *Handler) updateSSHProfile(c *gin.Context) {
 	id, err := parseID(c)
 	if err != nil || id <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_invalid_id")})
 		return
 	}
 	var body map[string]interface{}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_request_invalid")})
 		return
 	}
 	var fields []string
@@ -174,20 +175,20 @@ func (h *Handler) updateSSHProfile(c *gin.Context) {
 		// The result is that the password is silently lost and the original reference is erased.
 		ref, err := h.handleSecret("ssh", fmt.Sprintf("%d", id), v)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "保存 SSH 密码失败: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_ssh_secret_save_failed")})
 			return
 		}
 		fields = append(fields, "secret_ref")
 		values = append(values, ref)
 	}
 	if len(fields) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "没有要更新的字段"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_no_fields")})
 		return
 	}
 	fields = append(fields, "updated_at")
 	values = append(values, now())
 	if err := h.bindAndUpdate("gt_ssh_profiles", fields, values, id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新 SSH 配置失败: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_ssh_update_failed")})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -202,29 +203,29 @@ func (h *Handler) createDockerProject(c *gin.Context) {
 		ComposeFile  string `json:"compose_file_path"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_request_invalid")})
 		return
 	}
 	if body.Name == "" || body.ComposeFile == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name 和 compose_file_path 不能为空"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_docker_required")})
 		return
 	}
 	if body.SSHProfileID <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "ssh_profile_id 不能为空"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_ssh_profile_required")})
 		return
 	}
 	var sshCount int
 	if err := h.dbRef.Get().QueryRow(
 		`SELECT COUNT(*) FROM gt_ssh_profiles WHERE id = ?`, body.SSHProfileID,
 	).Scan(&sshCount); err != nil || sshCount == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "SSH 配置不存在"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_ssh_not_found")})
 		return
 	}
 	id, err := h.bindAndInsert("gt_docker_projects",
 		[]string{"name", "ssh_profile_id", "compose_file_path", "created_at", "updated_at"},
 		[]interface{}{body.Name, body.SSHProfileID, body.ComposeFile, now(), now()})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "common_server_error")})
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"id": id})
@@ -233,12 +234,12 @@ func (h *Handler) createDockerProject(c *gin.Context) {
 func (h *Handler) updateDockerProject(c *gin.Context) {
 	id, err := parseID(c)
 	if err != nil || id <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_invalid_id")})
 		return
 	}
 	var body map[string]interface{}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_request_invalid")})
 		return
 	}
 	var fields []string
@@ -247,14 +248,14 @@ func (h *Handler) updateDockerProject(c *gin.Context) {
 		if v, ok := body[f]; ok {
 			if f == "ssh_profile_id" {
 				if n, ok := toInt64(v); !ok || n <= 0 {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "ssh_profile_id 不能为空"})
+					c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_ssh_profile_required")})
 					return
 				}
 				var sshCount int
 				if err := h.dbRef.Get().QueryRow(
 					`SELECT COUNT(*) FROM gt_ssh_profiles WHERE id = ?`, v,
 				).Scan(&sshCount); err != nil || sshCount == 0 {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "SSH 配置不存在"})
+					c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_ssh_not_found")})
 					return
 				}
 			}
@@ -263,13 +264,13 @@ func (h *Handler) updateDockerProject(c *gin.Context) {
 		}
 	}
 	if len(fields) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "没有要更新的字段"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_no_fields")})
 		return
 	}
 	fields = append(fields, "updated_at")
 	values = append(values, now())
 	if err := h.bindAndUpdate("gt_docker_projects", fields, values, id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新 Docker 项目失败: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_docker_update_failed")})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -289,11 +290,11 @@ func (h *Handler) createDatabaseProfile(c *gin.Context) {
 		SSHProfileID int64  `json:"ssh_profile_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_request_invalid")})
 		return
 	}
 	if body.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name 不能为空"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_name_required")})
 		return
 	}
 	if body.DBType == "" {
@@ -307,7 +308,7 @@ func (h *Handler) createDatabaseProfile(c *gin.Context) {
 		[]string{"name", "db_type", "host", "port", "database_name", "username", "secret_ref", "ssh_profile_id", "created_at", "updated_at"},
 		[]interface{}{body.Name, body.DBType, body.Host, body.Port, body.DatabaseName, body.Username, "", body.SSHProfileID, now(), now()})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "common_server_error")})
 		return
 	}
 	if body.Password != "" {
@@ -321,12 +322,12 @@ func (h *Handler) createDatabaseProfile(c *gin.Context) {
 func (h *Handler) updateDatabaseProfile(c *gin.Context) {
 	id, err := parseID(c)
 	if err != nil || id <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_invalid_id")})
 		return
 	}
 	var body map[string]interface{}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_request_invalid")})
 		return
 	}
 	var fields []string
@@ -340,20 +341,20 @@ func (h *Handler) updateDatabaseProfile(c *gin.Context) {
 	if v, ok := body["password"].(string); ok && v != "" {
 		ref, err := h.handleSecret("db", fmt.Sprintf("%d", id), v)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "保存数据库密码失败: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_database_secret_save_failed")})
 			return
 		}
 		fields = append(fields, "secret_ref")
 		values = append(values, ref)
 	}
 	if len(fields) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "没有要更新的字段"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_no_fields")})
 		return
 	}
 	fields = append(fields, "updated_at")
 	values = append(values, now())
 	if err := h.bindAndUpdate("gt_database_profiles", fields, values, id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新数据库配置失败: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_database_update_failed")})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -369,18 +370,18 @@ func (h *Handler) createModelProvider(c *gin.Context) {
 		APIKey       string `json:"api_key"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_request_invalid")})
 		return
 	}
 	if body.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name 不能为空"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_name_required")})
 		return
 	}
 	id, err := h.bindAndInsert("gt_model_providers",
 		[]string{"name", "provider_type", "api_base_url", "secret_ref", "created_at", "updated_at"},
 		[]interface{}{body.Name, body.ProviderType, body.APIBaseURL, "", now(), now()})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "common_server_error")})
 		return
 	}
 	if body.APIKey != "" {
@@ -394,12 +395,12 @@ func (h *Handler) createModelProvider(c *gin.Context) {
 func (h *Handler) updateModelProvider(c *gin.Context) {
 	id, err := parseID(c)
 	if err != nil || id <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_invalid_id")})
 		return
 	}
 	var body map[string]interface{}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_request_invalid")})
 		return
 	}
 	var fields []string
@@ -413,20 +414,20 @@ func (h *Handler) updateModelProvider(c *gin.Context) {
 	if v, ok := body["api_key"].(string); ok && v != "" {
 		ref, err := h.handleSecret("model_provider", fmt.Sprintf("%d", id), v)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "保存 API Key 失败: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_api_key_save_failed")})
 			return
 		}
 		fields = append(fields, "secret_ref")
 		values = append(values, ref)
 	}
 	if len(fields) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "没有要更新的字段"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_no_fields")})
 		return
 	}
 	fields = append(fields, "updated_at")
 	values = append(values, now())
 	if err := h.bindAndUpdate("gt_model_providers", fields, values, id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新模型服务商失败: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_provider_update_failed")})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -443,11 +444,11 @@ func (h *Handler) createModelProfile(c *gin.Context) {
 		MaxTokens   int     `json:"max_tokens"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_request_invalid")})
 		return
 	}
 	if body.Name == "" || body.ProviderID == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name 和 provider_id 不能为空"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_model_profile_required")})
 		return
 	}
 	if body.Temperature == 0 {
@@ -461,7 +462,7 @@ func (h *Handler) createModelProfile(c *gin.Context) {
 		[]string{"name", "provider_id", "model_name", "temperature", "max_tokens", "created_at", "updated_at"},
 		[]interface{}{body.Name, body.ProviderID, body.ModelName, body.Temperature, body.MaxTokens, now(), now()})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "common_server_error")})
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"id": id})
@@ -470,12 +471,12 @@ func (h *Handler) createModelProfile(c *gin.Context) {
 func (h *Handler) updateModelProfile(c *gin.Context) {
 	id, err := parseID(c)
 	if err != nil || id <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_invalid_id")})
 		return
 	}
 	var body map[string]interface{}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_request_invalid")})
 		return
 	}
 	var fields []string
@@ -487,13 +488,13 @@ func (h *Handler) updateModelProfile(c *gin.Context) {
 		}
 	}
 	if len(fields) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "没有要更新的字段"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_no_fields")})
 		return
 	}
 	fields = append(fields, "updated_at")
 	values = append(values, now())
 	if err := h.bindAndUpdate("gt_model_profiles", fields, values, id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新模型配置失败: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_model_update_failed")})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -528,38 +529,38 @@ func (h *Handler) setCloudConfig(c *gin.Context) {
 		APIBaseURL string `json:"api_base_url"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_request_invalid")})
 		return
 	}
 	if body.APIBaseURL == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "api_base_url 不能为空"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_api_base_url_required")})
 		return
 	}
 	if h.configPath == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "配置文件路径未初始化"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_config_path_uninitialized")})
 		return
 	}
 
 	ini, err := config.LoadINI(h.configPath)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取配置文件失败: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_config_read_failed")})
 			return
 		}
 		if err := os.MkdirAll(filepath.Dir(h.configPath), 0700); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "创建配置目录失败: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_config_dir_create_failed")})
 			return
 		}
 		ini, err = config.LoadINIBytes(nil)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "初始化配置文件失败: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_config_init_failed")})
 			return
 		}
 		ini.SetPath(h.configPath)
 	}
 	ini.Set("cloud", "api_base_url", body.APIBaseURL)
 	if err := ini.Save(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存配置文件失败: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_config_write_failed")})
 		return
 	}
 	if h.cloudCfg != nil {
@@ -578,14 +579,14 @@ func (h *Handler) persistSecretRef(c *gin.Context, table, prefix string, id int6
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"id":    id,
-			"error": "配置已创建，但密钥保存失败，请编辑后重新填写: " + err.Error(),
+			"error": i18n.T(c, "configcenter_secret_save_failed"),
 		})
 		return err
 	}
 	if err := h.bindAndUpdate(table, []string{"secret_ref"}, []interface{}{ref}, id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"id":    id,
-			"error": "配置已创建，但密钥引用写入失败，请编辑后重新填写: " + err.Error(),
+			"error": i18n.T(c, "configcenter_secret_ref_write_failed"),
 		})
 		return err
 	}
@@ -681,7 +682,7 @@ func (h *Handler) lookupSecret(ref string) string {
 func (h *Handler) testSSHProfile(c *gin.Context) {
 	id, err := parseID(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID", "ok": false})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_invalid_id"), "ok": false})
 		return
 	}
 	var host string
@@ -691,16 +692,16 @@ func (h *Handler) testSSHProfile(c *gin.Context) {
 		`SELECT host, port, username, secret_ref, key_path FROM gt_ssh_profiles WHERE id = ?`, id).
 		Scan(&host, &port, &username, &secretRef, &keyPath)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "SSH 配置不存在", "ok": false})
+		c.JSON(http.StatusNotFound, gin.H{"error": i18n.T(c, "configcenter_ssh_not_found"), "ok": false})
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error(), "ok": false})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_ssh_lookup_failed"), "ok": false})
 		return
 	}
 	cfg := sshTestConfig{Host: host, Port: port, Username: username, Password: h.lookupSecret(secretRef), KeyPath: keyPath}
 	if err := testSSHConnection(c.Request.Context(), cfg); err != nil {
-		c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
+		c.JSON(http.StatusOK, gin.H{"ok": false, "error": i18n.T(c, "configcenter_ssh_test_failed")})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
@@ -710,7 +711,7 @@ func (h *Handler) testSSHProfile(c *gin.Context) {
 func (h *Handler) testDatabaseProfile(c *gin.Context) {
 	id, err := parseID(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID", "ok": false})
+		c.JSON(http.StatusBadRequest, gin.H{"error": i18n.T(c, "configcenter_invalid_id"), "ok": false})
 		return
 	}
 	var dbType, host, databaseName, username, secretRef string
@@ -721,11 +722,11 @@ func (h *Handler) testDatabaseProfile(c *gin.Context) {
 		 FROM gt_database_profiles WHERE id = ?`, id).
 		Scan(&dbType, &host, &port, &databaseName, &username, &secretRef, &sshProfileID)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "数据库配置不存在", "ok": false})
+		c.JSON(http.StatusNotFound, gin.H{"error": i18n.T(c, "configcenter_database_not_found"), "ok": false})
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error(), "ok": false})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_database_lookup_failed"), "ok": false})
 		return
 	}
 
@@ -739,13 +740,13 @@ func (h *Handler) testDatabaseProfile(c *gin.Context) {
 	}
 	sshCfg, err := dbconn.ResolveSSHConfig(c.Request.Context(), h.dbRef.Get(), h.lookupSecret, sshProfileID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error(), "ok": false})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": i18n.T(c, "configcenter_ssh_resolve_failed"), "ok": false})
 		return
 	}
 
 	db, cleanup, err := dbconn.Open(c.Request.Context(), dbCfg, sshCfg)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
+		c.JSON(http.StatusOK, gin.H{"ok": false, "error": i18n.T(c, "configcenter_database_test_failed")})
 		return
 	}
 	defer cleanup()
@@ -753,7 +754,7 @@ func (h *Handler) testDatabaseProfile(c *gin.Context) {
 	pingCtx, cancel := context.WithTimeout(c.Request.Context(), connectionTestTimeout)
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
-		c.JSON(http.StatusOK, gin.H{"ok": false, "error": fmt.Sprintf("连接数据库失败: %v", err)})
+		c.JSON(http.StatusOK, gin.H{"ok": false, "error": i18n.T(c, "configcenter_database_test_failed")})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})

@@ -1,349 +1,74 @@
 package codex
 
 import (
-	"bufio"
-	"context"
 	"encoding/json"
-	"fmt"
-	"io"
-	"os/exec"
 	"strings"
-	"sync"
 
 	"goteams-client/internal/executor"
 )
 
 const fullPermissionArg = "--dangerously-bypass-approvals-and-sandbox"
+const displayName = "Codex"
 
-// Adapter Codex CLI adapter
-type Adapter struct {
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	cancel context.CancelFunc
-	pid    int
-}
-
-// NewAdapter creates Codex adapter
+// NewAdapter 创建 Codex 适配器。
 func NewAdapter() executor.Adapter {
-	return &Adapter{}
+	return executor.NewStreamAdapter(executor.AdapterSpec{
+		DisplayName:     displayName,
+		BuildInvocation: buildInvocation,
+		NewDecoder:      NewDecoder,
+	})
 }
 
-// NewConversation New conversation: codex exec - --json
-func (a *Adapter) NewConversation(ctx context.Context, opts executor.RunOptions) (<-chan executor.ExecutorEvent, error) {
-	args := []string{"exec", fullPermissionArg, "-", "--json"}
+// buildInvocation 构造 codex exec 命令行，prompt 走 stdin。
+func buildInvocation(opts executor.RunOptions, resumeSession string) executor.Invocation {
+	args := []string{"exec"}
+	if resumeSession != "" {
+		args = append(args, "resume", fullPermissionArg, resumeSession, "--json", "-")
+	} else {
+		args = append(args, fullPermissionArg, "-", "--json")
+	}
 	if opts.ModelProfile != "" {
 		args = append(args, "-m", opts.ModelProfile)
 	}
 	args = append(args, opts.ExtraArgs...)
-
-	return a.runCommand(ctx, opts, args)
+	return executor.Invocation{Args: args, StdinText: opts.Prompt}
 }
 
-// ResumeConversation continues the conversation: codex exec resume {thread_id} --json -
-func (a *Adapter) ResumeConversation(ctx context.Context, opts executor.ResumeOptions) (<-chan executor.ExecutorEvent, error) {
-	args := []string{"exec", "resume", fullPermissionArg, opts.ExternalSessionID, "--json", "-"}
-	if opts.ModelProfile != "" {
-		args = append(args, "-m", opts.ModelProfile)
-	}
-	args = append(args, opts.ExtraArgs...)
+// Decoder 解码 codex exec --json 的 JSONL 输出。
+type Decoder struct {
+	executor.BaseDecoder
 
-	return a.runCommand(ctx, opts.RunOptions, args)
+	// token 有两套上报标准：过程用量（usage/token_usage）与轮次汇总（turn.completed）。
+	// 两者可能同时出现，分别累计后取较大值，既避免重复累加也不丢失统计。
+	deltaInput  int
+	deltaOutput int
+	turnInput   int
+	turnOutput  int
+	unparsed    executor.DiagnosticTail
+	// toolCallItems 记录已产出工具调用的 item id。
+	// 部分 codex 版本只发 item.completed 不发 item.started，
+	// 据此在完成阶段补发，避免工具调用记录缺失。
+	toolCallItems map[string]bool
 }
 
-// runCommand executes the command and returns the event channel
-func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args []string) (<-chan executor.ExecutorEvent, error) {
-	innerCtx, cancel := context.WithCancel(ctx)
-	a.mu.Lock()
-	a.cancel = cancel
-	a.mu.Unlock()
-
-	cmd := exec.CommandContext(innerCtx, opts.ExecPath, args...)
-	createProcessGroupForCmd(cmd)
-
-	if opts.WorkDir != "" {
-		cmd.Dir = opts.WorkDir
+// NewDecoder 创建 Codex 解码器。
+func NewDecoder(name string) executor.Decoder {
+	if strings.TrimSpace(name) == "" {
+		name = displayName
 	}
-
-	//Set environment variables
-	if len(opts.EnvVars) > 0 {
-		env := append([]string{}, execEnv()...)
-		for k, v := range opts.EnvVars {
-			env = append(env, fmt.Sprintf("%s=%s", k, v))
-		}
-		cmd.Env = env
+	return &Decoder{
+		BaseDecoder:   executor.NewBaseDecoder(name),
+		toolCallItems: make(map[string]bool),
 	}
-
-	// Get stdin pipe
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("创建 stdin 管道失败: %w", err)
-	}
-
-	// Get stdout pipe
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("创建 stdout 管道失败: %w", err)
-	}
-
-	// Get stderr pipe
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("创建 stderr 管道失败: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("启动 Codex 失败: %w", err)
-	}
-
-	a.mu.Lock()
-	a.cmd = cmd
-	a.pid = cmd.Process.Pid
-	a.mu.Unlock()
-
-	stdinDone := make(chan error, 1)
-	go func() {
-		_, writeErr := io.WriteString(stdin, opts.Prompt)
-		closeErr := stdin.Close()
-		if writeErr == nil {
-			writeErr = closeErr
-		}
-		stdinDone <- writeErr
-	}()
-
-	//Continue to read and retain stderr; when execution fails, the real reason will be passed to the task execution window.
-	var stderrDiagnostic diagnosticTail
-	var stderrWG sync.WaitGroup
-	stderrWG.Add(1)
-	go func() {
-		defer stderrWG.Done()
-		scanner := bufio.NewScanner(stderr)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		for scanner.Scan() {
-			stderrDiagnostic.AppendLine(scanner.Text())
-		}
-		if scanErr := scanner.Err(); scanErr != nil {
-			stderrDiagnostic.AppendLine("读取 Codex stderr 失败: " + scanErr.Error())
-		}
-	}()
-
-	eventCh := make(chan executor.ExecutorEvent, 100)
-
-	// Read JSONL output
-	go func() {
-		defer close(eventCh)
-		defer cancel()
-
-		eventCh <- executor.NewEvent(executor.EventStart)
-
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024) // 1MB buffer
-
-		sessionID := ""
-		// There are two sets of mutually incompatible token reporting standards in Codex, which must be divided into buckets and accumulated before merging:
-		// 1) usage / token_usage / complete event: each item is an increment
-		// 2) turn.completed event: each item is the usage of "this turn"
-		// The old implementation mixed the two on the same variable (one +=, one =), and the latter one in multiple rounds of sessions
-		// turn.completed will directly overwrite the previous accumulated value, causing the token statistics to be lost.
-		// Take the larger one after bucketing: when there is a single source, it is equal to the total amount of that source; when two sets are reported at the same time, it will not double.
-		deltaInput, deltaOutput := 0, 0
-		turnInput, turnOutput := 0, 0
-		executionError := ""
-		sawTurnCompleted := false
-		var stdoutDiagnostic diagnosticTail
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				continue
-			}
-
-			var event codexEvent
-			if err := json.Unmarshal([]byte(line), &event); err != nil {
-				stdoutDiagnostic.AppendLine(line)
-				continue
-			}
-
-			//Extract thread_id
-			if sessionID == "" && event.ThreadID != "" {
-				sessionID = event.ThreadID
-			}
-
-			timestamp := event.Timestamp
-			if timestamp == 0 {
-				timestamp = nowMillis()
-			}
-
-			//Convert by event type
-			switch event.Type {
-			case "message", "assistant", "response":
-				if content := rawJSONText(event.Content); content != "" {
-					eventCh <- executor.ExecutorEvent{
-						Type:      executor.EventMessage,
-						Content:   content,
-						SessionID: sessionID,
-						Timestamp: timestamp,
-					}
-				}
-			case "tool_call", "function_call":
-				eventCh <- executor.ExecutorEvent{
-					Type:      executor.EventToolCall,
-					Content:   rawJSONText(event.Content),
-					SessionID: sessionID,
-					Timestamp: timestamp,
-				}
-			case "tool_result", "function_call_output":
-				eventCh <- executor.ExecutorEvent{
-					Type:      executor.EventToolResult,
-					Content:   rawJSONText(event.Content),
-					SessionID: sessionID,
-					Timestamp: timestamp,
-				}
-			case "item.started":
-				if content := event.Item.toolLabel(); content != "" {
-					eventCh <- executor.ExecutorEvent{
-						Type:      executor.EventToolCall,
-						Content:   content,
-						SessionID: sessionID,
-						Timestamp: timestamp,
-					}
-				}
-			case "item.completed":
-				switch event.Item.Type {
-				case "agent_message":
-					if event.Item.Text != "" {
-						eventCh <- executor.ExecutorEvent{
-							Type:      executor.EventMessage,
-							Content:   event.Item.Text,
-							SessionID: sessionID,
-							Timestamp: timestamp,
-						}
-					}
-				default:
-					if content := event.Item.resultText(); content != "" {
-						eventCh <- executor.ExecutorEvent{
-							Type:      executor.EventToolResult,
-							Content:   content,
-							SessionID: sessionID,
-							Timestamp: timestamp,
-						}
-					}
-				}
-			case "usage", "token_usage":
-				if event.InputTokens > 0 {
-					deltaInput += event.InputTokens
-				}
-				if event.OutputTokens > 0 {
-					deltaOutput += event.OutputTokens
-				}
-				eventCh <- executor.ExecutorEvent{
-					Type:         executor.EventUsage,
-					InputTokens:  event.InputTokens,
-					OutputTokens: event.OutputTokens,
-					SessionID:    sessionID,
-					Timestamp:    timestamp,
-				}
-			case "turn.completed":
-				sawTurnCompleted = true
-				// The usage of each turn must be accumulated. Multiple rounds of dialogue cannot only retain the last round.
-				turnInput += event.Usage.InputTokens
-				turnOutput += event.Usage.OutputTokens
-				eventCh <- executor.ExecutorEvent{
-					Type:         executor.EventUsage,
-					InputTokens:  event.Usage.InputTokens,
-					OutputTokens: event.Usage.OutputTokens,
-					SessionID:    sessionID,
-					Timestamp:    timestamp,
-				}
-			case "turn.failed", "error":
-				errText := event.Error.Message
-				if errText == "" {
-					errText = rawJSONText(event.Content)
-				}
-				if errText == "" {
-					errText = "Codex 执行失败"
-				}
-				if executionError == "" {
-					executionError = errText
-				}
-			case "complete", "done", "finished":
-				if event.InputTokens > 0 {
-					deltaInput += event.InputTokens
-				}
-				if event.OutputTokens > 0 {
-					deltaOutput += event.OutputTokens
-				}
-			}
-		}
-
-		stdoutScanErr := scanner.Err()
-		if stdoutScanErr != nil {
-			cancel()
-		}
-		stderrWG.Wait()
-
-		// Wait for the process to exit and combine stderr, unresolved stdout and exit code into a single final error.
-		waitErr := cmd.Wait()
-		stdinErr := <-stdinDone
-		a.clearProcess(cmd)
-
-		failureDetails := make([]string, 0, 6)
-		if executionError != "" {
-			failureDetails = append(failureDetails, executionError)
-		}
-		if stdinErr != nil {
-			failureDetails = append(failureDetails, "写入 Codex Prompt 失败: "+stdinErr.Error())
-		}
-		if stdoutScanErr != nil {
-			failureDetails = append(failureDetails, "读取 Codex stdout 失败: "+stdoutScanErr.Error())
-		}
-		if waitErr != nil {
-			failureDetails = append(failureDetails, formatWaitError(waitErr))
-		}
-		if !sawTurnCompleted && executionError == "" {
-			failureDetails = append(failureDetails, "Codex CLI 未输出有效的 turn.completed 结束事件")
-		}
-		if len(failureDetails) > 0 {
-			if output := stdoutDiagnostic.String(); output != "" {
-				failureDetails = append(failureDetails, "未解析的 Codex 输出:\n"+output)
-			}
-			if output := stderrDiagnostic.String(); output != "" {
-				failureDetails = append(failureDetails, "Codex stderr:\n"+output)
-			}
-			eventCh <- executor.ExecutorEvent{
-				Type:      executor.EventError,
-				Error:     "Codex CLI 运行失败：" + strings.Join(failureDetails, "\n"),
-				SessionID: sessionID,
-				Timestamp: nowMillis(),
-			}
-			return
-		}
-
-		eventCh <- executor.NewCompleteEvent(sessionID, maxInt(deltaInput, turnInput), maxInt(deltaOutput, turnOutput))
-	}()
-
-	return eventCh, nil
 }
 
-// maxInt returns the larger value of the two, which is used to merge the two sets of token reporting standards of Codex.
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-// codexEvent Codex JSONL event
+// codexEvent 是 codex exec --json 的单行事件。
 type codexEvent struct {
 	Type         string          `json:"type"`
 	Content      json.RawMessage `json:"content"`
 	ThreadID     string          `json:"thread_id"`
 	InputTokens  int             `json:"input_tokens"`
 	OutputTokens int             `json:"output_tokens"`
-	Timestamp    int64           `json:"timestamp"`
 	Item         codexItem       `json:"item"`
 	Usage        codexUsage      `json:"usage"`
 	Error        struct {
@@ -356,19 +81,146 @@ type codexUsage struct {
 	OutputTokens int `json:"output_tokens"`
 }
 
+// codexItem 是 thread item，item.type 决定语义。
 type codexItem struct {
 	Type             string          `json:"type"`
+	ID               string          `json:"id"`
 	Text             string          `json:"text"`
 	Command          string          `json:"command"`
 	AggregatedOutput string          `json:"aggregated_output"`
+	ExitCode         *int            `json:"exit_code"`
+	Query            string          `json:"query"`
 	Name             string          `json:"name"`
 	Server           string          `json:"server"`
 	Arguments        json.RawMessage `json:"arguments"`
 	Result           json.RawMessage `json:"result"`
 	Error            json.RawMessage `json:"error"`
+	Message          string          `json:"message"`
 	Status           string          `json:"status"`
+	Changes          []codexChange   `json:"changes"`
 }
 
+type codexChange struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+}
+
+// Decode 解析一行输出。
+func (d *Decoder) Decode(raw string, emit executor.EmitFunc) {
+	line := strings.TrimSpace(raw)
+	if line == "" {
+		return
+	}
+	var event codexEvent
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		d.unparsed.AppendLine(line)
+		return
+	}
+	d.SetSession(event.ThreadID)
+
+	switch event.Type {
+	case "thread.started":
+		d.SetSession(event.ThreadID)
+
+	case "turn.started":
+		// 轮次开始，无需展示
+
+	case "message", "assistant", "response":
+		d.Message(executor.RawText(event.Content), emit)
+
+	case "tool_call", "function_call":
+		d.ToolCall("", executor.RawText(event.Content), "", emit)
+
+	case "tool_result", "function_call_output":
+		d.ToolResult("", executor.RawText(event.Content), emit)
+
+	case "item.started", "item.updated":
+		// 工具开始执行：reasoning / todo 类 item 在这一阶段没有可展示内容
+		if label := event.Item.toolLabel(); label != "" {
+			d.ToolCall(event.Item.ID, label, "", emit)
+			d.markToolCall(event.Item)
+		}
+
+	case "item.completed":
+		d.decodeCompletedItem(event.Item, emit)
+
+	case "usage", "token_usage":
+		d.deltaInput += event.InputTokens
+		d.deltaOutput += event.OutputTokens
+		d.Usage(event.InputTokens, event.OutputTokens, emit)
+
+	case "turn.completed":
+		d.MarkTerminal()
+		d.turnInput += event.Usage.InputTokens
+		d.turnOutput += event.Usage.OutputTokens
+		d.Usage(event.Usage.InputTokens, event.Usage.OutputTokens, emit)
+
+	case "turn.failed":
+		d.MarkTerminal()
+		d.Fail(d.errorText(event, "Codex 执行失败"))
+
+	case "error":
+		// Codex 会把断流重连提示当作 error 事件发出，这类通知不影响本次执行
+		message := d.errorText(event, "")
+		if isNonFatalNotice(message) {
+			return
+		}
+		d.Fail(message)
+
+	case "complete", "done", "finished":
+		d.deltaInput += event.InputTokens
+		d.deltaOutput += event.OutputTokens
+	}
+}
+
+// decodeCompletedItem 处理 item.completed：
+// 输出与思考直接映射，工具类 item 补发工具调用后输出执行结果。
+func (d *Decoder) decodeCompletedItem(item codexItem, emit executor.EmitFunc) {
+	switch item.Type {
+	case "agent_message":
+		d.Message(item.Text, emit)
+	case "reasoning":
+		// Codex 的思考摘要在 reasoning item 的 text 字段
+		d.Thinking(item.Text, emit)
+	case "error":
+		d.AddDetail(item.Message)
+	default:
+		if label := item.toolLabel(); label != "" && !d.toolCallItems[item.ID] {
+			d.ToolCall(item.ID, label, "", emit)
+			d.markToolCall(item)
+		}
+		d.ToolResult(item.ID, item.resultText(), emit)
+	}
+}
+
+// Done 在输出结束后归并 token 并校验终态事件。
+func (d *Decoder) Done(emit executor.EmitFunc) {
+	d.SetUsage(maxInt(d.deltaInput, d.turnInput), maxInt(d.deltaOutput, d.turnOutput))
+	if !d.TerminalSeen() {
+		if output := d.unparsed.String(); output != "" {
+			d.AddDetail("未解析的 Codex 输出:\n" + output)
+		}
+	}
+	d.FailMissingTerminal("turn.completed")
+}
+
+func (d *Decoder) markToolCall(item codexItem) {
+	if item.ID != "" {
+		d.toolCallItems[item.ID] = true
+	}
+}
+
+func (d *Decoder) errorText(event codexEvent, fallback string) string {
+	if text := strings.TrimSpace(event.Error.Message); text != "" {
+		return text
+	}
+	if text := executor.RawText(event.Content); text != "" {
+		return text
+	}
+	return fallback
+}
+
+// toolLabel 返回工具调用的展示标签：工具名 + 关键参数。
 func (item codexItem) toolLabel() string {
 	switch item.Type {
 	case "command_execution":
@@ -378,88 +230,72 @@ func (item codexItem) toolLabel() string {
 		if item.Server != "" {
 			name = item.Server + "." + name
 		}
-		if args := rawJSONText(item.Arguments); args != "" {
-			return strings.TrimSpace(name + " " + args)
-		}
-		return name
+		return strings.TrimSpace(name + " " + executor.FormatToolArgs(item.Arguments))
 	case "web_search":
-		return item.Text
+		return strings.TrimSpace("web_search " + item.Query)
+	case "file_change":
+		paths := make([]string, 0, len(item.Changes))
+		for _, change := range item.Changes {
+			if path := strings.TrimSpace(change.Path); path != "" {
+				paths = append(paths, path)
+			}
+		}
+		if len(paths) == 0 {
+			return "file_change"
+		}
+		return "file_change " + strings.Join(paths, ", ")
 	}
 	return ""
 }
 
+// resultText 返回工具执行结果文本。
 func (item codexItem) resultText() string {
 	switch item.Type {
 	case "command_execution":
-		if item.AggregatedOutput != "" {
-			return item.AggregatedOutput
+		output := item.AggregatedOutput
+		if item.ExitCode != nil && *item.ExitCode != 0 {
+			output = strings.TrimSpace(output + "\n退出码 " + executor.FormatExitCode(*item.ExitCode))
+		}
+		if output != "" {
+			return output
 		}
 		return item.Status
 	case "mcp_tool_call":
-		if result := rawJSONText(item.Result); result != "" {
+		if result := executor.RawText(item.Result); result != "" {
 			return result
 		}
-		return rawJSONText(item.Error)
+		return executor.RawText(item.Error)
 	case "file_change":
 		if item.Text != "" {
 			return item.Text
 		}
+		kinds := make([]string, 0, len(item.Changes))
+		for _, change := range item.Changes {
+			entry := strings.TrimSpace(change.Path)
+			if kind := strings.TrimSpace(change.Kind); kind != "" {
+				entry = strings.TrimSpace(kind + " " + entry)
+			}
+			if entry != "" {
+				kinds = append(kinds, entry)
+			}
+		}
+		if len(kinds) > 0 {
+			return strings.Join(kinds, "\n")
+		}
 		return item.Status
 	}
 	return ""
 }
 
-func rawJSONText(raw json.RawMessage) string {
-	if len(raw) == 0 || string(raw) == "null" {
-		return ""
-	}
-	var text string
-	if json.Unmarshal(raw, &text) == nil {
-		return text
-	}
-	var value interface{}
-	if json.Unmarshal(raw, &value) == nil {
-		encoded, _ := json.Marshal(value)
-		return string(encoded)
-	}
-	return string(raw)
+// isNonFatalNotice 判断 error 事件是否为可忽略的重连提示。
+func isNonFatalNotice(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	return strings.HasPrefix(lower, "reconnecting") || strings.Contains(lower, "retrying")
 }
 
-// Stop stops execution
-func (a *Adapter) Stop() error {
-	a.mu.Lock()
-	cmd := a.cmd
-	pid := a.pid
-	cancel := a.cancel
-	a.mu.Unlock()
-
-	var terminateErr error
-	if cmd != nil && cmd.Process != nil && pid > 0 {
-		terminateErr = terminateProcessTreeForPID(pid)
+func maxInt(a, b int) int {
+	if a > b {
+		return a
 	}
-	if terminateErr == nil && cancel != nil {
-		cancel()
-	}
-	return terminateErr
-}
-
-func (a *Adapter) clearProcess(cmd *exec.Cmd) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.cmd != cmd {
-		return
-	}
-	a.cmd = nil
-	a.cancel = nil
-	a.pid = 0
-}
-
-// nowMillis returns the current Unix millisecond timestamp
-func nowMillis() int64 {
-	return timeNowMillis()
-}
-
-// execEnv returns the current environment variables
-func execEnv() []string {
-	return environ()
+	return b
 }

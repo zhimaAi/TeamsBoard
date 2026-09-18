@@ -2,32 +2,53 @@
   <div class="task-page">
     <header class="page-titlebar">
       <div class="page-titlebar-copy">
-        <strong>对话</strong>
-        <p>与 Agent 对话推进任务，Agent 的确认请求会在这里与你沟通</p>
+        <strong>{{ t('workflows.task.common.conversation') }}</strong>
+        <p>{{ t('workflows.task.notifications.subtitle') }}</p>
       </div>
-      <a-tooltip
-        :title="pipelineExpanded ? '隐藏任务概览' : '显示任务概览'"
-        placement="bottom"
-      >
-        <button
-          type="button"
-          class="overview-toggle-button"
-          :aria-label="pipelineExpanded ? '隐藏任务概览' : '显示任务概览'"
-          :aria-expanded="pipelineExpanded"
-          aria-controls="task-overview"
-          @click="togglePipelineExpanded"
+      <div class="page-titlebar-actions">
+        <a-tooltip
+          :title="
+            pipelineExpanded
+              ? t('workflows.task.notifications.hideOverview')
+              : t('workflows.task.notifications.showOverview')
+          "
+          placement="bottomRight"
         >
-          <img
-            :src="taskOverviewToggleIcon"
-            alt=""
-            aria-hidden="true"
-          />
+          <button
+            type="button"
+            class="overview-toggle-button"
+            :aria-label="
+              pipelineExpanded
+                ? t('workflows.task.notifications.hideOverview')
+                : t('workflows.task.notifications.showOverview')
+            "
+            :aria-expanded="pipelineExpanded"
+            aria-controls="task-overview"
+            @click="togglePipelineExpanded"
+          >
+            <img
+              :src="taskOverviewToggleIcon"
+              alt=""
+              aria-hidden="true"
+            />
+          </button>
+        </a-tooltip>
+        <button
+          v-if="task"
+          type="button"
+          class="overview-toggle-button terminal-button"
+          :disabled="openingTerminal || !(task.work_dir || task.task_dir)"
+          :aria-label="t('workflows.task.progress.openTerminal')"
+          :title="t('workflows.task.progress.openTerminal')"
+          @click="openSelectedTerminal"
+        >
+          <CodeOutlined />
         </button>
-      </a-tooltip>
+      </div>
     </header>
 
     <section
-      v-if="selectedConversation || newConversationPipeline"
+	  v-if="selectedConversation || newConversationPipeline || newConversationExpertGroup || newConversationCodex || newConversationCLI"
       v-show="pipelineExpanded"
       id="task-overview"
       class="task-overview"
@@ -36,8 +57,10 @@
       <template v-if="newConversationPipeline">
         <div class="task-overview-head">
           <div class="task-overview-title">
-            <h2 title="新任务">新任务</h2>
-            <span class="task-status">待创建</span>
+            <h2 :title="t('workflows.task.common.newTask')">
+              {{ t('workflows.task.common.newTask') }}
+            </h2>
+            <span class="task-status">{{ t('workflows.task.common.pendingCreation') }}</span>
           </div>
         </div>
         <div class="task-step-region">
@@ -53,10 +76,27 @@
             v-else
             class="step-region-empty"
           >
-            当前流水线暂无执行步骤
+            {{ t('workflows.task.notifications.noSteps') }}
           </div>
         </div>
       </template>
+	  <template v-else-if="newConversationExpertGroup">
+		<div class="task-overview-head"><div class="task-overview-title"><h2>{{ t('workflows.task.common.newTask') }}</h2><span class="task-status">{{ t('workflows.task.common.pendingCreation') }}</span></div></div>
+		<div class="task-step-region"><div class="expert-overview"><strong>{{ newConversationExpertGroup.name }}</strong><span>{{ `${t('expertGroups.leader')}：${newConversationExpertGroup.leader?.name || ''}` }}</span><span>{{ t('expertGroups.members', { count: newConversationExpertGroup.members.length }) }}</span></div></div>
+	  </template>
+	  <template v-else-if="newConversationCodex">
+		<div class="task-overview-head">
+		  <div class="task-overview-title">
+			<h2>{{ t('workflows.task.common.newTask') }}</h2>
+			<span class="task-status">{{ t('workflows.task.common.pendingCreation') }}</span>
+		  </div>
+		</div>
+		<div class="task-step-region">
+		  <div class="expert-overview">
+			<strong>{{ t('workflows.task.assign.vibeCodex') }}</strong>
+		  </div>
+		</div>
+	  </template>
       <template v-else-if="task">
         <div class="task-overview-head">
           <div class="task-overview-title">
@@ -74,8 +114,9 @@
           </div>
         </div>
         <div class="task-step-region">
+		  <div v-if="isExpertGroup" class="expert-overview"><strong>{{ task.expert_group_name_snapshot }}</strong><span>{{ `${t('expertGroups.leader')}：${sortedSteps.find(step => step.member_role === 'leader')?.name || ''}` }}</span><span>{{ t('expertGroups.members', { count: sortedSteps.filter(step => step.member_role === 'member').length }) }}</span></div>
           <AgentStepStrip
-            v-if="hasPipelineSnapshot"
+			v-else-if="hasPipelineSnapshot"
             :steps="sortedSteps"
             :current-step-index="currentStepIndex"
             :current-step-uuid="effectiveCurrentStepUuid"
@@ -83,10 +124,66 @@
             @select="selectStep"
           />
           <div
+            v-else-if="isVibeCoding"
+            class="direct-execution-summary"
+          >
+            <img
+              class="direct-execution-summary__logo"
+              :src="vibeCodingLogo"
+              alt=""
+              aria-hidden="true"
+            />
+            <span class="direct-execution-summary__label">{{
+              t('workflows.task.common.directExecution')
+            }}</span>
+            <strong>{{ `${t('workflows.task.create.vibeCodingMode')} · ${vibeCodingToolName}` }}</strong>
+          </div>
+          <div
+            v-else-if="isCLI"
+            class="direct-execution-summary"
+          >
+            <img
+              class="direct-execution-summary__logo"
+              :src="cliExecutionLogo"
+              alt=""
+              aria-hidden="true"
+            />
+            <span class="direct-execution-summary__label">{{
+              t('workflows.task.common.directExecution')
+            }}</span>
+            <strong>{{ cliRuntimeLabel }}</strong>
+          </div>
+          <div
             v-else
             class="step-region-empty"
           >
-            当前任务未指派流水线
+            {{ t('workflows.task.common.unassignedPipeline') }}
+          </div>
+        </div>
+      </template>
+      <!-- 新建 CLI 对话此时还没有 task，必须单独成支：否则会落到下面的加载骨架屏，
+           页面明明没在加载却一直显示灰块 -->
+      <template v-else-if="newConversationCLI">
+        <div class="task-overview-head">
+          <div class="task-overview-title">
+            <h2 :title="t('workflows.task.common.newTask')">
+              {{ t('workflows.task.common.newTask') }}
+            </h2>
+            <span class="task-status">{{ t('workflows.task.common.pendingCreation') }}</span>
+          </div>
+        </div>
+        <div class="task-step-region">
+          <div class="direct-execution-summary">
+            <img
+              class="direct-execution-summary__logo"
+              :src="cliExecutionLogo"
+              alt=""
+              aria-hidden="true"
+            />
+            <span class="direct-execution-summary__label">{{
+              t('workflows.task.common.directExecution')
+            }}</span>
+            <strong>{{ cliRuntimeSummary || t('workflows.task.assign.cliMode') }}</strong>
           </div>
         </div>
       </template>
@@ -122,7 +219,7 @@
         "
       >
         <div class="sidebar-heading">
-          <span>对话</span>
+          <span>{{ t('workflows.task.common.conversation') }}</span>
           <small>{{ displayedConversationCount }}</small>
           <a-dropdown
             v-model:open="pipelineMenuOpen"
@@ -134,7 +231,7 @@
             <button
               type="button"
               class="sidebar-add-button"
-              aria-label="查看执行流水线"
+              :aria-label="t('workflows.task.notifications.viewPipeline')"
               :aria-expanded="pipelineMenuOpen"
             >
               <PlusOutlined />
@@ -143,11 +240,11 @@
               <div
                 class="pipeline-menu"
                 role="menu"
-                aria-label="执行流水线"
+                :aria-label="t('workflows.task.common.pipeline')"
               >
                 <div class="pipeline-menu-heading">
                   <PipelineFlowIcon />
-                  <span>执行流水线</span>
+                  <span>{{ t('workflows.task.common.pipeline') }}</span>
                 </div>
                 <div
                   v-if="pipelinesLoading"
@@ -164,14 +261,14 @@
                     type="button"
                     @click.stop="loadPipelines(true)"
                   >
-                    <ReloadOutlined />重试
+                    <ReloadOutlined />{{ t('common.actions.retry') }}
                   </button>
                 </div>
                 <div
                   v-else-if="!pipelines.length"
                   class="pipeline-menu-state"
                 >
-                  暂无流水线
+                  {{ t('workflows.task.common.noPipeline') }}
                 </div>
                 <div
                   v-else
@@ -199,6 +296,94 @@
                     <span class="pipeline-menu-name">{{ pipeline.name }}</span>
                   </button>
                 </div>
+				<div class="pipeline-menu-heading">
+				  <TeamOutlined />
+				  <span>{{ t('agents.expertTeam') }}</span>
+				</div>
+				<div v-if="expertGroupsLoading" class="pipeline-menu-state"><a-spin size="small" /></div>
+				<div v-else-if="expertGroupsError" class="pipeline-menu-state pipeline-menu-error">{{ expertGroupsError }}</div>
+				<div v-else class="pipeline-menu-list">
+				  <button v-for="group in expertGroups" :key="`expert-${group.uuid}`" type="button" role="menuitem" class="pipeline-menu-item" :disabled="!group.ready" @click="startNewExpertConversation(group)"><img v-if="group.avatar" :src="group.avatar" alt="" /><span v-else class="pipeline-avatar-fallback">{{ pipelineInitials(group.name) }}</span><span class="pipeline-menu-name">{{ group.name }}</span></button>
+				</div>
+				<div class="pipeline-menu-heading">
+				  <img
+					class="pipeline-menu-heading-logo"
+					:src="vibeCodingLogo"
+					alt=""
+				  />
+				  <span>{{ t('workflows.task.create.vibeCodingMode') }}</span>
+				</div>
+				<a-tooltip
+				  :title="
+					codexCapability.available
+					  ? ''
+					  : codexCapability.message || t('workflows.task.codex.capabilityUnavailable')
+				  "
+				  placement="right"
+				>
+				  <span class="pipeline-menu-tooltip">
+					<button
+					  type="button"
+					  role="menuitem"
+					  class="pipeline-menu-item"
+					  :disabled="!codexCapability.available"
+					  @click="startNewCodexConversation"
+					>
+					  <img :src="codexLogo" alt="" />
+					  <span class="pipeline-menu-name">{{ t('workflows.task.notifications.createCodexConversation') }}</span>
+					</button>
+				  </span>
+				</a-tooltip>
+				<!-- 直接执行：CLI 与模型下拉内嵌在菜单内，与需求设计图一致 -->
+				<div class="pipeline-menu-heading">
+				  <img
+					class="pipeline-menu-heading-logo"
+					:src="cliExecutionLogo"
+					alt=""
+				  />
+				  <span>{{ t('workflows.task.common.directExecution') }}</span>
+				</div>
+				<div
+				  class="direct-cli"
+				  @click.stop
+				>
+				  <a-select
+					class="direct-cli__select"
+					:value="newConversationCliType || undefined"
+					:placeholder="t('workflows.task.assign.chooseCli')"
+					:options="cliSelectOptions"
+					:loading="cliLoading"
+					@change="chooseNewConversationCLIType"
+				  />
+				  <a-select
+					class="direct-cli__select"
+					:value="newConversationCliModel || undefined"
+					:placeholder="
+					  newConversationCliType
+						? t('workflows.task.assign.chooseModel')
+						: t('workflows.task.assign.chooseCliFirst')
+					"
+					:options="modelSelectOptions"
+					:loading="modelLoading"
+					:disabled="!newConversationCliType"
+					@change="chooseNewConversationCLIModel"
+				  />
+				  <a-button
+					type="primary"
+					block
+					class="direct-cli__submit"
+					:disabled="!canCreateNewCLIConversation"
+					@click="createNewCLIConversation"
+				  >
+					{{ t('workflows.task.notifications.createConversation') }}
+				  </a-button>
+				  <p
+					v-if="!cliLoading && !cliSelectOptions.some((item) => !item.disabled)"
+					class="cli-runtime-hint"
+				  >
+					{{ t('workflows.task.assign.noCli') }}
+				  </p>
+				</div>
               </div>
             </template>
           </a-dropdown>
@@ -206,19 +391,21 @@
 
         <div class="conversation-list scrollbar--subtle">
           <div
-            v-if="newConversationPipeline"
+			v-if="newConversationPipeline || newConversationExpertGroup || newConversationCodex || newConversationCLI"
             class="conversation-item active new-conversation-item"
             aria-current="true"
           >
             <span class="conversation-title">
-              <strong title="新任务">新任务</strong>
+              <strong :title="t('workflows.task.common.newTask')">{{
+                t('workflows.task.common.newTask')
+              }}</strong>
             </span>
             <span
-              v-if="newConversationSteps[0]"
+			  v-if="newConversationSteps[0] || newConversationExpertGroup?.leader || newConversationCodex || newConversationCLI"
               class="conversation-subtitle"
-              :title="`${newConversationSteps[0].name} · 待执行`"
-            >
-              {{ newConversationSteps[0].name }} · 待执行
+			  :title="conversationStatusLabel(newConversationActorName, t('workflows.task.execution.created'))"
+			>
+			  {{ conversationStatusLabel(newConversationActorName, t('workflows.task.execution.created')) }}
             </span>
           </div>
           <div
@@ -236,7 +423,7 @@
               type="button"
               @click="loadNotifications(false)"
             >
-              <ReloadOutlined />重试
+              <ReloadOutlined />{{ t('common.actions.retry') }}
             </button>
           </div>
           <div
@@ -255,20 +442,17 @@
                 <strong :title="conversation.title">{{ conversation.title }}</strong>
                 <i
                   v-if="conversation.unread"
-                  title="未读"
+                  :title="t('workflows.task.common.unread')"
                 />
               </span>
               <span class="conversation-subtitle">
-                {{ conversation.latest.step_name || 'Agent 编排' }} ·
-                {{
-                  terminalLabel(conversation.latest.status || conversation.latest.terminal_status)
-                }}
+				{{ conversationStatusLabel(conversationActorName(conversation.latest), terminalLabel(conversation.latest.status || conversation.latest.terminal_status)) }}
               </span>
             </button>
             <button
               type="button"
               class="conversation-menu-button"
-              aria-label="更多操作"
+              :aria-label="t('workflows.task.common.moreActions')"
               aria-haspopup="menu"
               aria-controls="conversation-context-menu"
               :aria-expanded="contextTaskUuid === conversation.task_uuid"
@@ -283,7 +467,7 @@
           </div>
           <div
             v-if="
-              !newConversationPipeline &&
+			  !newConversationPipeline && !newConversationExpertGroup && !newConversationCodex && !newConversationCLI &&
               !conversations.length &&
               !notificationsLoading &&
               !notificationsError
@@ -291,19 +475,21 @@
             class="sidebar-empty"
           >
             <FolderOutlined />
-            <span>暂无任务会话</span>
+            <span>{{ t('workflows.task.notifications.noConversations') }}</span>
           </div>
         </div>
         <div
           class="sidebar-resize-handle"
           role="separator"
           tabindex="0"
-          aria-label="调整对话列表宽度"
+          :aria-label="t('workflows.task.notifications.resize')"
           aria-orientation="vertical"
           :aria-valuemin="MIN_SIDEBAR_WIDTH"
           :aria-valuemax="sidebarMaxWidth"
           :aria-valuenow="Math.round(sidebarWidth)"
-          :aria-valuetext="`${Math.round(sidebarWidth)} 像素`"
+          :aria-valuetext="
+            t('workflows.task.notifications.pixels', { count: Math.round(sidebarWidth) })
+          "
           @pointerdown="startSidebarResize"
           @pointermove="handleSidebarResize"
           @pointerup="finishSidebarResize"
@@ -320,16 +506,26 @@
         <template v-if="newConversationPipeline">
           <div class="main-state new-conversation-state">
             <PipelineFlowIcon />
-            <h3>与「{{ newConversationPipeline.name }}」开始新对话</h3>
-            <p>发送首条消息后将自动创建任务并开始执行</p>
+            <h3>
+              {{
+                t('workflows.task.notifications.startTitle', {
+                  pipeline: newConversationPipeline.name,
+                })
+              }}
+            </h3>
+            <p>{{ t('workflows.task.notifications.startDescription') }}</p>
           </div>
           <ChatComposer
             ref="newConversationComposerRef"
             v-model="newConversationQuestion"
             :can-ask="true"
             :submitting="submitting"
-            placeholder="输入任务需求，发送后自动创建任务…"
-            :context-text="`使用「${newConversationPipeline.name}」创建任务`"
+            :placeholder="t('workflows.task.notifications.inputPlaceholder')"
+            :context-text="
+              t('workflows.task.notifications.createContext', {
+                pipeline: newConversationPipeline.name,
+              })
+            "
             task-uuid=""
             show-work-directory
             :work-directory="newConversationWorkDir"
@@ -337,7 +533,43 @@
             @select-work-directory="chooseNewConversationDirectory"
           />
         </template>
-        <template v-else-if="selectedConversation">
+		<template v-else-if="newConversationExpertGroup">
+		  <div class="main-state new-conversation-state">
+			<h3>{{ t('workflows.task.notifications.startTitle', { pipeline: newConversationExpertGroup.name }) }}</h3>
+			<p>{{ t('expertGroups.copyIndependent') }}</p>
+		  </div>
+		  <ChatComposer ref="newConversationComposerRef" v-model="newConversationQuestion" :can-ask="true" :submitting="submitting" :placeholder="t('workflows.task.notifications.inputPlaceholder')" :context-text="newConversationExpertGroup.name" task-uuid="" show-work-directory :work-directory="newConversationWorkDir" @submit="submitNewExpertConversation" @select-work-directory="chooseNewConversationDirectory" />
+		</template>
+		<template v-else-if="newConversationCodex">
+		  <div class="main-state new-conversation-state" aria-hidden="true" />
+		  <ChatComposer
+			ref="newConversationComposerRef"
+			v-model="newConversationQuestion"
+			:can-ask="true"
+			:submitting="submitting"
+			:placeholder="t('workflows.task.notifications.codexInputPlaceholder')"
+			:context-text="t('workflows.task.assign.vibeCodex')"
+			task-uuid=""
+			show-work-directory
+			:work-directory="newConversationWorkDir"
+			:submit-button-label="t('workflows.task.notifications.openCodex')"
+			@submit="submitNewCodexConversation"
+			@select-work-directory="chooseNewConversationDirectory"
+		  />
+		</template>
+		<template v-else-if="newConversationCLI">
+		  <div class="main-state new-conversation-state">
+			<h3>{{ t('workflows.task.notifications.startTitle', { pipeline: t('workflows.task.assign.cliMode') }) }}</h3>
+			<p>{{ t('workflows.task.assign.cliCardHint') }}</p>
+			<!-- CLI 与模型在「新建对话」菜单内选定，这里只回显已选执行目标 -->
+			<p
+			  v-if="cliRuntimeSummary"
+			  class="cli-runtime-hint cli-runtime-hint--selected"
+			>{{ cliRuntimeSummary }}</p>
+		  </div>
+		  <ChatComposer ref="newConversationComposerRef" v-model="newConversationQuestion" :can-ask="canSubmitNewCLIConversation" :submitting="submitting" :placeholder="t('workflows.task.notifications.inputPlaceholder')" :context-text="t('workflows.task.assign.cliMode')" task-uuid="" :hide-agent-prompt="true" show-work-directory :work-directory="newConversationWorkDir" @submit="submitNewCLIConversation" @select-work-directory="chooseNewConversationDirectory" />
+		</template>
+        <template v-else-if="selectedConversation || selectedTaskUuid">
           <div
             v-if="taskError && !task"
             class="main-state main-error"
@@ -347,7 +579,7 @@
               type="button"
               @click="loadSelectedTask()"
             >
-              <ReloadOutlined />重试
+              <ReloadOutlined />{{ t('common.actions.retry') }}
             </button>
           </div>
           <div
@@ -366,9 +598,9 @@
               <div class="composer-loading-body" />
             </div>
           </div>
-          <template v-else-if="task && hasPipelineSnapshot">
-            <NextStepButton
-              v-if="showNextStepCard"
+		  <template v-else-if="task && (hasPipelineSnapshot || isVibeCoding || isExpertGroup || isCLI)">
+			<NextStepButton
+			  v-if="!isVibeCoding && !isExpertGroup && !isCLI && showNextStepCard"
               :next-step-name="nextStepName"
               :is-last-step="isLastStep"
               :disabled="!canComplete"
@@ -383,7 +615,7 @@
                 v-if="taskRefreshing"
                 class="message-refresh-indicator"
                 role="status"
-                aria-label="正在刷新任务"
+                :aria-label="t('workflows.task.notifications.refreshing')"
               >
                 <a-spin
                   :spinning="taskRefreshing"
@@ -392,15 +624,25 @@
                 />
               </div>
               <StepMessageList
-                :items="selectedProgress"
-                :steps="sortedSteps"
+				:items="isVibeCoding ? progress : selectedProgress"
+				:steps="isVibeCoding ? [] : sortedSteps"
                 :highlight-uuid="highlightUuid"
-                :selected-step-name="selectedStep?.name || ''"
+				:selected-step-name="isVibeCoding ? vibeCodingToolName : selectedStep?.name || ''"
+				:fallback-actor-name="isVibeCoding ? vibeCodingToolName : ''"
+				:fallback-actor-logo="isVibeCoding ? vibeCodingActorLogo : ''"
                 :task-uuid="selectedTaskUuid"
                 @copy="copyResult"
               />
             </div>
+            <VibeCodingConversationNotice
+              v-if="isVibeCoding"
+              :tool-name="vibeCodingToolName"
+              :show-open-button="task?.execution_tool === 'codex'"
+              :opening="codexBusy"
+              @open="handleOpenCodex"
+            />
             <ChatComposer
+			  v-else
               ref="composerRef"
               v-model="question"
               :can-ask="canAsk"
@@ -409,13 +651,17 @@
               :stopping="stoppingSessionUuid === activeSelectedProgress?.session_uuid"
               :cli-type="composerCliType"
               :model-name="composerModelName"
+              :start-mode="selectedStepAwaitingStart"
               :placeholder="composerPlaceholder"
               :context-text="composerContextText"
               :task-uuid="selectedTaskUuid"
-              :current-step="selectedStep"
+			  :current-step="isExpertGroup ? undefined : selectedStep"
+			  :document-step="isExpertGroup ? currentStep : selectedStep"
               :steps="sortedSteps"
+			  :expert-members="isExpertGroup ? sortedSteps : []"
               :executing-step-uuid="effectiveCurrentStepUuid"
-              @submit="submitQuestion"
+              :hide-agent-prompt="isCLI"
+			  @submit="isExpertGroup ? submitExpertMessage($event) : submitQuestion($event)"
               @stop="stopSelectedConversation"
               @prompt-saved="loadSelectedTask"
             />
@@ -429,7 +675,7 @@
               v-if="taskRefreshing"
               class="main-refresh-indicator"
               role="status"
-              aria-label="正在刷新任务"
+              :aria-label="t('workflows.task.notifications.refreshing')"
             >
               <a-spin
                 :spinning="taskRefreshing"
@@ -438,8 +684,8 @@
               />
             </div>
             <FolderOutlined />
-            <h3>未指派流水线</h3>
-            <p>请先为任务分配流水线，动态记录将自动展示</p>
+            <h3>{{ t('workflows.task.common.unassignedPipeline') }}</h3>
+            <p>{{ t('workflows.task.notifications.unassignedDescription') }}</p>
           </div>
         </template>
         <div
@@ -447,8 +693,8 @@
           class="main-state"
         >
           <CheckCircleOutlined />
-          <h3>暂无待处理任务</h3>
-          <p>Agent 执行和确认请求会在这里与你沟通</p>
+          <h3>{{ t('workflows.task.notifications.emptyTitle') }}</h3>
+          <p>{{ t('workflows.task.notifications.emptyDescription') }}</p>
         </div>
       </main>
     </div>
@@ -470,7 +716,7 @@
           :src="contextDetailIcon"
           alt=""
           aria-hidden="true"
-        />详情
+        />{{ t('workflows.task.common.details') }}
       </button>
       <button
         type="button"
@@ -481,7 +727,11 @@
           :src="contextReadIcon"
           alt=""
           aria-hidden="true"
-        />{{ contextConversation?.unread ? '标为已读' : '设为未读' }}
+        />{{
+          contextConversation?.unread
+            ? t('workflows.task.common.markRead')
+            : t('workflows.task.common.markUnread')
+        }}
       </button>
       <button
         type="button"
@@ -492,7 +742,7 @@
           :src="contextArchiveIcon"
           alt=""
           aria-hidden="true"
-        />归档
+        />{{ t('workflows.task.common.archive') }}
       </button>
     </div>
 
@@ -525,21 +775,27 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRaw, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { message } from 'ant-design-vue'
 import {
   CheckCircleOutlined,
+  CodeOutlined,
   FolderOutlined,
   PlusOutlined,
   ReloadOutlined,
+  TeamOutlined,
 } from '@ant-design/icons-vue'
 import MarkdownIt from 'markdown-it'
 import apiClient, { ApiError } from '@/api/client'
+import cliExecutionLogo from '@/assets/icons/task-composer-cli.svg'
+import vibeCodingLogo from '@/assets/icons/vibe-coding-logo.svg'
 import conversationMenuIcon from '@/assets/icons/common-more-actions.svg'
 import contextArchiveIcon from '@/assets/icons/task-context-archive.svg'
 import contextDetailIcon from '@/assets/icons/task-context-detail.svg'
 import contextReadIcon from '@/assets/icons/task-context-read.svg'
 import taskOverviewToggleIcon from '@/assets/icons/task-overview-toggle.svg'
+import codexLogo from '@/assets/icons/codex-logo.svg'
 import AssignPipelineModal from '@/components/AssignPipelineModal.vue'
 import AgentStepStrip from '@/components/task-progress/AgentStepStrip.vue'
 import ChatComposer from '@/components/task-progress/ChatComposer.vue'
@@ -547,13 +803,24 @@ import NextStepButton from '@/components/task-progress/NextStepButton.vue'
 import PipelineFlowIcon from '@/components/task-progress/PipelineFlowIcon.vue'
 import StepMessageList from '@/components/task-progress/StepMessageList.vue'
 import StopExecutionConfirmModal from '@/components/task-progress/StopExecutionConfirmModal.vue'
+import VibeCodingConversationNotice from '@/components/task-progress/VibeCodingConversationNotice.vue'
 import { copyText } from '@/utils/clipboard'
 import { isStopConfirmSuppressed, suppressStopConfirm } from '@/utils/stopConfirm'
-import { selectDirectory } from '@/composables/useDesktop'
+import { selectDirectory, openTerminal } from '@/composables/useDesktop'
+import {
+  loadCodexCapability,
+  openTaskInCodex,
+  type CodexCapability,
+} from '@/composables/useTaskCodex'
 import { useLocalWS, useLocalWSStatus } from '@/composables/useLocalWebSocket'
 import { usePipelineStore } from '@/stores/pipeline'
+import { useExpertGroupStore } from '@/stores/expert-group'
+import { useCliModelOptions } from '@/composables/useCliModelOptions'
+import { buildCliKickoffPrompt, pendingCliKickoffUuid } from '@/composables/useCliKickoff'
+import { useAppStore } from '@/stores/app'
 import type {
   CompleteStepResponse,
+	ExpertGroup,
   Pipeline,
   TaskNotification,
   TaskProgress,
@@ -571,6 +838,7 @@ import {
 } from '@/utils/taskConversationCache'
 import TaskDetailInfoModal from '@/views/workflows/components/TaskDetailInfoModal.vue'
 import TaskImagePreviewModal from '@/views/workflows/components/TaskImagePreviewModal.vue'
+import { useAppI18n } from '@/i18n'
 
 interface TaskConversation {
   task_uuid: string
@@ -590,8 +858,14 @@ interface CreateTaskNotification {
   created_at: number
 }
 
+const appStore = useAppStore()
 const pipelineStore = usePipelineStore()
 const { pipelines, loading: pipelinesLoading, error: pipelinesError } = storeToRefs(pipelineStore)
+const expertGroupStore = useExpertGroupStore()
+const { items: expertGroups, loading: expertGroupsLoading, error: expertGroupsError } = storeToRefs(expertGroupStore)
+const route = useRoute()
+const router = useRouter()
+const { t } = useAppI18n()
 
 type CreatedTaskResponse = TaskWithDetails & {
   notification?: CreateTaskNotification
@@ -606,6 +880,9 @@ const notificationsLoading = ref(false)
 const notificationsError = ref('')
 const notifications = ref<TaskNotification[]>([])
 const temporaryNotifications = ref<TaskNotification[]>([])
+watch(() => [...notifications.value, ...temporaryNotifications.value].filter((item) => !item.is_read).length,
+  (count) => appStore.setUnreadTaskNotifications(count))
+const pendingReadTasks = new Map<string, { isRead: boolean; notificationUuids: Set<string> }>()
 const selectedTaskUuid = ref('')
 const selectedStepUuid = ref('')
 const selectedProgressUuid = ref('')
@@ -624,6 +901,8 @@ const question = ref('')
 const composerRef = ref<InstanceType<typeof ChatComposer>>()
 const highlightUuid = ref('')
 const pipelineExpanded = ref(true)
+const openingTerminal = ref(false)
+const codexBusy = ref(false)
 const taskLayoutRef = ref<HTMLElement>()
 const conversationSidebarRef = ref<HTMLElement>()
 const sidebarWidth = ref(300)
@@ -633,11 +912,69 @@ const sidebarDragging = ref(false)
 
 const pipelineMenuOpen = ref(false)
 const newConversationPipeline = ref<Pipeline>()
+const newConversationExpertGroup = ref<ExpertGroup>()
+const newConversationCodex = ref(false)
+const newConversationCLI = ref(false)
+const newConversationCliType = ref('')
+const newConversationCliModel = ref('')
 const newConversationQuestion = ref('')
 const newConversationWorkDir = ref('')
 const newConversationComposerRef = ref<InstanceType<typeof ChatComposer>>()
 const newConversationSubmission = ref<ChatComposerSubmission>()
+const codexCapability = ref<CodexCapability>({ available: false })
+const codexCapabilityLoaded = ref(false)
+
+// CLI 直接执行：CLI 与模型都由用户当场选定后才能发起对话。
+const {
+  cliLoading,
+  cliOptions,
+  loadCliOptions,
+  loadModelOptions,
+  modelLoading,
+  modelOptions,
+} = useCliModelOptions()
+const cliSelectOptions = computed(() =>
+  cliOptions.value.map((cli) => ({ value: cli.type, label: cli.name, disabled: !cli.installed })),
+)
+const modelSelectOptions = computed(() =>
+  modelOptions.value.map((model) => ({ value: model, label: model })),
+)
+const canSubmitNewCLIConversation = computed(
+  () => Boolean(newConversationCliType.value && newConversationCliModel.value),
+)
+// 菜单内「创建对话」按钮与首条消息提交共用同一份 CLI/模型校验。
+const canCreateNewCLIConversation = computed(() => canSubmitNewCLIConversation.value)
+const cliRuntimeSummary = computed(() => {
+  if (!newConversationCliType.value || !newConversationCliModel.value) return ''
+  const cli = cliOptions.value.find((item) => item.type === newConversationCliType.value)
+  return `${cli?.name || newConversationCliType.value} · ${newConversationCliModel.value}`
+})
 const pipelineConfigModalOpen = ref(false)
+
+// 评论 4：对话-新建对话记住上次选择的 CLI 与模型，下次默认填入。
+const CLI_PREFERENCE_KEY = 'goteams.conversation.cliPreference'
+
+function readCliPreference(): { cliType: string; model: string } {
+  try {
+    const raw = localStorage.getItem(CLI_PREFERENCE_KEY)
+    if (!raw) return { cliType: '', model: '' }
+    const parsed = JSON.parse(raw) as { cliType?: unknown; model?: unknown }
+    return {
+      cliType: typeof parsed.cliType === 'string' ? parsed.cliType : '',
+      model: typeof parsed.model === 'string' ? parsed.model : '',
+    }
+  } catch {
+    return { cliType: '', model: '' }
+  }
+}
+
+function writeCliPreference(cliType: string, model: string) {
+  try {
+    localStorage.setItem(CLI_PREFERENCE_KEY, JSON.stringify({ cliType, model }))
+  } catch {
+    // 存储不可用时静默降级：记忆只是体验增强，不影响功能。
+  }
+}
 
 const contextTaskUuid = ref('')
 const contextX = ref(0)
@@ -651,6 +988,8 @@ let highlightTimer: ReturnType<typeof setTimeout> | undefined
 let taskLoadVersion = 0
 let notificationsLoadVersion = 0
 let persistentCacheAvailable = true
+let notificationsHydrated = false
+let lastNotifiedTaskUuids = new Set<string>()
 let sidebarResizeState:
   | {
       pointerId: number
@@ -666,26 +1005,26 @@ const SIDEBAR_WIDTH_STORAGE_KEY = 'goteams.tasks.conversationSidebarWidth'
 
 const wsConnected = useLocalWSStatus()
 
-const taskStatusLabels: Record<string, string> = {
-  pending: '待开始',
-  in_progress: '进行中',
-  blocked: '已阻塞',
-  done: '已完成',
-}
-const taskPriorityLabels: Record<string, string> = {
-  urgent: '紧急',
-  high: '高',
-  medium: '中',
-  low: '低',
-}
-const terminalLabels: Record<string, string> = {
-  created: '等待执行',
-  running: '执行中',
-  success: '执行完成',
-  failed: '执行失败',
-  stopped: '执行停止',
-  interrupted: '执行中断',
-}
+const taskStatusLabels = computed<Record<string, string>>(() => ({
+  pending: t('workflows.task.status.pending'),
+  in_progress: t('workflows.task.status.inProgress'),
+  blocked: t('workflows.task.status.blocked'),
+  done: t('workflows.task.status.done'),
+}))
+const taskPriorityLabels = computed<Record<string, string>>(() => ({
+  urgent: t('workflows.task.priority.urgent'),
+  high: t('workflows.task.priority.high'),
+  medium: t('workflows.task.priority.medium'),
+  low: t('workflows.task.priority.low'),
+}))
+const terminalLabels = computed<Record<string, string>>(() => ({
+  created: t('workflows.task.execution.created'),
+  running: t('workflows.task.execution.running'),
+  success: t('workflows.task.execution.success'),
+  failed: t('workflows.task.execution.failed'),
+  stopped: t('workflows.task.execution.stopped'),
+  interrupted: t('workflows.task.execution.interrupted'),
+}))
 
 const conversations = computed<TaskConversation[]>(() => {
   const grouped = new Map<string, TaskNotification[]>()
@@ -700,7 +1039,10 @@ const conversations = computed<TaskConversation[]>(() => {
       const latest = items[0]
       return {
         task_uuid: taskUuid,
-        title: latest.task_title || latest.title || `任务 ${taskUuid.slice(0, 8)}`,
+        title:
+          latest.task_title ||
+          latest.title ||
+          t('workflows.task.feedback.taskFallback', { id: taskUuid.slice(0, 8) }),
         items,
         latest,
         unread: items.some((item) => !item.is_read),
@@ -709,11 +1051,17 @@ const conversations = computed<TaskConversation[]>(() => {
     .sort((a, b) => b.latest.created_at - a.latest.created_at)
 })
 const displayedConversationCount = computed(
-  () => conversations.value.length + (newConversationPipeline.value ? 1 : 0),
+	() => conversations.value.length + (newConversationPipeline.value || newConversationExpertGroup.value || newConversationCodex.value || newConversationCLI.value ? 1 : 0),
 )
 const newConversationSteps = computed(() =>
   [...(newConversationPipeline.value?.steps || [])].sort((a, b) => a.sort_order - b.sort_order),
 )
+const newConversationActorName = computed(() => {
+  if (newConversationSteps.value[0]?.name) return newConversationSteps.value[0].name
+  if (newConversationExpertGroup.value?.leader?.name) return newConversationExpertGroup.value.leader.name
+  if (newConversationCodex.value) return t('workflows.task.assign.vibeCodex')
+  return t('workflows.task.assign.cliMode')
+})
 
 const selectedConversation = computed(() =>
   conversations.value.find((item) => item.task_uuid === selectedTaskUuid.value),
@@ -725,8 +1073,30 @@ const sortedSteps = computed(() =>
   [...(task.value?.steps || [])].sort((a, b) => a.sort_order - b.sort_order),
 )
 const hasPipelineSnapshot = computed(() =>
-  Boolean(task.value?.pipeline_snapshot_uuid || sortedSteps.value.length),
+	Boolean(task.value?.execution_mode === 'pipeline' && (task.value?.pipeline_snapshot_uuid || sortedSteps.value.length)),
 )
+const isVibeCoding = computed(
+  () => task.value?.execution_mode === 'vibe_coding',
+)
+const vibeCodingToolName = computed(() =>
+  task.value?.execution_tool === 'codex'
+    ? t('workflows.task.assign.codex')
+    : task.value?.execution_tool || t('workflows.task.create.vibeCodingMode'),
+)
+const vibeCodingActorLogo = computed(() =>
+  task.value?.execution_tool === 'codex' ? codexLogo : vibeCodingLogo,
+)
+const isExpertGroup = computed(() => task.value?.execution_mode === 'expert_group')
+// 需求 2204：CLI 直接执行没有流水线与多 Agent，对话页也要能展示该任务的动态与输入框。
+// 需求 2202 评论 4：直接执行 CLI 时输入框不展示「Agent 提示词」入口。
+const isCLI = computed(() => task.value?.execution_mode === 'cli')
+// CLI 任务的执行目标固定展示为「CLI · 模型」。
+const cliRuntimeLabel = computed(() => {
+  const tool = task.value?.execution_tool || ''
+  const cli = cliOptions.value.find((item) => item.type === tool)
+  const model = task.value?.execution_model || sortedSteps.value[0]?.model_name || ''
+  return [cli?.name || tool, model].filter(Boolean).join(' · ')
+})
 const effectiveCurrentStepUuid = computed(
   () =>
     task.value?.current_step_uuid ||
@@ -747,7 +1117,7 @@ const selectedStepIndex = computed(() =>
   sortedSteps.value.findIndex((step) => step.uuid === selectedStepUuid.value),
 )
 const selectedProgress = computed(() =>
-  progress.value.filter((item) => item.task_step_uuid === selectedStepUuid.value),
+	isExpertGroup.value ? progress.value : progress.value.filter((item) => item.task_step_uuid === selectedStepUuid.value),
 )
 const latestSelectedAgentProgress = computed(() =>
   [...selectedProgress.value].reverse().find((item) => !isUserMessage(item)),
@@ -792,7 +1162,14 @@ const currentStepLocked = computed(
     currentStep.value?.status === 'completed',
 )
 const canAsk = computed(
-  () => !taskLoading.value && selectedStepReached.value && !hasRunningSelectedConversation.value,
+	() => !taskLoading.value && (isExpertGroup.value || selectedStepReached.value) && !hasRunningSelectedConversation.value,
+)
+const selectedStepAwaitingStart = computed(
+  () =>
+    selectedIsCurrent.value &&
+    !currentStepLocked.value &&
+    selectedStep.value?.status === 'active' &&
+    selectedProgress.value.length === 0,
 )
 const canComplete = computed(
   () =>
@@ -817,19 +1194,23 @@ const showNextStepCard = computed(
   () => selectedIsCurrent.value && !currentStepLocked.value && lastProgressTerminal.value,
 )
 const composerPlaceholder = computed(() => {
-  if (taskLoading.value) return '正在刷新任务，请稍候'
-  if (!selectedStepReached.value) return '执行到当前步骤后才可发起对话'
-  if (hasRunningSelectedConversation.value) return 'Agent 正在执行，请等待本轮完成'
-  return '输入留言，输入 @选择成员沟通…'
+  if (taskLoading.value) return t('workflows.task.feedback.refreshingWait')
+  if (!selectedStepReached.value) return t('workflows.task.detail.stepUnavailable')
+  if (hasRunningSelectedConversation.value) return t('workflows.task.feedback.agentRunning')
+  // CLI 直接执行没有多 Agent，用指令式占位文案。
+  if (isCLI.value) return t('workflows.task.detail.cliMessagePlaceholder')
+  return t('workflows.task.feedback.mentionPlaceholder')
 })
-const composerContextText = computed(
-  () =>
-    `正在与「${selectedStep.value?.name || 'Agent'}」沟通 · 步骤 ${Math.max(selectedStepIndex.value + 1, 1)}`,
+const composerContextText = computed(() =>
+  t('workflows.task.detail.conversationContext', {
+    step: selectedStep.value?.name || 'Agent',
+    index: Math.max(selectedStepIndex.value + 1, 1),
+  }),
 )
 const taskStatus = computed(() => statusValue(task.value?.status))
-const taskStatusText = computed(() => taskStatusLabels[taskStatus.value] || taskStatus.value)
+const taskStatusText = computed(() => taskStatusLabels.value[taskStatus.value] || taskStatus.value)
 const taskPriorityText = computed(
-  () => taskPriorityLabels[String(task.value?.priority || '').toLowerCase()] || '',
+  () => taskPriorityLabels.value[String(task.value?.priority || '').toLowerCase()] || '',
 )
 
 const md = new MarkdownIt({ breaks: true, linkify: true })
@@ -854,11 +1235,160 @@ function statusValue(status?: string) {
 }
 
 function terminalLabel(status?: string) {
-  return terminalLabels[status || ''] || '等待处理'
+  return terminalLabels.value[status || ''] || t('workflows.task.execution.waiting')
+}
+
+function routeQueryValue(value: unknown) {
+  return typeof value === 'string' ? value : ''
+}
+
+// 需求 2204（评论 5 调整后口径）：指派给 CLI 后不再预填输入框，而是任务与隐式
+// 步骤就绪后自动向 CLI 发送 task.md 引用与固定提示词。两个触发来源：
+// - 对话内新建 CLI 对话：创建任务成功后置 autoKickoffTaskUuid；
+// - 三条指派链路（新建任务 / 看板弹窗 / 详情指派）：openCliConversation 置
+//   pendingCliKickoffUuid（模块级 ref；不能走路由 query，会被 syncConversationRoute 重写掉）。
+// 发送复用 submitQuestion 的 runs 链路；意图只消费一次，失败不重试避免重复轰炸。
+// 注意：本段引用的 selectedStep / activeSelectedProgress / canAsk 等都在上方定义，
+// watch 源数组会立即求值，不能把本段提前到它们之前（会触发 TDZ 错误）。
+const autoKickoffTaskUuid = ref('')
+const cliKickoffSending = ref(false)
+
+const cliKickoffPending = computed(() => {
+  const target = selectedTaskUuid.value
+  if (!target) return false
+  return autoKickoffTaskUuid.value === target || pendingCliKickoffUuid.value === target
+})
+
+// 就绪条件：目标任务是 CLI 直接执行、隐式步骤（cli-direct）已加载为当前步骤，
+// 且可以发起提问（任务加载完、无进行中会话、非提交中）。
+const cliKickoffTaskReady = computed(() => {
+  const loaded = task.value
+  if (!loaded || loaded.uuid !== selectedTaskUuid.value) return null
+  if (loaded.execution_mode !== 'cli') return null
+  const step = selectedStep.value
+  if (!step || step.step_key !== 'cli-direct') return null
+  return loaded
+})
+
+watch(
+  [cliKickoffPending, cliKickoffTaskReady, canAsk, submitting, activeSelectedProgress],
+  async ([pending, loaded, ask, busy, active]) => {
+    if (!pending || cliKickoffSending.value) return
+    if (!loaded || !ask || busy || active) return
+    cliKickoffSending.value = true
+    try {
+      // 先消费意图再发送：状态回写触发重渲染也不会重复触发。
+      autoKickoffTaskUuid.value = ''
+      pendingCliKickoffUuid.value = ''
+      const prompt = buildCliKickoffPrompt(
+        loaded.task_dir || '',
+        t('workflows.task.notifications.cliKickoffPrompt'),
+      )
+      if (!prompt) return
+      await submitQuestion({
+        content: prompt.content,
+        display_content: prompt.content,
+        config: {
+          cli_type: loaded.execution_tool || '',
+          model_name: loaded.execution_model || '',
+        },
+      })
+    } finally {
+      cliKickoffSending.value = false
+    }
+  },
+  { immediate: true },
+)
+
+async function syncConversationRoute(taskUuid: string, stepUuid = '') {
+  if (
+    routeQueryValue(route.query.taskUuid) === taskUuid &&
+    routeQueryValue(route.query.stepUuid) === stepUuid
+  ) {
+    return
+  }
+  await router.replace({
+    name: 'tasks',
+    query: {
+      taskUuid: taskUuid || undefined,
+      stepUuid: taskUuid && stepUuid ? stepUuid : undefined,
+    },
+  })
+}
+
+async function selectConversationFromRoute() {
+  const routeTaskUuid = routeQueryValue(route.query.taskUuid)
+  if (!routeTaskUuid) return
+  let conversation = conversations.value.find((item) => item.task_uuid === routeTaskUuid)
+  if (!conversation) {
+    await loadNotifications(true)
+    conversation = conversations.value.find((item) => item.task_uuid === routeTaskUuid)
+  }
+  const routeStepUuid = routeQueryValue(route.query.stepUuid)
+  // 指派给 CLI 后跳转过来的任务可能还没有通知记录：直接按路由选中，
+  // 否则详情区会停在空白态。
+  if (!conversation) {
+    if (selectedTaskUuid.value === routeTaskUuid) return
+    clearNewConversation()
+    selectedTaskUuid.value = routeTaskUuid
+    selectedStepUuid.value = routeStepUuid
+    selectedProgressUuid.value = ''
+    closeContextMenu()
+    void persistViewState()
+    await loadSelectedTask()
+    return
+  }
+  const nextStepUuid = routeStepUuid || conversation.latest.task_step_uuid
+  if (
+	!newConversationPipeline.value && !newConversationExpertGroup.value && !newConversationCodex.value && !newConversationCLI.value &&
+    selectedTaskUuid.value === conversation.task_uuid &&
+    selectedStepUuid.value === nextStepUuid
+  ) {
+    return
+  }
+  clearNewConversation()
+  selectedTaskUuid.value = conversation.task_uuid
+  selectedStepUuid.value = nextStepUuid
+  selectedProgressUuid.value = routeStepUuid ? '' : conversation.latest.progress_uuid || ''
+  closeContextMenu()
+  void persistViewState()
+  await loadSelectedTask()
+}
+
+function showSystemNotification(conversation: TaskConversation) {
+  if (typeof window === 'undefined' || typeof Notification === 'undefined') return
+  if (Notification.permission !== 'granted') return
+
+  const notification = new Notification(
+    t('workflows.task.feedback.readyTitle', {
+      step: conversation.latest.step_name || t('workflows.task.common.agentOrchestration'),
+    }),
+    {
+      body: t('workflows.task.feedback.openTask', { task: conversation.title }),
+      tag: conversation.task_uuid,
+    },
+  )
+  notification.onclick = () => {
+    window.focus()
+    void syncConversationRoute(conversation.task_uuid)
+  }
+}
+
+async function ensureNotificationPermission() {
+  if (typeof window === 'undefined' || typeof Notification === 'undefined') return
+  if (Notification.permission !== 'default') return
+  try {
+    await Notification.requestPermission()
+  } catch {
+    // 通知权限申请失败不影响任务页面主流程
+  }
 }
 
 function pipelineInitials(name?: string) {
-  return (name || '流').trim().slice(0, 1).toUpperCase()
+  return (name || t('workflows.task.notifications.pipelineInitial'))
+    .trim()
+    .slice(0, 1)
+    .toUpperCase()
 }
 
 function clearRefreshTimer() {
@@ -1035,13 +1565,42 @@ async function loadNotifications(preserveSelection = true) {
     const result = await apiClient.get<{ items: TaskNotification[] }>('/notifications')
     if (requestVersion !== notificationsLoadVersion) return
     const loadedNotifications = result.items || []
+    // 读取列表可能与点击消红点并发，只覆盖本次操作时已存在的通知，
+    // 新到达的通知仍保留服务端的未读状态。
+    for (const item of loadedNotifications) {
+      const pending = pendingReadTasks.get(item.task_uuid)
+      if (pending?.notificationUuids.has(item.uuid)) item.is_read = pending.isRead
+    }
+    const previousTaskUuids = lastNotifiedTaskUuids
     notifications.value = loadedNotifications
     temporaryNotifications.value = temporaryNotifications.value.filter(
       (temporary) => !loadedNotifications.some((item) => item.task_uuid === temporary.task_uuid),
     )
+    const currentTaskUuids = new Set(loadedNotifications.map((item) => item.task_uuid))
+    if (notificationsHydrated) {
+      for (const conversation of conversations.value) {
+        if (
+          conversation.unread &&
+          !previousTaskUuids.has(conversation.task_uuid) &&
+          currentTaskUuids.has(conversation.task_uuid)
+        ) {
+          showSystemNotification(conversation)
+        }
+      }
+    }
+    lastNotifiedTaskUuids = currentTaskUuids
+    notificationsHydrated = true
     const previousSelectedTaskUuid = selectedTaskUuid.value
-    if (
-      !newConversationPipeline.value &&
+    const previousSelectedStepUuid = selectedStepUuid.value
+    const routeTaskUuid = routeQueryValue(route.query.taskUuid)
+    const routeStepUuid = routeQueryValue(route.query.stepUuid)
+    const routeConversation = conversations.value.find((item) => item.task_uuid === routeTaskUuid)
+	if (!newConversationPipeline.value && !newConversationExpertGroup.value && !newConversationCodex.value && !newConversationCLI.value && routeConversation) {
+      selectedTaskUuid.value = routeConversation.task_uuid
+      selectedStepUuid.value = routeStepUuid || routeConversation.latest.task_step_uuid
+      selectedProgressUuid.value = routeStepUuid ? '' : routeConversation.latest.progress_uuid || ''
+    } else if (
+	  !newConversationPipeline.value && !newConversationExpertGroup.value && !newConversationCodex.value && !newConversationCLI.value &&
       (!preserveSelection ||
         !conversations.value.some((item) => item.task_uuid === selectedTaskUuid.value))
     ) {
@@ -1051,11 +1610,14 @@ async function loadNotifications(preserveSelection = true) {
       selectedProgressUuid.value = first?.latest.progress_uuid || ''
     }
     const selectionChanged = previousSelectedTaskUuid !== selectedTaskUuid.value
+    const selectedStepChanged = previousSelectedStepUuid !== selectedStepUuid.value
     if (!conversations.value.length) {
       selectedTaskUuid.value = ''
       clearSelectedTask()
     } else if (selectionChanged && selectedTaskUuid.value) {
+      const requestedStepUuid = selectedStepUuid.value
       clearSelectedTask()
+      selectedStepUuid.value = requestedStepUuid
       restoreCachedTaskView(selectedTaskUuid.value)
     }
 
@@ -1065,13 +1627,16 @@ async function loadNotifications(preserveSelection = true) {
       persistViewState(),
       reconcileTaskViewCache(validTaskUuids),
     ])
-    if (selectionChanged && selectedTaskUuid.value) void loadSelectedTask()
+    if ((selectionChanged || selectedStepChanged) && selectedTaskUuid.value) {
+      void loadSelectedTask()
+    }
   } catch (error) {
     if (requestVersion !== notificationsLoadVersion) return
     if (hadCachedNotifications || conversations.value.length) {
-      message.warning('已显示本地缓存，暂时无法获取最新会话')
+      message.warning(t('workflows.task.feedback.cachedConversations'))
     } else {
-      notificationsError.value = error instanceof Error ? error.message : '任务会话加载失败'
+      notificationsError.value =
+        error instanceof Error ? error.message : t('workflows.task.feedback.conversationLoadFailed')
       message.error(notificationsError.value)
     }
   } finally {
@@ -1111,6 +1676,13 @@ async function loadSelectedTask(silent = false) {
     task.value = loadedTask
     progress.value = sortedProgress
     selectedStepUuid.value = nextSelectedStepUuid
+    if (
+      routeQueryValue(route.query.taskUuid) === taskUuid &&
+      routeQueryValue(route.query.stepUuid) &&
+      routeQueryValue(route.query.stepUuid) !== nextSelectedStepUuid
+    ) {
+      await syncConversationRoute(taskUuid, nextSelectedStepUuid)
+    }
     taskError.value = ''
     void persistTaskView(taskUuid, loadedTask, sortedProgress)
     await locateTarget('auto')
@@ -1118,9 +1690,10 @@ async function loadSelectedTask(silent = false) {
     if (requestVersion === taskLoadVersion && !silent) {
       if (task.value?.uuid === taskUuid) {
         taskError.value = ''
-        message.warning('已显示本地缓存，暂时无法获取最新任务进度')
+        message.warning(t('workflows.task.feedback.cachedProgress'))
       } else {
-        taskError.value = error instanceof Error ? error.message : '任务进度加载失败'
+        taskError.value =
+          error instanceof Error ? error.message : t('workflows.task.feedback.progressLoadFailed')
         message.error(taskError.value)
       }
     }
@@ -1137,33 +1710,38 @@ async function initialize() {
   const restoredFromCache = await restorePersistentTaskConversationCache()
   if (selectedTaskUuid.value) void loadSelectedTask()
   await loadNotifications(restoredFromCache)
+  // 直接打开带 taskUuid 的链接（指派 CLI 后的跳转就是这种）时路由 watcher 不会触发，
+  // 这里补一次路由选中，避免停在空白态。
+  await selectConversationFromRoute()
 }
 
 async function setTaskRead(taskUuid: string, isRead: boolean) {
   const conversation = conversations.value.find((item) => item.task_uuid === taskUuid)
-  if (!conversation) return
-  const previouslyUnread = conversation.items.filter((item) => !item.is_read)
-  conversation.items.forEach((item) => {
-    item.is_read = isRead
-  })
+  if (!conversation || pendingReadTasks.has(taskUuid)) return
+  const previous = new Map(conversation.items.map((item) => [item.uuid, item.is_read]))
+  pendingReadTasks.set(taskUuid, { isRead, notificationUuids: new Set(previous.keys()) })
+  conversation.items.forEach((item) => { item.is_read = isRead })
   try {
-    await apiClient.put(`/notifications/tasks/${taskUuid}/read`, { is_read: isRead })
-  } catch {
-    if (isRead) {
-      await Promise.allSettled(
-        previouslyUnread.map((item) => apiClient.put(`/notifications/${item.uuid}/read`, {})),
-      )
+    await apiClient.put(`/notifications/tasks/${encodeURIComponent(taskUuid)}/read`, { is_read: isRead })
+  } catch (error) {
+    for (const item of [...notifications.value, ...temporaryNotifications.value]) {
+      if (previous.has(item.uuid)) item.is_read = previous.get(item.uuid)!
     }
+    message.error(error instanceof Error ? error.message : t('workflows.task.feedback.readFailed'))
   } finally {
-    await persistNotificationSnapshot()
+    pendingReadTasks.delete(taskUuid)
+    // 完成写入后重新读取，同时使写入前发出的列表请求失效。
+    await loadNotifications(true)
   }
 }
 
-async function selectConversation(conversation: TaskConversation) {
+async function selectConversation(conversation: TaskConversation, markRead = true) {
+  if (markRead && conversation.unread) void setTaskRead(conversation.task_uuid, true)
   clearNewConversation()
   selectedTaskUuid.value = conversation.task_uuid
   selectedStepUuid.value = conversation.latest.task_step_uuid
   selectedProgressUuid.value = conversation.latest.progress_uuid || ''
+  void syncConversationRoute(conversation.task_uuid, selectedStepUuid.value)
   closeContextMenu()
   void persistViewState()
   await loadSelectedTask()
@@ -1172,6 +1750,7 @@ async function selectConversation(conversation: TaskConversation) {
 async function selectStep(uuid: string) {
   selectedStepUuid.value = uuid
   selectedProgressUuid.value = ''
+  void syncConversationRoute(selectedTaskUuid.value, uuid)
   await locateTarget('smooth')
   const last = progress.value.filter((item) => item.task_step_uuid === uuid).at(-1)
   if (last) flashTarget(last.uuid)
@@ -1207,7 +1786,7 @@ function flashTarget(uuid: string) {
 function stopSelectedConversation() {
   const sessionUuid = activeSelectedProgress.value?.session_uuid
   if (!sessionUuid || stoppingSessionUuid.value) {
-    if (!sessionUuid) message.warning('未找到可停止的运行会话，请刷新后重试')
+    if (!sessionUuid) message.warning(t('workflows.task.feedback.sessionNotFound'))
     return
   }
   if (isStopConfirmSuppressed()) {
@@ -1233,10 +1812,10 @@ async function stopConversation(sessionUuid: string) {
   stoppingSessionUuid.value = sessionUuid
   try {
     await apiClient.post(`/tasks/sessions/${encodeURIComponent(sessionUuid)}/stop`, {})
-    message.success('当前运行已停止')
+    message.success(t('workflows.task.feedback.stopped'))
     await Promise.all([loadNotifications(true), loadSelectedTask()])
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '停止运行失败')
+    message.error(error instanceof Error ? error.message : t('workflows.task.feedback.stopFailed'))
   } finally {
     stoppingSessionUuid.value = ''
     closeStopConfirm()
@@ -1247,9 +1826,13 @@ async function submitQuestion(submission: ChatComposerSubmission) {
   const text = submission.content.trim()
   const step = selectedStep.value
   if (!text || !step || !canAsk.value || submitting.value) return
+  const startingStep = selectedStepAwaitingStart.value
   submitting.value = true
   try {
-    await apiClient.post(`/tasks/${selectedTaskUuid.value}/steps/${step.uuid}/questions`, {
+    const path = startingStep
+      ? `/tasks/${selectedTaskUuid.value}/steps/${step.uuid}/runs`
+      : `/tasks/${selectedTaskUuid.value}/steps/${step.uuid}/questions`
+    await apiClient.post(path, {
       question: text,
       display_question: submission.display_content?.trim() || text,
       request_id: crypto.randomUUID(),
@@ -1259,11 +1842,17 @@ async function submitQuestion(submission: ChatComposerSubmission) {
     question.value = ''
     composerRef.value?.resetAfterSubmit()
     selectedProgressUuid.value = ''
-    message.success('消息已发送，继续选中 Agent 对话')
+    message.success(
+      startingStep
+        ? t('workflows.task.feedback.agentStarted')
+        : t('workflows.task.feedback.messageSent'),
+    )
     await setTaskRead(selectedTaskUuid.value, true)
     await Promise.all([loadNotifications(true), loadSelectedTask()])
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '消息发送失败')
+    message.error(
+      error instanceof Error ? error.message : t('workflows.task.feedback.messageFailed'),
+    )
   } finally {
     submitting.value = false
   }
@@ -1274,31 +1863,33 @@ async function completeStep() {
   if (!step || !canComplete.value || completing.value) return
   completing.value = true
   try {
-    const autoStart = !['stopped', 'interrupted'].includes(
-      latestSelectedAgentProgress.value?.status || '',
-    )
     const result = await apiClient.post<CompleteStepResponse>(
       `/tasks/${selectedTaskUuid.value}/steps/${step.uuid}/complete`,
-      { auto_start: autoStart },
+      { auto_start: false },
     )
     const wasLastStep = sortedSteps.value.at(-1)?.uuid === step.uuid
     selectedProgressUuid.value = ''
+    if (!wasLastStep && result.next_step_uuid) {
+      selectedStepUuid.value = result.next_step_uuid
+      await syncConversationRoute(selectedTaskUuid.value, result.next_step_uuid)
+    }
     if (wasLastStep) {
-      message.success('任务已完成')
-    } else if (result.start_error) {
-      message.warning(`已进入下一步，但自动启动失败：${result.start_error}`)
+      message.success(t('workflows.task.feedback.taskCompleted'))
     } else {
-      message.success(result.auto_started ? '已进入下一步并自动启动执行' : '已进入下一步')
+      message.success(t('workflows.task.feedback.nextStepManual'))
     }
     await setTaskRead(selectedTaskUuid.value, true)
     await Promise.all([loadNotifications(true), loadSelectedTask()])
     const nextCurrent = task.value?.current_step_uuid
     if (nextCurrent && nextCurrent !== selectedStepUuid.value) {
       selectedStepUuid.value = nextCurrent
+      await syncConversationRoute(selectedTaskUuid.value, nextCurrent)
       await locateTarget()
     }
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '进入下一步失败')
+    message.error(
+      error instanceof Error ? error.message : t('workflows.task.feedback.nextStepFailed'),
+    )
   } finally {
     completing.value = false
   }
@@ -1307,9 +1898,9 @@ async function completeStep() {
 async function copyResult(item: TaskProgress) {
   try {
     await copyText(isUserMessage(item) ? userMessageText(item) : resultText(item))
-    message.success('已复制')
+    message.success(t('components.feedback.copied'))
   } catch {
-    message.warning('复制失败')
+    message.warning(t('components.feedback.copyFailed'))
   }
 }
 
@@ -1340,6 +1931,39 @@ function closeContextMenu() {
 function togglePipelineExpanded() {
   pipelineExpanded.value = !pipelineExpanded.value
   void persistViewState()
+}
+
+async function openSelectedTerminal() {
+  const workDir = task.value?.work_dir || task.value?.task_dir || ''
+  if (!workDir || openingTerminal.value) return
+  openingTerminal.value = true
+  try { await openTerminal(workDir) } catch (error) { message.error(error instanceof Error ? error.message : t('workflows.task.progress.openTerminalFailed')) } finally { openingTerminal.value = false }
+}
+
+async function handleOpenCodex() {
+  if (
+    !selectedTaskUuid.value ||
+    task.value?.execution_mode !== 'vibe_coding' ||
+    task.value.execution_tool !== 'codex' ||
+    codexBusy.value
+  ) {
+    return
+  }
+  codexBusy.value = true
+  try {
+    const openResult = await openTaskInCodex(selectedTaskUuid.value)
+    if (openResult.opened) {
+      message.success(t('workflows.task.detail.codexOpened'))
+    } else if (openResult.copied) {
+      message.warning(t('workflows.task.detail.codexCopiedFallback'))
+    } else {
+      message.warning(t('workflows.task.detail.codexUnavailableAfterAssign'))
+    }
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('workflows.task.detail.codexOpenFailed'))
+  } finally {
+    codexBusy.value = false
+  }
 }
 
 async function openConversationDetail() {
@@ -1375,16 +1999,19 @@ async function archiveConversation() {
     await Promise.all([removePersistentTaskView(taskUuid), persistNotificationSnapshot()])
     if (selectedTaskUuid.value === taskUuid) {
       const next = conversations.value[0]
-      if (next) await selectConversation(next)
+      if (next) await selectConversation(next, false)
       else {
         selectedTaskUuid.value = ''
         clearSelectedTask()
+        await syncConversationRoute('')
         await persistViewState()
       }
     }
-    message.success('任务会话已归档')
+    message.success(t('workflows.task.feedback.archived'))
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '归档失败')
+    message.error(
+      error instanceof Error ? error.message : t('workflows.task.feedback.archiveFailed'),
+    )
   } finally {
     closeContextMenu()
   }
@@ -1398,13 +2025,55 @@ async function loadPipelines(force = false) {
   }
 }
 
+function conversationStatusLabel(name: string | undefined, status: string) {
+  return `${name || t('workflows.task.common.agentOrchestration')} · ${status}`
+}
+
+function conversationActorName(notification: TaskNotification) {
+  if (notification.execution_mode === 'vibe_coding') {
+    return notification.execution_tool === 'codex'
+      ? t('workflows.task.assign.codex')
+      : notification.execution_tool || t('workflows.task.create.vibeCodingMode')
+  }
+  return notification.step_name || t('workflows.task.common.agentOrchestration')
+}
+
+async function loadExpertGroups(force = false) {
+  try { await expertGroupStore.load(force) } catch { /* Store owns the visible error. */ }
+}
+
+async function loadConversationCodexCapability(force = false) {
+  if (codexCapabilityLoaded.value && !force) return
+  try {
+    codexCapability.value = await loadCodexCapability()
+    codexCapabilityLoaded.value = true
+  } catch (error) {
+    codexCapability.value = {
+      available: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : t('workflows.task.codex.capabilityUnavailable'),
+    }
+  }
+}
+
 function handlePipelineMenuOpenChange(open: boolean) {
   pipelineMenuOpen.value = open
-  if (open) void loadPipelines()
+	if (open) {
+	  void loadPipelines()
+	  void loadExpertGroups()
+	  void loadCliOptions()
+	  void loadConversationCodexCapability()
+	}
 }
 
 function clearNewConversation() {
   newConversationPipeline.value = undefined
+	newConversationExpertGroup.value = undefined
+  newConversationCodex.value = false
+  newConversationCLI.value = false
+  // CLI 与模型的记忆值保留：评论 4 要求下次打开新建对话时默认填入。
   newConversationQuestion.value = ''
   newConversationWorkDir.value = ''
   newConversationSubmission.value = undefined
@@ -1420,8 +2089,82 @@ function startNewConversation(pipeline: Pipeline) {
   newConversationSubmission.value = undefined
   newConversationComposerRef.value?.resetAfterSubmit()
   newConversationPipeline.value = pipeline
+	newConversationExpertGroup.value = undefined
+  newConversationCodex.value = false
+  newConversationCLI.value = false
   newConversationQuestion.value = ''
   newConversationWorkDir.value = ''
+  void syncConversationRoute('')
+}
+
+function startNewExpertConversation(group: ExpertGroup) {
+  if (!group.ready) return
+  closeContextMenu(); pipelineMenuOpen.value = false; selectedTaskUuid.value = ''; clearSelectedTask()
+  newConversationPipeline.value = undefined; newConversationExpertGroup.value = group
+  newConversationCodex.value = false
+  newConversationCLI.value = false
+  newConversationQuestion.value = ''; newConversationWorkDir.value = ''; void syncConversationRoute('')
+}
+
+function startNewCLIConversation() {
+  closeContextMenu(); pipelineMenuOpen.value = false; selectedTaskUuid.value = ''; clearSelectedTask()
+  newConversationPipeline.value = undefined; newConversationExpertGroup.value = undefined
+  newConversationCodex.value = false
+  newConversationCLI.value = true
+  newConversationQuestion.value = ''; newConversationWorkDir.value = ''; void syncConversationRoute('')
+  if (!cliOptions.value.length) void loadCliOptions()
+  // 评论 4：回填上次成功使用的 CLI 与模型作为默认值；
+  // 模型要等该 CLI 的模型列表加载完后校验存在才填，避免残留失效选项。
+  const preference = readCliPreference()
+  if (preference.cliType) {
+    newConversationCliType.value = preference.cliType
+    void loadModelOptions(preference.cliType).then(() => {
+      if (
+        preference.model &&
+        newConversationCliType.value === preference.cliType &&
+        modelOptions.value.includes(preference.model)
+      ) {
+        newConversationCliModel.value = preference.model
+      }
+    })
+  }
+}
+
+function startNewCodexConversation() {
+  if (!codexCapability.value.available) return
+  closeContextMenu()
+  pipelineMenuOpen.value = false
+  selectedTaskUuid.value = ''
+  clearSelectedTask()
+  newConversationSubmission.value = undefined
+  newConversationComposerRef.value?.resetAfterSubmit()
+  newConversationPipeline.value = undefined
+  newConversationExpertGroup.value = undefined
+  newConversationCodex.value = true
+  newConversationCLI.value = false
+  newConversationQuestion.value = ''
+  newConversationWorkDir.value = ''
+  void syncConversationRoute('')
+}
+
+function chooseNewConversationCLIType(cliType: string) {
+  newConversationCliType.value = cliType
+  newConversationCliModel.value = ''
+  writeCliPreference(cliType, '')
+  void loadModelOptions(cliType)
+}
+
+// 需求设计图：CLI 与模型在「新建对话」菜单内选完，点「创建对话」进入待创建状态。
+function createNewCLIConversation() {
+  if (!canCreateNewCLIConversation.value) return
+  startNewCLIConversation()
+}
+
+function chooseNewConversationCLIModel(model: string) {
+  newConversationCliModel.value = model
+  if (newConversationCliType.value) {
+    writeCliPreference(newConversationCliType.value, model)
+  }
 }
 
 async function chooseNewConversationDirectory() {
@@ -1429,7 +2172,9 @@ async function chooseNewConversationDirectory() {
     const selected = await selectDirectory(newConversationWorkDir.value)
     if (selected) newConversationWorkDir.value = selected
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '无法打开目录选择器')
+    message.error(
+      error instanceof Error ? error.message : t('workflows.task.feedback.chooseDirectoryFailed'),
+    )
   }
 }
 
@@ -1459,13 +2204,13 @@ async function submitNewConversation(
   const pipeline = pipelineOverride || newConversationPipeline.value
   if (!displayText || !pipeline || submitting.value) return
   if (!newConversationWorkDir.value.trim()) {
-    message.warning('请先选择工作目录')
+    message.warning(t('workflows.task.feedback.chooseDirectory'))
     return
   }
   submitting.value = true
   try {
     const createdTask = await apiClient.post<CreatedTaskResponse>('/tasks', {
-      title: createTaskTitle(displayText) || '图片任务',
+      title: createTaskTitle(displayText) || t('workflows.task.feedback.imageTask'),
       description: promptText,
       pipeline_uuid: pipeline.uuid,
       step_configs: createStepConfigs(pipeline),
@@ -1477,11 +2222,17 @@ async function submitNewConversation(
       createdTask.notification ||
       ({
         task_uuid: createdTask.uuid,
-        task_title: createdTask.title || createTaskTitle(displayText) || '图片任务',
-        step_name: createdTask.steps?.[0]?.name || pipeline.steps?.[0]?.name || 'Agent 编排',
+        task_title:
+          createdTask.title ||
+          createTaskTitle(displayText) ||
+          t('workflows.task.feedback.imageTask'),
+        step_name:
+          createdTask.steps?.[0]?.name ||
+          pipeline.steps?.[0]?.name ||
+          t('workflows.task.common.agentOrchestration'),
         session_uuid: '',
         status: 'created',
-        summary: '任务已创建并开始执行',
+        summary: t('workflows.task.feedback.taskCreated'),
         created_at: Date.now(),
       } satisfies CreateTaskNotification)
     const currentStepUuid = createdTask.current_step_uuid || createdTask.steps?.[0]?.uuid || ''
@@ -1506,10 +2257,12 @@ async function submitNewConversation(
     progress.value = []
     taskViewCache.set(createdTask.uuid, { task: createdTask, progress: [] })
     newConversationPipeline.value = undefined
+    newConversationCLI.value = false
     newConversationQuestion.value = ''
     newConversationWorkDir.value = ''
     newConversationSubmission.value = undefined
     newConversationComposerRef.value?.resetAfterSubmit()
+    await syncConversationRoute(createdTask.uuid, currentStepUuid)
     await Promise.all([
       persistNotificationSnapshot(),
       persistViewState(),
@@ -1522,11 +2275,201 @@ async function submitNewConversation(
       pipelineConfigModalOpen.value = true
       message.warning(error.message)
     } else {
-      message.error(error instanceof Error ? error.message : '任务创建失败')
+      message.error(
+        error instanceof Error ? error.message : t('workflows.task.feedback.taskCreateFailed'),
+      )
     }
   } finally {
     submitting.value = false
   }
+}
+
+async function submitNewExpertConversation(submission: ChatComposerSubmission) {
+  const group = newConversationExpertGroup.value
+  const promptText = submission.content.trim()
+  if (!group?.ready || !promptText || !newConversationWorkDir.value.trim() || submitting.value) {
+    if (!newConversationWorkDir.value.trim()) message.warning(t('workflows.task.feedback.chooseDirectory'))
+    return
+  }
+  submitting.value = true
+  try {
+    const createdTask = await apiClient.post<CreatedTaskResponse>('/tasks', {
+      title: createTaskTitle(submission.display_content || promptText),
+      description: promptText,
+      execution_mode: 'expert_group',
+      expert_group_uuid: group.uuid,
+      work_dir: newConversationWorkDir.value.trim(),
+      work_dirs: [newConversationWorkDir.value.trim()],
+      status: 'active',
+      create_notification: true,
+    })
+    const leaderStep = createdTask.steps?.find((step) => step.member_role === 'leader')
+    const notification = createdTask.notification
+    temporaryNotifications.value = [{
+      uuid: `created-${createdTask.uuid}-${Date.now()}`,
+      task_uuid: createdTask.uuid,
+      task_title: createdTask.title,
+      task_step_uuid: leaderStep?.uuid || '',
+      step_name: leaderStep?.name || group.leader?.name || t('expertGroups.leader'),
+      status: notification?.status || 'created',
+      summary: notification?.summary || t('workflows.task.feedback.taskCreated'),
+      is_read: true,
+      created_at: notification?.created_at || Date.now(),
+    }, ...temporaryNotifications.value.filter((item) => item.task_uuid !== createdTask.uuid)]
+    selectedTaskUuid.value = createdTask.uuid; selectedStepUuid.value = leaderStep?.uuid || ''
+    newConversationExpertGroup.value = undefined; newConversationQuestion.value = ''; newConversationWorkDir.value = ''
+    message.success(t('workflows.task.feedback.taskCreated')); await syncConversationRoute(createdTask.uuid, selectedStepUuid.value)
+    await loadSelectedTask()
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('workflows.task.feedback.taskCreateFailed'))
+  } finally { submitting.value = false }
+}
+
+async function submitNewCodexConversation(submission: ChatComposerSubmission) {
+  const promptText = submission.content.trim()
+  const displayText = submission.display_content?.trim() || promptText
+  if (!promptText || !newConversationCodex.value || submitting.value) return
+  if (!newConversationWorkDir.value.trim()) {
+    message.warning(t('workflows.task.feedback.chooseDirectory'))
+    return
+  }
+  submitting.value = true
+  let taskCreated = false
+  try {
+    const workDir = newConversationWorkDir.value.trim()
+    const createdTask = await apiClient.post<CreatedTaskResponse>('/tasks', {
+      title: createTaskTitle(displayText) || t('workflows.task.feedback.imageTask'),
+      description: promptText,
+      execution_mode: 'vibe_coding',
+      execution_tool: 'codex',
+      work_dir: workDir,
+      work_dirs: [workDir],
+      status: 'active',
+      create_notification: true,
+    })
+    taskCreated = true
+    const notification = createdTask.notification
+    temporaryNotifications.value = [
+      {
+        uuid: `created-${createdTask.uuid}-${notification?.created_at || Date.now()}`,
+        task_uuid: createdTask.uuid,
+        task_title:
+          createdTask.title ||
+          createTaskTitle(displayText) ||
+          t('workflows.task.feedback.imageTask'),
+        task_step_uuid: '',
+        step_name: t('workflows.task.assign.codex'),
+        status: notification?.status || 'created',
+        execution_mode: 'vibe_coding',
+        execution_tool: 'codex',
+        summary: notification?.summary || t('workflows.task.feedback.taskCreated'),
+        is_read: true,
+        created_at: notification?.created_at || Date.now(),
+      },
+      ...temporaryNotifications.value.filter((item) => item.task_uuid !== createdTask.uuid),
+    ]
+    selectedTaskUuid.value = createdTask.uuid
+    selectedStepUuid.value = ''
+    selectedProgressUuid.value = ''
+    task.value = createdTask
+    progress.value = []
+    taskViewCache.set(createdTask.uuid, { task: createdTask, progress: [] })
+    newConversationCodex.value = false
+    newConversationQuestion.value = ''
+    newConversationWorkDir.value = ''
+    newConversationSubmission.value = undefined
+    newConversationComposerRef.value?.resetAfterSubmit()
+    await syncConversationRoute(createdTask.uuid)
+    await Promise.all([
+      persistNotificationSnapshot(),
+      persistViewState(),
+      persistTaskView(createdTask.uuid, createdTask, []),
+    ])
+
+    const openResult = await openTaskInCodex(createdTask.uuid)
+    if (openResult.opened) {
+      message.success(t('workflows.task.detail.codexOpened'))
+    } else if (openResult.copied) {
+      message.warning(t('workflows.task.detail.codexCopiedFallback'))
+    } else {
+      message.warning(t('workflows.task.detail.codexUnavailableAfterAssign'))
+    }
+    await loadSelectedTask()
+  } catch (error) {
+    message.error(
+      error instanceof Error
+        ? error.message
+        : taskCreated
+          ? t('workflows.task.detail.codexOpenFailed')
+          : t('workflows.task.feedback.taskCreateFailed'),
+    )
+  } finally {
+    submitting.value = false
+  }
+}
+
+// CLI 直接执行对话：任务创建后即进入进行中，等用户第一条消息触发 RunStep。
+async function submitNewCLIConversation(submission: ChatComposerSubmission) {
+  const promptText = submission.content.trim()
+  if (!promptText || !newConversationCliType.value || !newConversationCliModel.value || submitting.value) return
+  if (!newConversationWorkDir.value.trim()) {
+    message.warning(t('workflows.task.feedback.chooseDirectory'))
+    return
+  }
+  submitting.value = true
+  try {
+    const createdTask = await apiClient.post<CreatedTaskResponse>('/tasks', {
+      title: createTaskTitle(submission.display_content || promptText),
+      description: promptText,
+      execution_mode: 'cli',
+      execution_tool: newConversationCliType.value,
+      model_name: newConversationCliModel.value,
+      work_dir: newConversationWorkDir.value.trim(),
+      work_dirs: [newConversationWorkDir.value.trim()],
+      status: 'active',
+      create_notification: true,
+    })
+    const cliStep = createdTask.steps?.[0]
+    temporaryNotifications.value = [{
+      uuid: `created-${createdTask.uuid}-${Date.now()}`,
+      task_uuid: createdTask.uuid,
+      task_title: createdTask.title,
+      task_step_uuid: cliStep?.uuid || '',
+      step_name: cliStep?.name || t('workflows.task.assign.cliMode'),
+      status: createdTask.notification?.status || 'created',
+      summary: createdTask.notification?.summary || t('workflows.task.feedback.taskCreated'),
+      is_read: true,
+      created_at: createdTask.notification?.created_at || Date.now(),
+    }, ...temporaryNotifications.value.filter((item) => item.task_uuid !== createdTask.uuid)]
+    selectedTaskUuid.value = createdTask.uuid; selectedStepUuid.value = cliStep?.uuid || ''
+    // 评论 4：CLI 与模型记忆值保留，作为下次新建对话的默认值。
+    // 评论 1：创建任务成功后自动向 CLI 发送起始指令，无需用户再发一条；
+    // 等 loadSelectedTask 把隐式步骤加载完，由 cliKickoff watcher 触发发送。
+    autoKickoffTaskUuid.value = createdTask.uuid
+    newConversationCLI.value = false
+    newConversationQuestion.value = ''; newConversationWorkDir.value = ''
+    message.success(t('workflows.task.feedback.taskCreated')); await syncConversationRoute(createdTask.uuid, selectedStepUuid.value)
+    await loadSelectedTask()
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('workflows.task.feedback.taskCreateFailed'))
+  } finally { submitting.value = false }
+}
+
+async function submitExpertMessage(submission: ChatComposerSubmission) {
+  const text = submission.content.trim()
+  if (!text || submitting.value || activeSelectedProgress.value) return
+  submitting.value = true
+  try {
+    await apiClient.post(`/tasks/${selectedTaskUuid.value}/expert-messages`, {
+      content: text,
+      display_content: submission.display_content?.trim() || text,
+      member_uuid: submission.member_uuid,
+      request_id: crypto.randomUUID(),
+    })
+    question.value = ''; composerRef.value?.resetAfterSubmit(); message.success(t('workflows.task.feedback.messageSent'))
+    await Promise.all([loadNotifications(true), loadSelectedTask()])
+  } catch (error) { message.error(error instanceof Error ? error.message : t('workflows.task.feedback.messageFailed')) }
+  finally { submitting.value = false }
 }
 
 function handleCreationPipelineSelected(pipeline: Pipeline) {
@@ -1637,31 +2580,6 @@ useLocalWS('task.changed', (data: { task_uuid?: string }) => {
   if (data.task_uuid === selectedTaskUuid.value) void loadSelectedTask(true)
 })
 
-// CLI 活动推送（节流约 1s/条）：执行期间没有 task.changed 广播，需就地更新
-// 运行中消息下方的实时活动小字（bash 等简述），否则推送模式下会一直停滞。
-useLocalWS(
-  'executor.activity',
-  (data: {
-    task_uuid?: string
-    session_uuid?: string
-    event_type?: string
-    content?: string
-    at?: number
-  }) => {
-    if (!data.session_uuid) return
-    // 继续对话时同一 session 有两条 progress（用户提问 + AI 执行），
-    // 只能更新 AI 执行项，用户气泡不渲染活动小字
-    const target = progress.value.find(
-      (item) => !isUserMessage(item) && item.session_uuid === data.session_uuid,
-    )
-    if (target) {
-      target.latest_event_type = data.event_type
-      target.latest_event_content = data.content
-      target.latest_event_at = data.at
-    }
-  },
-)
-
 watch(wsConnected, (connected) => {
   if (connected) {
     // 重连成功后补偿拉取一次，随后继续依赖推送刷新
@@ -1670,6 +2588,13 @@ watch(wsConnected, (connected) => {
     scheduleRefresh()
   }
 })
+
+watch(
+  () => [routeQueryValue(route.query.taskUuid), routeQueryValue(route.query.stepUuid)] as const,
+  () => {
+    void selectConversationFromRoute()
+  },
+)
 
 watch(pipelines, (items) => {
   if (
@@ -1685,6 +2610,7 @@ onMounted(() => {
   document.addEventListener('keydown', handleDocumentKeydown)
   window.addEventListener('resize', syncSidebarMetrics)
   restoreSidebarWidth()
+  void ensureNotificationPermission()
   void initialize()
 })
 
@@ -1714,8 +2640,8 @@ onBeforeUnmount(() => {
   min-height: 44px;
   flex: 0 0 44px;
   align-items: center;
-  justify-content: space-between;
-  gap: 24px;
+  justify-content: flex-start;
+  gap: 12px;
   padding: 0 24px;
   border-bottom: 1px solid #f0f0f0;
   background: #fff;
@@ -1724,8 +2650,17 @@ onBeforeUnmount(() => {
 .page-titlebar-copy {
   display: flex;
   min-width: 0;
+  flex: 1;
   align-items: center;
   gap: 12px;
+}
+
+.page-titlebar-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  margin-left: auto;
+  gap: 8px;
 }
 
 .page-titlebar strong {
@@ -1865,6 +2800,36 @@ onBeforeUnmount(() => {
   color: #8c8c8c;
   font-size: 14px;
 }
+
+/* 需求设计图：CLI 任务的执行目标是固定文案「直接执行：CLI · 模型」 */
+.direct-execution-summary {
+  display: flex;
+  padding: 8px 0 12px;
+  align-items: center;
+  gap: 8px;
+  color: #8c8c8c;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.direct-execution-summary__logo {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  object-fit: contain;
+}
+
+.direct-execution-summary__label::after {
+  content: ':';
+}
+
+.direct-execution-summary strong {
+  color: #262626;
+  font-weight: 500;
+}
+.expert-overview { display:flex; align-items:center; gap:16px; min-height:44px; padding:0 24px; color:#595959; }
+.expert-overview strong { color:#262626; }
+.expert-overview span { font-size:12px; }
 
 .task-overview-skeleton {
   min-height: 60px;
@@ -2016,7 +2981,7 @@ onBeforeUnmount(() => {
 }
 
 .pipeline-menu {
-  width: 186px;
+  width: 208px;
   overflow: hidden;
   border-radius: 6px;
   padding: 2px;
@@ -2060,7 +3025,7 @@ onBeforeUnmount(() => {
   text-align: left;
 }
 
-.pipeline-menu-item:hover,
+.pipeline-menu-item:hover:not(:disabled),
 .pipeline-menu-item:focus-visible {
   background: #f5f5f5;
 }
@@ -2068,6 +3033,15 @@ onBeforeUnmount(() => {
 .pipeline-menu-item:focus-visible {
   outline: 2px solid #3157e2;
   outline-offset: -2px;
+}
+
+.pipeline-menu-item:disabled {
+  color: #bfbfbf;
+  cursor: not-allowed;
+}
+
+.pipeline-menu-tooltip {
+  display: block;
 }
 
 .pipeline-menu-item img,
@@ -2087,6 +3061,46 @@ onBeforeUnmount(() => {
   background: #eef2ff;
   font-size: 10px;
   font-weight: 600;
+}
+
+.pipeline-avatar-fallback--cli img {
+  width: 14px;
+  height: 14px;
+}
+
+/* CLI 直接执行的新建对话状态：CLI 与模型两个下拉并排。 */
+/* 需求设计图：直接执行分组的 CLI/模型下拉与「创建对话」按钮直接内嵌在菜单里 */
+.direct-cli {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 12px 6px;
+}
+
+.direct-cli__select {
+  width: 100%;
+}
+
+.direct-cli__submit {
+  margin-top: 2px;
+}
+
+.pipeline-menu-heading-logo {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  object-fit: contain;
+}
+
+.cli-runtime-hint--selected {
+  margin-top: 4px;
+  color: #262626;
+}
+
+.cli-runtime-hint {
+  margin: 0;
+  color: #8c8c8c;
+  font-size: 12px;
 }
 
 .pipeline-menu-name {
@@ -2131,8 +3145,14 @@ onBeforeUnmount(() => {
   flex: 1;
   flex-direction: column;
   gap: 4px;
-  overflow-y: auto;
+  overflow-y: scroll;
   padding: 8px 24px;
+  scrollbar-color: rgba(140, 149, 168, 0.42) transparent;
+  scrollbar-gutter: stable;
+}
+
+.conversation-list::-webkit-scrollbar-thumb {
+  background: rgba(140, 149, 168, 0.35);
 }
 
 .conversation-item {

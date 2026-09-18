@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"strconv"
@@ -196,21 +197,22 @@ type taskBase struct {
 
 func loadTaskBase(ctx context.Context, db *sql.DB, taskUUID string) (*taskBase, error) {
 	var sourceType, workItemType, workItemID, workspaceID, title string
-	var taskStatus, execStatus, currentStepUUID, cliType string
-	var pipelineID, pipelineName string
+	var taskStatus, execStatus, currentStepUUID, cliType, executionMode string
+	var pipelineID, pipelineName, expertSourceUUID, expertName string
 	var inputTokens, outputTokens, totalTokens, conversationRounds, startedAt, finishedAt, updatedAt int64
 	err := db.QueryRowContext(ctx, `
 		SELECT t.source_type, COALESCE(NULLIF(t.work_item_type,''), t.cloud_work_item_type, ''),
 		       COALESCE(NULLIF(t.work_item_id,''), t.cloud_work_item_id, ''),
 		       COALESCE(t.workspace_id, 0), t.title, t.status, t.execution_status,
-		       t.current_step_uuid, COALESCE(t.cli_type,''), COALESCE(s.source_pipeline_id,''),
-		       COALESCE(s.name,''),
+		       t.current_step_uuid, COALESCE(t.cli_type,''), t.execution_mode, COALESCE(s.source_pipeline_id,''),
+		       COALESCE(s.name,''), COALESCE(egs.source_expert_group_uuid,''), COALESCE(egs.name,''),
 		       COALESCE(t.input_tokens,0), COALESCE(t.output_tokens,0), COALESCE(t.total_tokens,0),
 		       COALESCE(t.conversation_rounds,0), COALESCE(t.started_at,0), COALESCE(t.finished_at,0), t.updated_at
 		 FROM gt_tasks t LEFT JOIN gt_task_pipeline_snapshots s ON s.uuid = t.pipeline_snapshot_uuid
+		 LEFT JOIN gt_task_expert_group_snapshots egs ON egs.uuid=t.expert_group_snapshot_uuid
 		 WHERE t.uuid = ?`, taskUUID).Scan(
 		&sourceType, &workItemType, &workItemID, &workspaceID, &title, &taskStatus, &execStatus,
-		&currentStepUUID, &cliType, &pipelineID, &pipelineName,
+		&currentStepUUID, &cliType, &executionMode, &pipelineID, &pipelineName, &expertSourceUUID, &expertName,
 		&inputTokens, &outputTokens, &totalTokens, &conversationRounds, &startedAt, &finishedAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		applog.Warn("[CloudSync] 任务投影跳过推送：本地任务不存在（可能已被删除）", "task_uuid", taskUUID)
@@ -227,6 +229,12 @@ func loadTaskBase(ctx context.Context, db *sql.DB, taskUUID string) (*taskBase, 
 	workItemIDInt, _ := strconv.ParseInt(workItemID, 10, 64)
 	workspaceIDInt, _ := strconv.ParseInt(workspaceID, 10, 64)
 	pipelineIDInt, _ := strconv.ParseInt(pipelineID, 10, 64)
+	if executionMode == "expert_group" && expertSourceUUID != "" {
+		sum := sha256.Sum256([]byte("expert-group:" + expertSourceUUID))
+		pipelineIDInt = int64(binary.BigEndian.Uint64(sum[:8]) & 0x7fffffffffffffff)
+		pipelineName = expertName
+		_ = db.QueryRowContext(ctx, `SELECT cli_type FROM gt_task_steps WHERE task_uuid=? AND member_role='leader' LIMIT 1`, taskUUID).Scan(&cliType)
+	}
 	currentStepKey := ""
 	if currentStepUUID != "" {
 		_ = db.QueryRowContext(ctx,

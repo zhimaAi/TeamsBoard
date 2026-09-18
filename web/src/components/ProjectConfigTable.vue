@@ -2,6 +2,9 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import apiClient from '@/api/client'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 const props = defineProps<{ kind: 'git' | 'docker' }>()
 
@@ -21,19 +24,19 @@ const form = reactive({
 
 const isGit = computed(() => props.kind === 'git')
 const endpoint = computed(() => isGit.value ? '/config/git-projects' : '/config/docker-projects')
-const title = computed(() => isGit.value ? 'Git 项目' : 'Docker Compose 项目')
+const title = computed(() => isGit.value ? t('components.projectTable.gitProject') : t('components.projectTable.dockerProject'))
 const columns = computed(() => isGit.value
   ? [
-      { title: '名称', dataIndex: 'name', key: 'name' },
+      { title: t('components.projectTable.name'), dataIndex: 'name', key: 'name' },
       { title: 'SSH', dataIndex: 'ssh_profile_id', key: 'ssh_profile_id' },
-      { title: '远程工作目录', dataIndex: 'remote_work_dir', key: 'remote_work_dir' },
-      { title: '操作', key: 'actions', width: 140 },
+      { title: t('components.projectTable.remoteDirectory'), dataIndex: 'remote_work_dir', key: 'remote_work_dir' },
+      { title: t('components.resourceTable.actions'), key: 'actions', width: 140 },
     ]
   : [
-      { title: '名称', dataIndex: 'name', key: 'name' },
+      { title: t('components.projectTable.name'), dataIndex: 'name', key: 'name' },
       { title: 'SSH', dataIndex: 'ssh_profile_id', key: 'ssh_profile_id' },
-      { title: 'Compose 文件', dataIndex: 'compose_file_path', key: 'compose_file_path' },
-      { title: '操作', key: 'actions', width: 140 },
+      { title: t('components.projectTable.composeFile'), dataIndex: 'compose_file_path', key: 'compose_file_path' },
+      { title: t('components.resourceTable.actions'), key: 'actions', width: 140 },
     ])
 
 async function load() {
@@ -51,7 +54,7 @@ async function load() {
     }
     await Promise.all(requests)
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '加载失败')
+    message.error(error instanceof Error ? error.message : t('components.projectTable.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -82,15 +85,15 @@ function openEdit(item: Item) {
 
 async function save() {
   if (!form.name.trim()) {
-    message.warning('请输入名称')
+    message.warning(t('components.projectTable.nameRequired'))
     return
   }
   if (isGit.value && (!form.ssh_profile_id || !form.remote_work_dir.trim())) {
-    message.warning('请选择 SSH 配置并填写远程工作目录')
+    message.warning(t('components.projectTable.gitFieldsRequired'))
     return
   }
   if (!isGit.value && (!form.ssh_profile_id || !form.compose_file_path.trim())) {
-    message.warning('请选择 SSH 配置并填写 Compose 文件路径')
+    message.warning(t('components.projectTable.dockerFieldsRequired'))
     return
   }
   const body = isGit.value
@@ -107,11 +110,11 @@ async function save() {
     } else {
       await apiClient.post(endpoint.value, body)
     }
-    message.success('保存成功')
+    message.success(t('components.resourceTable.saveSuccess'))
     visible.value = false
     await load()
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '保存失败')
+    message.error(error instanceof Error ? error.message : t('components.resourceTable.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -119,12 +122,12 @@ async function save() {
 
 function remove(item: Item) {
   Modal.confirm({
-    title: `删除“${item.name}”`,
-    content: '只删除 TeamsBoard 中的配置，不会删除远程代码或 Compose 文件。',
+    title: t('components.resourceTable.deleteTitle', { name: item.name }),
+    content: t('components.projectTable.deleteWarning'),
     okType: 'danger',
     async onOk() {
       await apiClient.delete(`${endpoint.value}/${item.id}`)
-      message.success('已删除')
+      message.success(t('components.resourceTable.deleted'))
       await load()
     },
   })
@@ -137,12 +140,12 @@ onMounted(load)
   <a-card :title="title">
     <template #extra>
       <a-space>
-        <a-button @click="load">刷新</a-button>
-        <a-button type="primary" @click="openCreate">新增</a-button>
+        <a-button @click="load">{{ t('common.actions.refresh') }}</a-button>
+        <a-button type="primary" @click="openCreate">{{ t('components.resourceTable.add') }}</a-button>
       </a-space>
     </template>
     <a-alert
-      :message="isGit ? 'Git 命令会通过 SSH 在配置的远程工作目录中执行。' : 'Docker 命令会通过 SSH 在远程服务器上以 docker compose -f 指定文件执行。'"
+      :message="isGit ? t('components.projectTable.gitDescription') : t('components.projectTable.dockerDescription')"
       type="info"
       show-icon
       style="margin-bottom: 16px"
@@ -154,8 +157,8 @@ onMounted(load)
         </template>
         <template v-else-if="column.key === 'actions'">
           <a-space>
-            <a @click="openEdit(record)">编辑</a>
-            <a style="color: #ff4d4f" @click="remove(record)">删除</a>
+            <a @click="openEdit(record)">{{ t('common.actions.edit') }}</a>
+            <a style="color: #ff4d4f" @click="remove(record)">{{ t('common.actions.delete') }}</a>
           </a-space>
         </template>
       </template>
@@ -164,35 +167,35 @@ onMounted(load)
 
   <a-modal
     v-model:open="visible"
-    :title="editingID ? `编辑${title}` : `新增${title}`"
+    :title="editingID ? t('components.resourceTable.editTitle', { title }) : t('components.resourceTable.addTitle', { title })"
     :confirm-loading="saving"
     @ok="save"
   >
     <a-form layout="vertical">
-      <a-form-item label="名称" required>
+      <a-form-item :label="t('components.projectTable.name')" required>
         <a-input v-model:value="form.name" />
       </a-form-item>
       <template v-if="isGit">
-        <a-form-item label="SSH 配置" required>
-          <a-select v-model:value="form.ssh_profile_id" placeholder="请选择 SSH 配置">
+        <a-form-item :label="t('components.projectTable.sshProfile')" required>
+          <a-select v-model:value="form.ssh_profile_id" :placeholder="t('components.projectTable.chooseSsh')">
             <a-select-option v-for="profile in sshProfiles" :key="profile.id" :value="Number(profile.id)">
               {{ profile.name }}（{{ profile.username }}@{{ profile.host }}:{{ profile.port }}）
             </a-select-option>
           </a-select>
         </a-form-item>
-        <a-form-item label="远程工作目录" required>
+        <a-form-item :label="t('components.projectTable.remoteDirectory')" required>
           <a-input v-model:value="form.remote_work_dir" placeholder="/var/www/project" />
         </a-form-item>
       </template>
       <template v-else>
-        <a-form-item label="SSH 配置" required>
-          <a-select v-model:value="form.ssh_profile_id" placeholder="请选择 SSH 配置">
+        <a-form-item :label="t('components.projectTable.sshProfile')" required>
+          <a-select v-model:value="form.ssh_profile_id" :placeholder="t('components.projectTable.chooseSsh')">
             <a-select-option v-for="profile in sshProfiles" :key="profile.id" :value="Number(profile.id)">
               {{ profile.name }}（{{ profile.username }}@{{ profile.host }}:{{ profile.port }}）
             </a-select-option>
           </a-select>
         </a-form-item>
-        <a-form-item label="Compose 文件路径" required>
+        <a-form-item :label="t('components.projectTable.composeFilePath')" required>
           <a-input v-model:value="form.compose_file_path" placeholder="/var/www/app/compose.yml" />
         </a-form-item>
       </template>

@@ -5,6 +5,9 @@ import {
   setDesktopCloseBehavior,
   type DesktopCloseBehavior,
 } from '@/composables/useDesktop'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 const closeBehavior = ref<DesktopCloseBehavior>('hide')
 const savedCloseBehavior = ref<DesktopCloseBehavior>('hide')
@@ -20,7 +23,7 @@ async function loadCloseBehavior() {
     closeBehavior.value = loadedCloseBehavior
     savedCloseBehavior.value = loadedCloseBehavior
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '读取桌面客户端设置失败'
+    errorMessage.value = error instanceof Error ? error.message : t('settings.readDesktopFailed')
   } finally {
     loading.value = false
   }
@@ -36,7 +39,7 @@ async function saveCloseBehavior() {
     savedCloseBehavior.value = savedBehavior
   } catch (error) {
     closeBehavior.value = savedCloseBehavior.value
-    errorMessage.value = error instanceof Error ? error.message : '保存桌面客户端设置失败'
+    errorMessage.value = error instanceof Error ? error.message : t('settings.saveDesktopFailed')
   } finally {
     saving.value = false
   }
@@ -48,18 +51,18 @@ onMounted(() => {
 </script>
 
 <template>
-  <a-card title="桌面客户端" :bordered="false" class="desktop-client-settings">
+  <a-card :title="t('settings.desktopClient')" :bordered="false" class="desktop-client-settings">
     <a-alert v-if="errorMessage" type="error" show-icon :message="errorMessage" class="desktop-client-settings__error">
       <template #action>
-        <a-button type="link" size="small" @click="loadCloseBehavior">重试</a-button>
+        <a-button type="link" size="small" @click="loadCloseBehavior">{{ t('common.actions.retry') }}</a-button>
       </template>
     </a-alert>
     <a-spin :spinning="loading">
       <a-form layout="vertical">
-        <a-form-item label="关闭主窗口时" extra="最小化到系统托盘后，正在执行的任务会继续运行。">
+        <a-form-item :label="t('settings.closeWindow')" :extra="t('settings.closeHint')">
           <a-radio-group v-model:value="closeBehavior" :disabled="loading || saving" @change="saveCloseBehavior">
-            <a-radio value="hide">最小化到系统托盘</a-radio>
-            <a-radio value="quit">退出 TeamsBoard</a-radio>
+            <a-radio value="hide">{{ t('settings.hideToTray') }}</a-radio>
+            <a-radio value="quit">{{ t('settings.quit') }}</a-radio>
           </a-radio-group>
         </a-form-item>
       </a-form>

@@ -2,7 +2,7 @@
   <a-modal
     :open="open"
     class="agent-editor-modal"
-    :title="step ? '编辑 Agent' : '新建 Agent'"
+	:title="editingAgent ? t('agents.editAgent') : t('agents.newAgentTitle')"
     width="730px"
     centered
     @update:open="handleOpenChange"
@@ -12,14 +12,14 @@
       v-if="cloudLocked"
       class="cloud-lock"
     >
-      <CloudDownloadOutlined />该 Agent 来自团队流水线同步，名称、头像与提示词由云端管理，仅可配置 CLI 与模型
+      <CloudDownloadOutlined />{{ t('agents.cloudLocked') }}
     </div>
 
     <button
       class="agent-avatar-preview"
       type="button"
       :disabled="cloudLocked"
-      aria-label="上传 Agent 头像"
+      :aria-label="t('agents.uploadAgentAvatar')"
       @click="openFilePicker"
     >
       <img
@@ -34,7 +34,7 @@
         />
       </span>
     </button>
-    <p class="agent-avatar-hint">建议尺寸100×100px，大小不超过100KB</p>
+    <p class="agent-avatar-hint">{{ t('agents.iconHint') }}</p>
     <input
       ref="fileInput"
       class="agent-avatar-file-input"
@@ -50,7 +50,7 @@
     >
       <a-form-item
         class="agent-avatar-form-item"
-        label="Agent默认头像"
+        :label="t('agents.defaultAgentAvatar')"
       >
         <div
           class="avatar-options"
@@ -63,7 +63,7 @@
             :disabled="cloudLocked"
             :class="{ active: !avatarFile && form.avatar === avatar }"
             :aria-pressed="!avatarFile && form.avatar === avatar"
-            aria-label="选择预设 Agent 头像"
+            :aria-label="t('agents.selectAgentAvatar')"
             @click="selectPresetAvatar(avatar)"
           >
             <img
@@ -78,15 +78,15 @@
         class="agent-editor-form-item"
       >
         <template #label>
-          <span class="agent-modal-label">Agent 名称</span>
-          <span class="agent-modal-label-hint">(最多20个字)</span>
+          <span class="agent-modal-label">{{ t('agents.agentName') }}</span>
+          <span class="agent-modal-label-hint">{{ t('agents.nameLimit') }}</span>
         </template>
         <a-input
           v-model:value="form.name"
           :disabled="cloudLocked"
           :maxlength="20"
           :show-count="false"
-          placeholder="请输入"
+          :placeholder="t('agents.enter')"
         />
       </a-form-item>
 
@@ -94,14 +94,14 @@
         class="agent-editor-form-item"
       >
         <template #label>
-          <span class="agent-modal-label">指令</span>
-          <span class="agent-modal-label-hint agent-modal-label-hint--flush">（提示词）</span>
+          <span class="agent-modal-label">{{ t('agents.instruction') }}</span>
+          <span class="agent-modal-label-hint agent-modal-label-hint--flush">{{ t('agents.promptHint') }}</span>
         </template>
         <a-textarea
           v-model:value="form.prompt"
           :disabled="cloudLocked"
           :maxlength="2000"
-          placeholder="请设置 Agent 的提示词，定义其行为和能力"
+          :placeholder="t('agents.promptPlaceholder')"
         />
       </a-form-item>
 
@@ -110,14 +110,14 @@
         required
       >
         <template #label>
-          <span class="agent-modal-label">编程工具 CLI</span>
-          <span class="agent-modal-label-hint">（自动检测本机运行状态）</span>
+          <span class="agent-modal-label">{{ t('agents.cliTool') }}</span>
+          <span class="agent-modal-label-hint">{{ t('agents.cliDetectionHint') }}</span>
         </template>
         <div class="cli-row">
           <a-select
             v-model:value="form.cli_type"
             :loading="cliLoading"
-            placeholder="请选择 CLI"
+            :placeholder="t('agents.selectCli')"
             @change="loadModels(String($event))"
           >
             <a-select-option
@@ -126,7 +126,7 @@
               :value="cli.type"
               :disabled="!cli.installed"
             >
-              {{ cli.name }}（{{ cli.installed ? '已检测到运行' : '未检测到运行' }}）
+			  {{ cliOptionLabel(cli) }}
             </a-select-option>
           </a-select>
           <a-button
@@ -139,7 +139,7 @@
               alt=""
               aria-hidden="true"
               class="cli-reload-button__icon"
-            />重新检测
+            />{{ t('agents.detectAgain') }}
           </a-button>
         </div>
         <p
@@ -148,8 +148,8 @@
         >
           {{
             form.cli_type
-              ? `${cliOptions.find((item) => item.type === form.cli_type)?.name || form.cli_type}（本机已检测到运行）`
-              : '请选择本机已检测到运行的 CLI（必填）'
+              ? t('agents.selectedCliAvailable', { name: cliOptions.find((item) => item.type === form.cli_type)?.name || form.cli_type })
+              : t('agents.selectAvailableCli')
           }}
         </p>
       </a-form-item>
@@ -158,15 +158,15 @@
         class="agent-editor-form-item model-form-item"
       >
         <template #label>
-          <span class="agent-modal-label">模型</span>
-          <span class="agent-modal-label-hint">（随 CLI 提供方联动，默认使用提供方默认模型）</span>
+          <span class="agent-modal-label">{{ t('agents.model') }}</span>
+          <span class="agent-modal-label-hint">{{ t('agents.modelHint') }}</span>
         </template>
         <a-select
           v-model:value="form.model"
           :loading="modelLoading"
           :disabled="!form.cli_type"
           show-search
-          :placeholder="form.cli_type ? '请选择模型' : '请先选择 CLI'"
+          :placeholder="form.cli_type ? t('agents.selectModel') : t('agents.selectCliFirst')"
         >
           <a-select-option
             v-for="model in modelOptions"
@@ -181,13 +181,13 @@
 
     <template #footer>
       <div class="agent-modal-footer-actions">
-        <a-button @click="handleOpenChange(false)">取消</a-button>
+        <a-button @click="handleOpenChange(false)">{{ t('agents.cancel') }}</a-button>
         <a-button
           type="primary"
           :loading="saving"
           @click="save"
         >
-          确定
+          {{ t('agents.confirm') }}
         </a-button>
       </div>
     </template>
@@ -202,7 +202,7 @@ import apiClient from '@/api/client'
 import agentCliReloadIcon from '@/assets/icons/agent-cli-reload.svg'
 import projectModalCameraIcon from '@/assets/icons/project-modal-camera.svg'
 import { ICON_FILE_ACCEPT, useIconFile } from '@/composables/useIconFile'
-import type { PipelineStep } from '@/types/pipeline'
+import type { ExpertMember, PipelineStep } from '@/types/pipeline'
 import {
   AGENT_AVATARS,
   type CloudStepExecutionInput,
@@ -210,12 +210,18 @@ import {
   type StepInput,
   stepModel,
 } from './agentPipeline'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 const props = defineProps<{
   open: boolean
-  pipelineUuid: string
-  isCloudPipeline: boolean
+	pipelineUuid?: string
+	isCloudPipeline?: boolean
   step?: PipelineStep
+	expertGroupUuid?: string
+	expertMember?: ExpertMember
+	expertRole?: 'leader' | 'member'
   currentAvatar?: string
 }>()
 
@@ -244,6 +250,7 @@ const MAX_AVATAR_FILE_SIZE = 100 * 1024
 let modelRequestId = 0
 
 const cloudLocked = computed(() => props.isCloudPipeline && Boolean(props.step))
+const editingAgent = computed(() => props.expertMember || props.step)
 const previewAvatar = computed(
   () => previewUrl.value || form.avatar || props.currentAvatar || AGENT_AVATARS[0],
 )
@@ -260,12 +267,13 @@ watch(
 async function initialiseForm() {
   modelRequestId += 1
   modelOptions.value = []
-  form.name = props.step?.name || ''
-  form.description = props.step?.description || ''
-  form.avatar = props.step?.avatar || props.currentAvatar || AGENT_AVATARS[0]
-  form.prompt = props.step?.prompt || props.step?.prompt_snapshot || ''
-  form.cli_type = props.step?.cli_type || ''
-  form.model = props.step ? stepModel(props.step) : ''
+	const agent = editingAgent.value
+	form.name = agent?.name || ''
+	form.description = agent?.description || ''
+	form.avatar = agent?.avatar || props.currentAvatar || AGENT_AVATARS[0]
+	form.prompt = agent?.prompt || props.step?.prompt_snapshot || ''
+	form.cli_type = agent?.cli_type || ''
+	form.model = props.expertMember?.model_name || (props.step ? stepModel(props.step) : '')
   await detectCli(false)
   await loadModels(form.cli_type, form.model)
 }
@@ -281,14 +289,14 @@ function handleFileChange(event: Event) {
   if (!nextFile) return
 
   if (nextFile.size > MAX_AVATAR_FILE_SIZE) {
-    message.warning('图片大小不能超过 100KB')
+    message.warning(t('agents.imageTooLarge'))
     return
   }
 
   try {
     selectFile(nextFile)
   } catch (error) {
-    message.warning(error instanceof Error ? error.message : '头像选择失败')
+    message.warning(error instanceof Error ? error.message : t('agents.avatarSelectFailed'))
   }
 }
 
@@ -297,15 +305,19 @@ function selectPresetAvatar(avatar: string) {
   form.avatar = avatar
 }
 
+function cliOptionLabel(cli: DiscoveredCLI) {
+  return `${cli.name}（${cli.installed ? t('agents.installed') : t('agents.notInstalled')}）`
+}
+
 async function detectCli(showSuccess = true) {
   cliLoading.value = true
   try {
     const result = await apiClient.get<{ items: DiscoveredCLI[] }>('/tasks/cli-discovery')
     // 已安装的 CLI 排在前面，未安装的置后且不可选择
     cliOptions.value = [...(result.items || [])].sort((a, b) => Number(b.installed) - Number(a.installed))
-    if (showSuccess) message.success('CLI 检测完成')
+    if (showSuccess) message.success(t('agents.cliDetected'))
   } catch (error) {
-    if (showSuccess) message.error(error instanceof Error ? error.message : 'CLI 检测失败')
+    if (showSuccess) message.error(error instanceof Error ? error.message : t('agents.cliDetectionFailed'))
   } finally {
     cliLoading.value = false
   }
@@ -361,40 +373,49 @@ function buildStepFormData(payload: StepInput) {
 }
 
 async function save() {
-  if (!props.pipelineUuid) return
-  if (!form.name.trim()) return message.warning('请输入 Agent 名称')
-  if (form.name.trim().length > 20) return message.warning('Agent 名称最多20个字')
-  if (!form.prompt.trim()) return message.warning('请输入 Agent 提示词')
+	if (!props.pipelineUuid && !props.expertGroupUuid) return
+  if (!form.name.trim()) return message.warning(t('agents.enterAgentName'))
+  if (form.name.trim().length > 20) return message.warning(t('agents.agentNameTooLong'))
+  if (!form.prompt.trim()) return message.warning(t('agents.enterPrompt'))
   if (!form.cli_type || !form.model.trim()) {
-    return message.warning('请选择本机可用 CLI 和模型')
+    return message.warning(t('agents.selectCliAndModel'))
   }
 
   saving.value = true
   try {
     const payload = buildStepPayload()
-    const path = props.step
-      ? `/pipelines/${props.pipelineUuid}/steps/${props.step.uuid}`
-      : `/pipelines/${props.pipelineUuid}/steps`
+	const isExpertGroup = Boolean(props.expertGroupUuid)
+	const path = isExpertGroup
+	  ? props.expertMember
+		? `/expert-groups/${encodeURIComponent(props.expertGroupUuid || '')}/members/${encodeURIComponent(props.expertMember.uuid)}`
+		: `/expert-groups/${encodeURIComponent(props.expertGroupUuid || '')}/members`
+	  : props.step
+		? `/pipelines/${encodeURIComponent(props.pipelineUuid || '')}/steps/${encodeURIComponent(props.step.uuid)}`
+		: `/pipelines/${encodeURIComponent(props.pipelineUuid || '')}/steps`
+	const requestPayload = isExpertGroup
+	  ? { ...payload, member_role: props.expertRole || props.expertMember?.member_role || 'member' }
+	  : payload
     if (cloudLocked.value && props.step) {
       const executionPayload: CloudStepExecutionInput = {
         cli_type: payload.cli_type,
         model_name: payload.model_name,
       }
       await apiClient.put<PipelineStep>(path, executionPayload)
-    } else if (avatarFile.value) {
-      const multipartPayload = buildStepFormData(payload)
-      if (props.step) await apiClient.put<PipelineStep>(path, multipartPayload)
-      else await apiClient.post<PipelineStep>(path, multipartPayload)
-    } else if (props.step) {
-      await apiClient.put<PipelineStep>(path, payload)
+	} else if (avatarFile.value) {
+	  const multipartPayload = buildStepFormData(payload)
+	  if (isExpertGroup) multipartPayload.append('member_role', props.expertRole || props.expertMember?.member_role || 'member')
+	  if (editingAgent.value) await apiClient.put<PipelineStep | ExpertMember>(path, multipartPayload)
+	  else await apiClient.post<PipelineStep | ExpertMember>(path, multipartPayload)
+	} else if (editingAgent.value) {
+	  await apiClient.put<PipelineStep | ExpertMember>(path, requestPayload)
     } else {
-      await apiClient.post<PipelineStep>(path, payload)
+	  await apiClient.post<PipelineStep | ExpertMember>(path, requestPayload)
     }
-    message.success(props.step ? 'Agent 已更新' : 'Agent 已添加')
+	message.success(editingAgent.value ? t('agents.agentUpdated') : t('agents.agentAdded'))
     emit('saved')
     handleOpenChange(false)
   } catch (error) {
-    message.error(error instanceof Error ? error.message : 'Agent 保存失败')
+    message.error(error instanceof Error ? error.message : t('agents.agentSaveFailed'))
   } finally {
     saving.value = false
   }

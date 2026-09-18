@@ -11,28 +11,22 @@
             class="message-card"
             :class="{
               failed: item.status === 'failed',
+              'user-message': isUserMessage(item),
               flash: item.uuid === highlightUuid,
               collapsed: isCollapsed(item.uuid),
             }"
           >
             <div class="message-card-head">
-              <button
-                type="button"
-                class="message-card-toggle"
-                :title="isCollapsed(item.uuid) ? '展开消息' : '收起消息'"
-                :aria-label="isCollapsed(item.uuid) ? '展开消息' : '收起消息'"
-                :aria-expanded="!isCollapsed(item.uuid)"
-                @click="toggleCollapsed(item.uuid)"
-              >
-                <RightOutlined v-if="isCollapsed(item.uuid)" />
-                <DownOutlined v-else />
-              </button>
+
               <div
                 class="message-avatar"
                 :class="
                   isUserMessage(item)
                     ? 'user-avatar'
-                    : { 'has-image': stepForUuid(item.task_step_uuid)?.avatar }
+                    : {
+                        'has-image': stepForUuid(item.task_step_uuid)?.avatar,
+                        'has-logo': !stepForUuid(item.task_step_uuid)?.avatar && fallbackActorLogo,
+                      }
                 "
               >
                 <img
@@ -40,13 +34,18 @@
                   :src="stepForUuid(item.task_step_uuid)?.avatar"
                   alt=""
                 />
+                <img
+                  v-else-if="!isUserMessage(item) && fallbackActorLogo"
+                  :src="fallbackActorLogo"
+                  alt=""
+                />
                 <span v-else>{{
-                  isUserMessage(item) ? '我' : initials(stepName(item.task_step_uuid))
+                  isUserMessage(item) ? t('workflows.task.progress.me') : initials(stepName(item.task_step_uuid))
                 }}</span>
               </div>
               <div class="message-card-meta">
                 <p class="message-card-name">
-                  {{ isUserMessage(item) ? '我' : stepName(item.task_step_uuid) }}
+                  {{ isUserMessage(item) ? t('workflows.task.progress.me') : stepName(item.task_step_uuid) }}
                 </p>
                 <p class="message-card-time">
                   {{
@@ -61,13 +60,37 @@
               <button
                 type="button"
                 class="message-card-copy"
-                title="复制消息"
+                :title="t('workflows.task.progress.copyMessage')"
+                :aria-label="t('workflows.task.progress.copyMessage')"
                 @click="emit('copy', item)"
               >
                 <CopyOutlined />
               </button>
+              <button
+                type="button"
+                class="message-card-toggle"
+                :title="isCollapsed(item.uuid) ? t('workflows.task.progress.expandMessage') : t('workflows.task.progress.collapseMessage')"
+                :aria-label="isCollapsed(item.uuid) ? t('workflows.task.progress.expandMessage') : t('workflows.task.progress.collapseMessage')"
+                :aria-expanded="!isCollapsed(item.uuid)"
+                @click="toggleCollapsed(item.uuid)"
+              >
+                <RightOutlined v-if="isCollapsed(item.uuid)" />
+                <DownOutlined v-else />
+              </button>
             </div>
             <div class="message-card-detail">
+              <!-- 执行过程排在正文之前：先看过程（含实时进行中），再看结论 -->
+              <ExecutionProcess
+                v-if="!isUserMessage(item) && item.session_uuid"
+                :task-uuid="taskUuid"
+                :session-uuid="item.session_uuid"
+                :status="item.status"
+                :cli-type="item.cli_type"
+                :model-name="item.model"
+                :input-tokens="item.input_tokens"
+                :output-tokens="item.output_tokens"
+                :total-tokens="item.total_tokens"
+              />
               <div
                 v-if="isUserMessage(item)"
                 class="message-card-body"
@@ -77,45 +100,31 @@
                   :task-uuid="taskUuid"
                 />
               </div>
+              <!-- 运行中正文区留空：进展统一由执行过程承载，正文只在拿到最终结论后才出现 -->
               <div
-                v-else
+                v-else-if="!isRunningItem(item)"
                 class="message-card-body"
               >
-                <div
-                  v-if="item.status === 'created' || item.status === 'running'"
-                  class="running-line"
-                >
-                  <LoadingOutlined spin /> {{ resultText(item) }}
-                </div>
                 <MarkdownPreview
-                  v-else
                   :content="resultText(item)"
                   :task-uuid="taskUuid"
                 />
               </div>
-              <div
-                v-if="
-                  !isUserMessage(item) &&
-                  (item.status === 'created' || item.status === 'running') &&
-                  latestEventOneLine(item)
-                "
-                class="running-latest"
-                :title="latestEventOneLine(item)"
-              >
-                <span class="running-latest-label">{{
-                  latestEventLabel(item.latest_event_type)
-                }}</span>
-                <span class="running-latest-content">{{
-                  (item.latest_event_content || '').replace(/\s+/g, ' ').trim()
-                }}</span>
-                <time>{{ formatTime(item.latest_event_at) }}</time>
-              </div>
+              <!-- 需求 2202 评论 3：消息下方的「最新活动」小字与执行过程说的是同一件事，
+                   已整体移除；实时进展统一由执行过程承载 -->
               <span
-                v-if="!isUserMessage(item) && item.status !== 'success'"
+                v-if="showMessageStatus(item)"
                 class="message-status"
                 :class="`status-${item.status}`"
                 >{{ displayStatus(item.status) }}</span
               >
+              <p
+                v-if="item.dispatch_message"
+                class="dispatch-message"
+                :class="`dispatch-${item.dispatch_status || 'idle'}`"
+              >
+                {{ dispatchMessage(item.dispatch_message) }}
+              </p>
             </div>
           </article>
         </template>
@@ -124,8 +133,8 @@
           v-if="!items.length"
           class="empty-conversation"
         >
-          <div class="empty-agent">{{ initials(selectedStepName) }}</div>
-          <p>暂无对话记录</p>
+          <div class="empty-agent">{{ initials(selectedStepName || fallbackActorName) }}</div>
+          <p>{{ t('workflows.task.progress.noConversation') }}</p>
         </div>
       </div>
     </a-spin>
@@ -134,10 +143,16 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { CopyOutlined, DownOutlined, LoadingOutlined, RightOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined, DownOutlined, RightOutlined } from '@ant-design/icons-vue'
 import MarkdownPreview from '@/components/MarkdownPreview.vue'
+import ExecutionProcess from './ExecutionProcess.vue'
 import type { PipelineStep, TaskProgress } from '@/types/pipeline'
 import { initials, isUserMessage, resultText, userMessageText } from './utils'
+import { useAppI18n, type MessageKey } from '@/i18n'
+import { useLocale } from '@/composables/useLocale'
+
+const { t } = useAppI18n()
+const { locale } = useLocale()
 
 const props = withDefaults(
   defineProps<{
@@ -146,9 +161,18 @@ const props = withDefaults(
     highlightUuid?: string
     loading?: boolean
     selectedStepName?: string
+    fallbackActorName?: string
+    fallbackActorLogo?: string
     taskUuid?: string
   }>(),
-  { highlightUuid: '', loading: false, selectedStepName: '', taskUuid: '' },
+  {
+    highlightUuid: '',
+    loading: false,
+    selectedStepName: '',
+    fallbackActorName: '',
+    fallbackActorLogo: '',
+    taskUuid: '',
+  },
 )
 
 const emit = defineEmits<{
@@ -157,6 +181,43 @@ const emit = defineEmits<{
 
 const collapsedUuids = ref(new Set<string>())
 const stepMap = computed(() => new Map(props.steps.map((step) => [step.uuid, step])))
+const dispatchMessageKeys: Record<string, MessageKey> = {
+  'expert_routing.routing_pending': 'expertGroups.dispatch.routingPending',
+  'expert_routing.context_load_failed': 'expertGroups.dispatch.contextLoadFailed',
+  'expert_routing.leader_failed': 'expertGroups.dispatch.leaderFailed',
+  'expert_routing.no_delegation': 'expertGroups.dispatch.noDelegation',
+  'expert_routing.multiple_delegations': 'expertGroups.dispatch.multipleDelegations',
+  'expert_routing.invalid_member': 'expertGroups.dispatch.invalidMember',
+  'expert_routing.member_activation_failed': 'expertGroups.dispatch.memberActivationFailed',
+  'expert_routing.member_start_failed': 'expertGroups.dispatch.memberStartFailed',
+  'expert_routing.dispatched': 'expertGroups.dispatch.dispatched',
+  'expert_routing.leader_missing': 'expertGroups.dispatch.leaderMissing',
+  'expert_routing.leader_activation_failed': 'expertGroups.dispatch.leaderActivationFailed',
+  'expert_routing.leader_start_failed': 'expertGroups.dispatch.leaderStartFailed',
+  'expert_routing.returned': 'expertGroups.dispatch.returned',
+  'expert_routing.round_limit': 'expertGroups.dispatch.roundLimit',
+}
+
+/** 执行过程承载了这条会话的运行状态（CLI 会话才有执行过程面板） */
+function processShowsRunning(item: TaskProgress) {
+  return Boolean(item.cli_type && item.session_uuid)
+}
+
+/** 卡片底部状态文字：运行中被执行过程覆盖，其余状态（失败、中断等）照常展示 */
+function showMessageStatus(item: TaskProgress) {
+  if (isUserMessage(item) || item.status === 'success') return false
+  return !(isRunningItem(item) && processShowsRunning(item))
+}
+
+function dispatchMessage(value: string) {
+  const key = dispatchMessageKeys[value]
+  return key ? t(key) : value
+}
+
+// 运行中的消息正文区不渲染内容：结论未产出，且进展已由执行过程承载
+function isRunningItem(item: TaskProgress) {
+  return item.status === 'created' || item.status === 'running'
+}
 
 function isCollapsed(uuid: string) {
   return collapsedUuids.value.has(uuid)
@@ -173,21 +234,21 @@ function stepForUuid(uuid?: string) {
   return stepMap.value.get(uuid || '')
 }
 function stepName(uuid?: string) {
-  return stepForUuid(uuid)?.name || '专家流水线'
+  return stepForUuid(uuid)?.name || props.fallbackActorName || t('workflows.task.common.agentOrchestration')
 }
 
 function displayStatus(status?: string) {
   return (
     {
-      created: '等待执行',
-      running: '执行中',
-      idle: '等待开始',
-      failed: '执行失败',
-      stopped: '已停止',
-      interrupted: '已中断',
+      created: t('workflows.task.execution.created'),
+      running: t('workflows.task.execution.running'),
+      idle: t('workflows.task.status.pending'),
+      failed: t('workflows.task.execution.failed'),
+      stopped: t('workflows.task.execution.stopped'),
+      interrupted: t('workflows.task.execution.interrupted'),
     }[status || ''] ||
     status ||
-    '等待开始'
+    t('workflows.task.status.pending')
   )
 }
 
@@ -198,27 +259,11 @@ function formatTime(timestamp?: number) {
   const date = new Date(milliseconds)
   const sameDay = date.toDateString() === new Date().toDateString()
   return date.toLocaleString(
-    'zh-CN',
+    locale.value,
     sameDay
       ? { hour: '2-digit', minute: '2-digit', hour12: false }
       : { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false },
   )
-}
-
-const latestEventLabels: Record<string, string> = {
-  message: '输出',
-  tool_call: '工具调用',
-  tool_result: '工具结果',
-}
-
-function latestEventLabel(type?: string) {
-  return latestEventLabels[type || ''] || '活动'
-}
-
-// 最新一条 CLI 活动压缩为单行文本（去掉换行/连续空白），用于“正在执行”下方小字
-function latestEventOneLine(item: TaskProgress) {
-  const content = (item.latest_event_content || '').replace(/\s+/g, ' ').trim()
-  return content ? `[${latestEventLabel(item.latest_event_type)}] ${content}` : ''
 }
 
 function scrollToItem(uuid: string) {
@@ -242,7 +287,9 @@ defineExpose({ scrollToItem })
 }
 .message-card {
   padding: 16px 0;
+  transition: background-color 0.15s;
 }
+.message-card.user-message { margin-inline: -16px; padding-inline: 16px; background: #f5f9ff; }
 .message-card + .message-card {
   border-top: 1px solid #f0f0f0;
 }
@@ -309,10 +356,18 @@ defineExpose({ scrollToItem })
   border: 1px solid #fff;
   box-sizing: border-box;
 }
+.message-avatar.has-logo {
+  width: 16px;
+  height: 16px;
+  background: transparent;
+}
 .message-avatar img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.message-avatar.has-logo img {
+  object-fit: contain;
 }
 .message-card-meta {
   display: flex;
@@ -371,41 +426,9 @@ defineExpose({ scrollToItem })
   padding: 0;
   background: transparent;
 }
-.running-line {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: #6b7280;
-}
-.running-latest {
-  display: flex;
-  max-width: 520px;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  margin-top: 8px;
-  color: #9ca3af;
-  font-size: 11px;
-  line-height: 1.4;
-}
-.running-latest-label {
-  flex: 0 0 auto;
-  border-radius: 3px;
-  padding: 0 5px;
-  color: #3157e2;
-  background: rgba(49, 87, 226, 0.08);
-  font-size: 10px;
-}
-.running-latest-content {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.running-latest time {
-  flex: 0 0 auto;
-  color: #c4c9d1;
-  font-size: 10px;
-}
+.dispatch-message { margin:10px 0 0; padding:8px 10px; border-radius:8px; color:#595959; background:#f5f6f8; font-size:12px; }
+.dispatch-failed,.dispatch-blocked { color:#b42318; background:#fef2f2; }
+.dispatch-dispatched,.dispatch-returned { color:#3157e2; background:#e5efff; }
 .message-status {
   display: inline-block;
   margin-top: 6px;

@@ -1,0 +1,31 @@
+{
+  "sidebar": {
+    "navigation": "Main navigation",
+    "collapse": "Collapse navigation",
+    "expand": "Expand navigation",
+    "light": "Light",
+    "dark": "Dark",
+    "switchToLight": "Switch to light mode",
+    "switchToDark": "Switch to dark mode",
+    "currentLanguage": "Current language: {language}"
+  },
+  "menu": {
+    "workflows": "Board",
+    "tasks": "Chat",
+    "agents": "Agent pipelines",
+    "projects": "Projects",
+    "commands": "Commands",
+    "knowledge": "Knowledge base",
+    "apis": "API management",
+    "settings": "Settings"
+  },
+  "notifications": {
+    "readyTitle": "{step} is ready",
+    "openTask": "Open TeamsBoard to view task {task}",
+    "details": "details",
+    "unavailableTitle": "The task finished, but the system notification was not confirmed",
+    "sendFailedTitle": "The task finished, but the system notification failed to send",
+    "unavailableHint": "Check system notification permissions and Do Not Disturb settings.",
+    "sendFailedHint": "Confirm the local service is connected and check system notification permissions."
+  }
+}

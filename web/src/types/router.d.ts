@@ -1,7 +1,10 @@
 import 'vue-router'
+import type { MessageKey } from '@/i18n/messages'
 
 declare module 'vue-router' {
   interface RouteMeta {
+    /** Localized page title key */
+    titleKey?: MessageKey
     /** Page title (for top context bar) */
     title?: string
     /** Main menu key */

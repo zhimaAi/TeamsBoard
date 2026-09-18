@@ -9,7 +9,7 @@ import {
   formatPastedImageContent,
   useTaskImageAttachments,
 } from '@/composables/useTaskImageAttachments'
-import { sanitizeUserMessageText } from '@/components/task-progress/utils'
+import { cliDisplayName, sanitizeUserMessageText } from '@/components/task-progress/utils'
 import StopExecutionConfirmModal from '@/components/task-progress/StopExecutionConfirmModal.vue'
 import { isStopConfirmSuppressed, suppressStopConfirm } from '@/utils/stopConfirm'
 
@@ -232,29 +232,6 @@ function statusColor(status: string) {
       stopped: 'warning',
       interrupted: 'default',
     }[status] || 'default'
-  )
-}
-
-function cliDisplayName(cliType: string) {
-  return (
-    {
-      claude: 'Claude Code',
-      codebuddy: 'CodeBuddy Code',
-      codex: 'Codex CLI',
-      cursor: 'Cursor Agent',
-      opencode: 'OpenCode',
-      copilot: 'GitHub Copilot CLI',
-      grok: 'Grok CLI',
-      hermes: 'Hermes',
-      kimi: 'Kimi Code',
-      qoder: 'Qoder CLI',
-      'qoder-cn': 'Qoder CLI (CN)',
-      qwen: 'Qwen Code',
-      openclaw: 'OpenClaw',
-      pi: 'Pi Agent',
-    }[cliType] ||
-    cliType.toUpperCase() ||
-    'CLI'
   )
 }
 

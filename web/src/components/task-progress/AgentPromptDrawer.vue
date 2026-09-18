@@ -18,17 +18,17 @@
             <button
               type="button"
               class="step-switcher"
-              aria-label="选择要编辑的步骤"
+              :aria-label="t('workflows.task.progress.chooseEditableStep')"
             >
               <span class="step-avatar">
                 <img
                   v-if="displayStep?.avatar"
                   :src="displayStep.avatar"
-                  :alt="`${displayStep.name}头像`"
+                  :alt="displayStep.name"
                 />
                 <span v-else>{{ initials(displayStep?.name) }}</span>
               </span>
-              <h2>{{ displayStep?.name || '当前步骤' }}</h2>
+              <h2>{{ displayStep?.name || t('workflows.task.common.currentStep') }}</h2>
               <DownOutlined class="step-switcher-caret" />
             </button>
             <template #overlay>
@@ -39,7 +39,7 @@
                   @click="selectStep(step)"
                 >
                   <span class="step-menu-name">{{ step.name }}</span>
-                  <small v-if="step.uuid === currentExecutingStepUuid">当前执行步骤</small>
+                  <small v-if="step.uuid === currentExecutingStepUuid">{{ t('workflows.task.progress.executingStep') }}</small>
                 </a-menu-item>
               </a-menu>
             </template>
@@ -49,17 +49,17 @@
               <img
                 v-if="displayStep?.avatar"
                 :src="displayStep.avatar"
-                :alt="`${displayStep.name}头像`"
+                :alt="displayStep.name"
               />
               <span v-else>{{ initials(displayStep?.name) }}</span>
             </span>
-            <h2>{{ displayStep?.name || '当前步骤' }}</h2>
+            <h2>{{ displayStep?.name || t('workflows.task.common.currentStep') }}</h2>
           </template>
         </div>
         <button
           type="button"
           class="close-button"
-          aria-label="关闭 Agent 提示词"
+          :aria-label="t('workflows.task.progress.closePrompt')"
           @click="requestClose"
         >
           <CloseOutlined />
@@ -73,7 +73,7 @@
             alt=""
             aria-hidden="true"
           />
-          提示词（System Prompt）
+          {{ t('workflows.task.progress.systemPrompt') }}
         </label>
         <a-button
           type="primary"
@@ -81,7 +81,7 @@
           :disabled="loading || !loadedStep || !draftPrompt.trim() || !dirty"
           @click="savePrompt"
         >
-          保存
+          {{ t('common.actions.save') }}
         </a-button>
       </div>
 
@@ -101,7 +101,7 @@
             show-icon
             :message="loadError"
           />
-          <a-button @click="loadPrompt">重试</a-button>
+          <a-button @click="loadPrompt">{{ t('common.actions.retry') }}</a-button>
         </div>
         <a-textarea
           v-else
@@ -109,7 +109,7 @@
           v-model:value="draftPrompt"
           class="prompt-editor"
           :disabled="saving || !loadedStep"
-          aria-label="当前步骤 Agent 提示词"
+          :aria-label="t('workflows.task.progress.promptAria')"
         />
       </div>
     </div>
@@ -121,6 +121,9 @@ import { computed, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { CloseOutlined, DownOutlined } from '@ant-design/icons-vue'
 import apiClient from '@/api/client'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 import agentIcon from '@/assets/icons/task-composer-agent.svg'
 import type { PipelineStep } from '@/types/pipeline'
 import type { TaskWithDetails } from '@/types/task-detail'
@@ -185,7 +188,7 @@ function applyLoadedTask(task: TaskWithDetails) {
     || steps[0]?.uuid
     || ''
   const step = steps.find((item) => item.uuid === preferredUuid) || steps[0]
-  if (!step) throw new Error('当前任务没有可编辑的执行步骤')
+  if (!step) throw new Error(t('workflows.task.progress.noEditableStep'))
   selectedStepUuid.value = step.uuid
   loadedStep.value = step
   draftPrompt.value = step.prompt_snapshot || ''
@@ -194,7 +197,7 @@ function applyLoadedTask(task: TaskWithDetails) {
 
 async function loadPrompt() {
   if (!props.taskUuid) {
-    loadError.value = '缺少任务信息，无法加载 Agent 提示词'
+    loadError.value = t('workflows.task.progress.promptTaskMissing')
     return
   }
   const requestVersion = ++loadVersion
@@ -210,7 +213,7 @@ async function loadPrompt() {
     if (requestVersion !== loadVersion) return
     loadedStep.value = undefined
     editableSteps.value = []
-    loadError.value = error instanceof Error ? error.message : 'Agent 提示词加载失败'
+    loadError.value = error instanceof Error ? error.message : t('workflows.task.progress.promptLoadFailed')
   } finally {
     if (requestVersion === loadVersion) loading.value = false
   }
@@ -230,10 +233,10 @@ function selectStep(step: PipelineStep) {
     return
   }
   Modal.confirm({
-    title: '切换步骤并放弃未保存的提示词修改？',
-    content: '切换后，当前步骤尚未保存的提示词内容将丢失。',
-    okText: '放弃修改',
-    cancelText: '继续编辑',
+    title: t('workflows.task.progress.switchPromptTitle'),
+    content: t('workflows.task.progress.switchPromptContent'),
+    okText: t('workflows.task.progress.discardChanges'),
+    cancelText: t('workflows.task.progress.continueEditing'),
     onOk: () => applyStep(step),
   })
 }
@@ -243,7 +246,7 @@ async function savePrompt() {
   const prompt = draftPrompt.value.trim()
   if (!step || !props.taskUuid || saving.value || !dirty.value) return
   if (!prompt) {
-    message.error('提示词不能为空')
+    message.error(t('workflows.task.progress.promptRequired'))
     return
   }
   saving.value = true
@@ -258,17 +261,17 @@ async function savePrompt() {
       item.uuid === step.uuid ? { ...item, prompt_snapshot: draftPrompt.value } : item
     ))
     if (result.session_error) {
-      message.warning(`提示词已保存，但重新执行失败：${result.session_error}`)
+      message.warning(t('workflows.task.progress.promptSavedRestartFailed', { error: result.session_error }))
     } else if (result.prompt_only) {
-      message.success('提示词已保存')
+      message.success(t('workflows.task.progress.promptSaved'))
     } else if (result.execution_deferred) {
-      message.success('提示词已保存，将在流程推进到该步骤时生效')
+      message.success(t('workflows.task.progress.promptSavedLater'))
     } else {
-      message.success('提示词已保存，当前步骤将重新执行')
+      message.success(t('workflows.task.progress.promptSavedRestart'))
     }
     emit('saved')
   } catch (error) {
-    message.error(error instanceof Error ? error.message : 'Agent 提示词保存失败')
+    message.error(error instanceof Error ? error.message : t('workflows.task.progress.promptSaveFailed'))
   } finally {
     saving.value = false
   }
@@ -280,10 +283,10 @@ function requestClose() {
     return
   }
   Modal.confirm({
-    title: '放弃未保存的提示词修改？',
-    content: '关闭后，本次尚未保存的提示词内容将丢失。',
-    okText: '放弃修改',
-    cancelText: '继续编辑',
+    title: t('workflows.task.progress.discardPromptTitle'),
+    content: t('workflows.task.progress.discardPromptContent'),
+    okText: t('workflows.task.progress.discardChanges'),
+    cancelText: t('workflows.task.progress.continueEditing'),
     onOk: () => emit('update:open', false),
   })
 }

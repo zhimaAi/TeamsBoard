@@ -2,15 +2,17 @@
 import { computed, onMounted, ref } from 'vue'
 import apiClient from '@/api/client'
 import ConfigResourceTable, { type ConfigField } from '@/components/ConfigResourceTable.vue'
+import { useAppI18n } from '@/i18n'
 
 type Item = Record<string, unknown>
 const sshProfiles = ref<Item[]>([])
+const { t } = useAppI18n()
 
 const fields = computed<ConfigField[]>(() => [
-  { key: 'name', label: '名称', required: true, placeholder: '例如：开发库' },
+  { key: 'name', label: t('settings.name'), required: true, placeholder: t('settings.exampleDatabase') },
   {
     key: 'db_type',
-    label: '类型',
+    label: t('settings.type'),
     type: 'select',
     required: true,
     defaultValue: 'mysql',
@@ -19,18 +21,18 @@ const fields = computed<ConfigField[]>(() => [
       { label: 'PostgreSQL', value: 'postgresql' },
     ],
   },
-  { key: 'host', label: '主机', placeholder: '127.0.0.1' },
-  { key: 'port', label: '端口', type: 'number', defaultValue: 3306, width: 90 },
-  { key: 'database_name', label: '数据库' },
-  { key: 'username', label: '用户名' },
-  { key: 'password', label: '密码', type: 'password', table: false },
+  { key: 'host', label: t('settings.host'), placeholder: '127.0.0.1' },
+  { key: 'port', label: t('settings.port'), type: 'number', defaultValue: 3306, width: 90 },
+  { key: 'database_name', label: t('settings.database') },
+  { key: 'username', label: t('settings.username') },
+  { key: 'password', label: t('settings.password'), type: 'password', table: false },
   {
     key: 'ssh_profile_id',
-    label: 'SSH 隧道',
+    label: t('settings.sshTunnel'),
     type: 'select',
     defaultValue: 0,
     options: [
-      { label: '不使用', value: 0 },
+      { label: t('settings.none'), value: 0 },
       ...sshProfiles.value.map((item) => ({ label: String(item.name), value: Number(item.id) })),
     ],
   },
@@ -44,9 +46,9 @@ onMounted(async () => {
 
 <template>
   <ConfigResourceTable
-    title="数据库连接"
+    :title="t('settings.databaseConnections')"
     endpoint="/config/database-profiles"
-    description="管理 MySQL / PostgreSQL 连接，可选用已配置的 SSH 隧道。密码只保存在系统安全存储中。"
+    :description="t('settings.databaseDescription')"
     :fields="fields"
     :testable="true"
   />

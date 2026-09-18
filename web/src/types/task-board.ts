@@ -22,8 +22,17 @@ export interface TaskBoardTask {
   agent_name_snapshot?: string
   description?: string
   pipeline_snapshot_uuid?: string
+  selected_pipeline_uuid?: string
+  execution_mode?: import('@/types/pipeline').TaskExecutionMode
+  execution_tool?: string
+  // CLI 直接执行：模型由看板接口透出（若后端返回），缺省回退隐式步骤。
+  execution_model?: string
   pipeline_name_snapshot?: string
   pipeline_avatar_snapshot?: string
+  selected_expert_group_uuid?: string
+  expert_group_snapshot_uuid?: string
+  expert_group_name_snapshot?: string
+  expert_group_avatar_snapshot?: string
   priority?: string
   planned_end_date?: number | string
   blocked_reason?: string

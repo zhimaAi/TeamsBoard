@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"fmt"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"goteams-client/internal/command"
 	"goteams-client/internal/config"
 	"goteams-client/internal/configcenter"
+	"goteams-client/internal/i18n"
 	"goteams-client/internal/identity"
 	"goteams-client/internal/knowledge"
 	"goteams-client/internal/localauth"
@@ -51,24 +53,27 @@ type LoginOptions struct {
 
 // Config local service configuration
 type Config struct {
-	DataDir         string
-	ConfigDir       string
-	RuntimeDir      string
-	TaskRoot        string
-	BaseProfileDir  string
-	BootstrapStore  secrets.Store
-	SecretStore     *secrets.DelegatingStore
-	CloudConfig     *config.CloudConfig
-	BrowserTicket   string
-	DesktopToken    string
-	APIToken        string
-	APITokenFromEnv bool
-	Shutdown        func()
-	CloudClient     *cloud.Client
-	AccountMgr      AccountManagerInterface
-	TaskDB          *sql.DB
-	Orchestrator    *workflow.Orchestrator
-	WSHub           *WSHub
+	DataDir          string
+	ConfigDir        string
+	RuntimeDir       string
+	TaskRoot         string
+	SkillsRoot       string
+	CodexSkillReady  bool
+	CodexSkillReason string
+	BaseProfileDir   string
+	BootstrapStore   secrets.Store
+	SecretStore      *secrets.DelegatingStore
+	CloudConfig      *config.CloudConfig
+	BrowserTicket    string
+	DesktopToken     string
+	APIToken         string
+	APITokenFromEnv  bool
+	Shutdown         func()
+	CloudClient      *cloud.Client
+	AccountMgr       AccountManagerInterface
+	TaskDB           *sql.DB
+	Orchestrator     *workflow.Orchestrator
+	WSHub            *WSHub
 }
 
 // SessionInfo session information of the current login account
@@ -260,9 +265,10 @@ func (s *Server) buildRouter() *gin.Engine {
 			"path", c.Request.URL.Path,
 			"error", recovered,
 		)
-		c.AbortWithStatus(http.StatusInternalServerError)
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "server_error")
 	}))
 	r.Use(noStoreAPI())
+	r.Use(i18n.Middleware())
 	r.Use(logAllRequests())
 	r.Use(logFailedRequest())
 	r.Use(s.requireAPIToken())
@@ -325,13 +331,16 @@ func (s *Server) buildRouter() *gin.Engine {
 
 	// Local task management and CLI execution are available without cloud login.
 	// Individual cloud-import endpoints validate the cloud session in their handler.
-	tasksHandler := NewTasksHandler(s.currentSessionDB, s.currentOrchestrator, s.currentCloudClient, s.config.WSHub, s.config.TaskRoot)
+	tasksHandler := NewTasksHandler(s.currentSessionDB, s.currentOrchestrator, s.currentCloudClient, s.config.WSHub,
+		s.config.TaskRoot, s.config.SkillsRoot, s.config.CodexSkillReady, s.config.CodexSkillReason)
 	tasksGroup := local.Group("/tasks")
 	tasksHandler.RegisterRoutes(tasksGroup)
+	tasksHandler.RegisterSkillRoutes(local.Group("/task-skill", requireTaskSkillCaller()))
 	iconStore := NewIconStore(s.config.DataDir)
 	local.GET("/assets/icons/:filename", iconStore.Serve)
 	pipelinesHandler := NewPipelinesHandler(s.currentSessionDB, iconStore, s.currentCloudClient)
 	pipelinesHandler.RegisterRoutes(local.Group("/pipelines"))
+	NewExpertGroupsHandler(s.currentSessionDB, iconStore).RegisterRoutes(local.Group("/expert-groups"))
 	NewProjectsHandler(s.currentSessionDB, iconStore).RegisterRoutes(local.Group("/projects"))
 	NewNotificationsHandler(s.currentSessionDB).RegisterRoutes(local.Group("/notifications"))
 	tasksHandler.RegisterTeamRoutes(loggedIn.Group("/api/local/team"))
@@ -383,9 +392,9 @@ func logFailedRequest() gin.HandlerFunc {
 				"method", c.Request.Method,
 				"path", c.Request.URL.Path,
 				"status", c.Writer.Status(),
-				// Handlers include the original SQLite/SQL error in their JSON error
-				// response. Capture that response so the log has the useful database
-				// diagnostic without recording request bodies or SQL statements.
+				// Handlers return a stable localized error response. Capture only that
+				// response for request correlation; request bodies and raw SQL errors
+				// must not be recorded here.
 				"response", strings.TrimSpace(writer.body.String()),
 			)
 		}
@@ -434,6 +443,7 @@ func (s *Server) requireAPIToken() gin.HandlerFunc {
 			path == "/api/local/ws" ||
 			(c.Request.Method == http.MethodGet && strings.HasPrefix(path, ManagedIconURLPrefix)) ||
 			strings.HasPrefix(path, "/api/local/auth/") ||
+			strings.HasPrefix(path, "/api/local/task-skill/") ||
 			!strings.HasPrefix(path, "/api/") {
 			c.Next()
 			return
@@ -446,7 +456,31 @@ func (s *Server) requireAPIToken() gin.HandlerFunc {
 		}
 		token := c.GetHeader("X-GoTeams-Api-Token")
 		if len(token) != len(expected) || subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "无效的访问令牌"})
+			i18n.Error(c, http.StatusForbidden, "common_access_token_invalid", "access_token_invalid")
+			return
+		}
+		c.Next()
+	}
+}
+
+const (
+	taskSkillClientHeader = "X-GoTeams-Skill-Client"
+	taskSkillClientValue  = "teamsboard-v1"
+)
+
+func requireTaskSkillCaller() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.GetHeader("Origin") != "" || c.GetHeader(taskSkillClientHeader) != taskSkillClientValue {
+			i18n.Error(c, http.StatusForbidden, "localserver_skill_caller_forbidden", "skill_caller_forbidden")
+			return
+		}
+		host, _, err := net.SplitHostPort(c.Request.RemoteAddr)
+		if err != nil {
+			host = c.Request.RemoteAddr
+		}
+		ip := net.ParseIP(strings.TrimSpace(host))
+		if ip == nil || !ip.IsLoopback() {
+			i18n.Error(c, http.StatusForbidden, "localserver_skill_loopback_required", "skill_loopback_required")
 			return
 		}
 		c.Next()
@@ -473,7 +507,7 @@ func (s *Server) currentCloudClient() *cloud.Client {
 func (s *Server) requireLogin() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if s.currentSession() == nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "请先登录"})
+			i18n.Error(c, http.StatusUnauthorized, "common_not_authenticated", "not_authenticated")
 			return
 		}
 		c.Next()
@@ -491,7 +525,7 @@ func (s *Server) handleHealth(c *gin.Context) {
 // handleWebSocket WebSocket endpoint
 func (s *Server) handleWebSocket(c *gin.Context) {
 	if s.config.WSHub == nil {
-		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "本地任务运行时未初始化"})
+		i18n.Error(c, http.StatusServiceUnavailable, "common_runtime_unavailable", "runtime_unavailable")
 		return
 	}
 	s.config.WSHub.HandleWebSocket(c)

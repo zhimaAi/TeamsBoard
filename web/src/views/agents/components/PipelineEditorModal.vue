@@ -2,7 +2,7 @@
   <a-modal
     :open="open"
     class="pipeline-editor-modal"
-    :title="pipeline ? '编辑流水线' : '新建流水线'"
+	:title="modalTitle"
     width="730px"
     centered
     @update:open="handleOpenChange"
@@ -11,7 +11,7 @@
     <button
       class="pipeline-icon-preview"
       type="button"
-      aria-label="上传流水线图标"
+      :aria-label="t('agents.uploadPipelineIcon')"
       @click="openFilePicker"
     >
       <img
@@ -26,7 +26,7 @@
         />
       </span>
     </button>
-    <p class="pipeline-icon-hint">建议尺寸100×100px，大小不超过100KB</p>
+    <p class="pipeline-icon-hint">{{ t('agents.iconHint') }}</p>
     <input
       ref="fileInput"
       class="pipeline-icon-file-input"
@@ -41,7 +41,7 @@
     >
       <a-form-item
         class="pipeline-icon-form-item"
-        label="流水线默认头像"
+		:label="avatarLabel"
       >
         <div class="avatar-options">
           <button
@@ -50,7 +50,7 @@
             type="button"
             :class="{ active: !iconFile && form.avatar === avatar }"
             :aria-pressed="!iconFile && form.avatar === avatar"
-            aria-label="选择预设流水线头像"
+			:aria-label="avatarSelectLabel"
             @click="selectPresetAvatar(avatar)"
           >
             <img
@@ -63,40 +63,40 @@
 
       <a-form-item class="pipeline-editor-form-item">
         <template #label>
-          <span class="pipeline-modal-label">流水线名</span>
-          <span class="pipeline-modal-label-hint">(最多20个字)</span>
+		  <span class="pipeline-modal-label">{{ nameLabel }}</span>
+          <span class="pipeline-modal-label-hint">{{ t('agents.nameLimit') }}</span>
         </template>
         <a-input
           v-model:value="form.name"
           :maxlength="20"
           :show-count="false"
-          placeholder="请输入"
+		  :placeholder="namePlaceholder"
         />
       </a-form-item>
 
       <a-form-item class="pipeline-editor-form-item pipeline-intro-form-item">
         <template #label>
-          <span class="pipeline-modal-label">简介</span>
-          <span class="pipeline-modal-label-hint pipeline-modal-label-hint--flush">（最多200个字）</span>
+          <span class="pipeline-modal-label">{{ t('agents.intro') }}</span>
+          <span class="pipeline-modal-label-hint pipeline-modal-label-hint--flush">{{ t('agents.introLimit') }}</span>
         </template>
         <a-textarea
           v-model:value="form.description"
           :maxlength="200"
           :show-count="false"
-          placeholder="描述流水线的用途与协作流程"
+		  :placeholder="introPlaceholder"
         />
       </a-form-item>
     </a-form>
 
     <template #footer>
       <div class="pipeline-modal-footer-actions">
-        <a-button @click="handleOpenChange(false)">取消</a-button>
+        <a-button @click="handleOpenChange(false)">{{ t('agents.cancel') }}</a-button>
         <a-button
           type="primary"
           :loading="saving"
           @click="save"
         >
-          {{ pipeline ? '保存修改' : '确认创建' }}
+		  {{ editingResource ? t('agents.saveChanges') : t('agents.confirmCreate') }}
         </a-button>
       </div>
     </template>
@@ -109,17 +109,24 @@ import { message } from 'ant-design-vue'
 import apiClient from '@/api/client'
 import projectModalCameraIcon from '@/assets/icons/project-modal-camera.svg'
 import { ICON_FILE_ACCEPT, useIconFile } from '@/composables/useIconFile'
-import type { Pipeline } from '@/types/pipeline'
+import type { ExpertGroup, Pipeline } from '@/types/pipeline'
 import { PIPELINE_AVATARS, type PipelineInput } from './agentPipeline'
+import { useAppI18n } from '@/i18n'
 
-const props = defineProps<{
+const { t } = useAppI18n()
+
+const props = withDefaults(defineProps<{
   open: boolean
+  kind?: 'pipeline' | 'expert_group'
   pipeline?: Pipeline
-}>()
+  expertGroup?: ExpertGroup
+}>(), { kind: 'pipeline' })
 
 const emit = defineEmits<{
   created: [pipeline: Pipeline]
   updated: [pipeline: Pipeline]
+	'expert-created': [group: ExpertGroup]
+	'expert-updated': [group: ExpertGroup]
   'update:open': [open: boolean]
 }>()
 
@@ -134,6 +141,16 @@ const { file: iconFile, previewUrl, selectFile, reset: resetIconFile } = useIcon
 // 设计稿约束：流水线图标大小不超过 100KB，比共享图标校验（2MB）更严格，仅作用于本弹窗
 const MAX_PIPELINE_ICON_FILE_SIZE = 100 * 1024
 
+const isExpertGroup = computed(() => props.kind === 'expert_group')
+const editingResource = computed(() => isExpertGroup.value ? props.expertGroup : props.pipeline)
+const modalTitle = computed(() => isExpertGroup.value
+	? editingResource.value ? t('expertGroups.editGroup') : t('expertGroups.newGroup')
+	: editingResource.value ? t('agents.editPipeline') : t('agents.newPipeline'))
+const avatarLabel = computed(() => isExpertGroup.value ? t('expertGroups.defaultAvatar') : t('agents.defaultPipelineAvatar'))
+const avatarSelectLabel = computed(() => isExpertGroup.value ? t('expertGroups.selectAvatar') : t('agents.selectPipelineAvatar'))
+const nameLabel = computed(() => isExpertGroup.value ? t('expertGroups.name') : t('agents.pipelineName'))
+const namePlaceholder = computed(() => isExpertGroup.value ? t('expertGroups.namePlaceholder') : t('agents.enter'))
+const introPlaceholder = computed(() => isExpertGroup.value ? t('expertGroups.descriptionPlaceholder') : t('agents.introPlaceholder'))
 const previewIcon = computed(() => previewUrl.value || form.avatar || PIPELINE_AVATARS[0])
 
 watch(
@@ -141,9 +158,10 @@ watch(
   (open) => {
     if (!open) return
     resetIconFile()
-    form.name = props.pipeline?.name || ''
-    form.description = props.pipeline?.description || ''
-    form.avatar = props.pipeline?.avatar || PIPELINE_AVATARS[0]
+	const resource = editingResource.value
+	form.name = resource?.name || ''
+	form.description = resource?.description || ''
+	form.avatar = resource?.avatar || PIPELINE_AVATARS[0]
   },
 )
 
@@ -158,14 +176,14 @@ function handleFileChange(event: Event) {
   if (!nextFile) return
 
   if (nextFile.size > MAX_PIPELINE_ICON_FILE_SIZE) {
-    message.warning('图片大小不能超过 100KB')
+    message.warning(t('agents.imageTooLarge'))
     return
   }
 
   try {
     selectFile(nextFile)
   } catch (error) {
-    message.warning(error instanceof Error ? error.message : '图标选择失败')
+    message.warning(error instanceof Error ? error.message : t('agents.selectIconFailed'))
   }
 }
 
@@ -185,9 +203,9 @@ function buildPipelineFormData(payload: PipelineInput) {
 
 async function save() {
   const name = form.name.trim()
-  if (!name) return message.warning('请输入流水线名称')
-  if (name.length > 20) return message.warning('流水线名称最多20个字')
-  if (form.description.length > 200) return message.warning('流水线简介最多200个字')
+  if (!name) return message.warning(t('agents.enterPipelineName'))
+  if (name.length > 20) return message.warning(t('agents.pipelineNameTooLong'))
+  if (form.description.length > 200) return message.warning(t('agents.introTooLong'))
 
   saving.value = true
   try {
@@ -197,19 +215,31 @@ async function save() {
       avatar: form.avatar,
     }
     const body = iconFile.value ? buildPipelineFormData(payload) : payload
-    if (props.pipeline) {
-      const updated = await apiClient.put<Pipeline>(`/pipelines/${props.pipeline.uuid}`, body)
+	if (isExpertGroup.value) {
+	  if (props.expertGroup) {
+		const updated = await apiClient.put<ExpertGroup>(`/expert-groups/${encodeURIComponent(props.expertGroup.uuid)}`, body)
+		emit('update:open', false)
+		emit('expert-updated', updated)
+		message.success(t('expertGroups.saved'))
+	  } else {
+		const created = await apiClient.post<ExpertGroup>('/expert-groups', body)
+		emit('update:open', false)
+		emit('expert-created', created)
+		message.success(t('expertGroups.saved'))
+	  }
+	} else if (props.pipeline) {
+	  const updated = await apiClient.put<Pipeline>(`/pipelines/${encodeURIComponent(props.pipeline.uuid)}`, body)
       emit('update:open', false)
       emit('updated', updated)
-      message.success('流水线已更新')
+      message.success(t('agents.pipelineUpdated'))
     } else {
       const created = await apiClient.post<Pipeline>('/pipelines', body)
       emit('update:open', false)
       emit('created', created)
-      message.success('流水线已创建')
+      message.success(t('agents.pipelineCreated'))
     }
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '流水线保存失败')
+	message.error(error instanceof Error ? error.message : isExpertGroup.value ? t('expertGroups.saveFailed') : t('agents.pipelineSaveFailed'))
   } finally {
     saving.value = false
   }

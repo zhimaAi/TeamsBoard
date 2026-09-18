@@ -1,10 +1,13 @@
 import { computed, ref } from 'vue'
 import apiClient from '@/api/client'
+import { t } from '@/i18n'
 
-const MAX_IMAGE_SIZE = 10 * 1024 * 1024
-const MAX_IMAGE_TOTAL_SIZE = 30 * 1024 * 1024
-const MAX_IMAGE_COUNT = 8
-const SUPPORTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+export const MAX_IMAGE_SIZE = 10 * 1024 * 1024
+export const MAX_IMAGE_TOTAL_SIZE = 30 * 1024 * 1024
+export const MAX_IMAGE_COUNT = 8
+export const SUPPORTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+export const TASK_IMAGE_ACCEPT =
+  'image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif'
 
 interface PastedImage {
   file: File
@@ -17,6 +20,16 @@ interface SavedTaskAttachment {
   relative_path: string
   absolute_path: string
   markdown: string
+}
+
+/** 附件行渲染所需的只读视图，不暴露 File / 占位标记等实现细节 */
+export interface TaskAttachmentItem {
+  /** 稳定标识，待保存阶段就是占位标记 */
+  id: string
+  name: string
+  isImage: boolean
+  /** 上传完成后才有：可直接拼进消息正文的相对 Markdown 引用 */
+  markdown?: string
 }
 
 const TASK_IMAGE_MARKER_PATTERN = /\[\[TASK_IMAGE_[^\]]+\]\]|!?\[[^\n]*\]\(attachments\/pending-[0-9a-f-]{36}(?:\.[a-z0-9]{1,16})?\)/i
@@ -116,14 +129,14 @@ export function stripTaskImageMarkers(content: string) {
 }
 
 function validateFile(file: File) {
-  if (file.size <= 0) throw new Error('文件内容为空')
-  if (file.size > MAX_IMAGE_SIZE) throw new Error('文件大小不能超过 10MB')
+  if (file.size <= 0) throw new Error(t('workflows.task.attachments.empty'))
+  if (file.size > MAX_IMAGE_SIZE) throw new Error(t('workflows.task.attachments.imageSize'))
 }
 
 function validateImage(file: File) {
   validateFile(file)
   if (!SUPPORTED_IMAGE_TYPES.has(file.type)) {
-    throw new Error('仅支持 PNG、JPEG、WebP 或 GIF 图片')
+    throw new Error(t('workflows.task.attachments.imageType'))
   }
 }
 
@@ -155,7 +168,7 @@ function pendingAttachmentMarkdown(file: File, identifier: string) {
 function readFileAsDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader()
-    reader.onerror = () => reject(new Error(`读取文件 ${attachmentDisplayName(file)} 失败`))
+    reader.onerror = () => reject(new Error(t('workflows.task.attachments.readFailed', { name: attachmentDisplayName(file) })))
     reader.onload = () => resolve(String(reader.result || ''))
     reader.readAsDataURL(file)
   })
@@ -169,19 +182,31 @@ export function useTaskImageAttachments() {
   const attachments = ref<PastedImage[]>([])
   const savingCount = ref(0)
   const isSaving = computed(() => savingCount.value > 0)
+  /**
+   * 附件行的只读视图。id 复用占位标记，保证「上传前 → 上传后」同一条目
+   * 在列表里的 key 不变，不会因为 markdown 落地而重建 DOM。
+   */
+  const items = computed<TaskAttachmentItem[]>(() =>
+    attachments.value.map((attachment) => ({
+      id: attachment.marker,
+      name: attachmentDisplayName(attachment.file),
+      isImage: SUPPORTED_IMAGE_TYPES.has(attachment.file.type),
+      markdown: attachment.markdown,
+    })),
+  )
 
   function addFiles(files: File[], imageOnly = false) {
     if (!files.length) return []
     files.forEach(imageOnly ? validateImage : validateFile)
     if (attachments.value.length + files.length > MAX_IMAGE_COUNT) {
-      throw new Error(`最多可上传 ${MAX_IMAGE_COUNT} 个文件`)
+      throw new Error(t('workflows.task.attachments.maxCount', { count: MAX_IMAGE_COUNT }))
     }
     const totalSize = files.reduce(
       (total, file) => total + file.size,
       attachments.value.reduce((total, attachment) => total + attachment.file.size, 0),
     )
     if (totalSize > MAX_IMAGE_TOTAL_SIZE) {
-      throw new Error('上传文件总大小不能超过 30MB')
+      throw new Error(t('workflows.task.attachments.totalSize'))
     }
 
     const added = files.map((file) => {
@@ -200,7 +225,7 @@ export function useTaskImageAttachments() {
   }
 
   async function uploadAttachmentsToTask(taskUuid: string) {
-    if (!taskUuid) throw new Error('缺少任务信息，无法保存附件')
+    if (!taskUuid) throw new Error(t('workflows.task.attachments.taskMissing'))
     const pendingAttachments = attachments.value.filter((attachment) => !attachment.markdown)
     if (!pendingAttachments.length) return
 
@@ -243,6 +268,10 @@ export function useTaskImageAttachments() {
     attachments.value = []
   }
 
+  function remove(id: string) {
+    attachments.value = attachments.value.filter((attachment) => attachment.marker !== id)
+  }
+
   function resolveAttachmentMarkdown(content: string, caretPosition = content.length) {
     let serialized = content
     let caret = Math.min(Math.max(caretPosition, 0), content.length)
@@ -256,7 +285,7 @@ export function useTaskImageAttachments() {
       }
     }
     if (TASK_IMAGE_MARKER_PATTERN.test(serialized)) {
-      throw new Error('附件尚未保存，请重新选择后发送')
+      throw new Error(t('workflows.task.attachments.unsaved'))
     }
     return { content: serialized, caret }
   }
@@ -271,12 +300,14 @@ export function useTaskImageAttachments() {
 
   return {
     isSaving,
+    items,
     addFiles,
     addImages,
     buildDraftAttachmentInputs,
     uploadAttachmentsToTask,
     resolveAttachmentMarkdown,
     removeAttachmentMarkers,
+    remove,
     clear,
   }
 }

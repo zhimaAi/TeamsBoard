@@ -17,6 +17,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	"goteams-client/internal/i18n"
 )
 
 const (
@@ -54,38 +56,38 @@ func (h *TasksHandler) uploadTaskAttachment(c *gin.Context) {
 	if err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) || strings.Contains(strings.ToLower(err.Error()), "request body too large") {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "文件大小不能超过 10MB"})
+			i18n.Error(c, http.StatusRequestEntityTooLarge, "localserver_attachment_size_exceeded", "attachment_size_exceeded")
 			return
 		}
 		if errors.Is(err, http.ErrMissingFile) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "缺少文件"})
+			i18n.Error(c, http.StatusBadRequest, "localserver_upload_file_missing", "file_required")
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": "读取文件失败: " + err.Error()})
+		i18n.LocalServerError(c, http.StatusBadRequest, err)
 		return
 	}
 	if header.Size <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "文件内容为空"})
+		i18n.Error(c, http.StatusBadRequest, "localserver_file_empty", "file_empty")
 		return
 	}
 	if header.Size > maxTaskAttachmentSize {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "文件大小不能超过 10MB"})
+		i18n.Error(c, http.StatusRequestEntityTooLarge, "localserver_attachment_size_exceeded", "attachment_size_exceeded")
 		return
 	}
 
 	source, err := header.Open()
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "读取文件失败: " + err.Error()})
+		i18n.LocalServerError(c, http.StatusBadRequest, err)
 		return
 	}
 	defer source.Close()
 	data, err := io.ReadAll(io.LimitReader(source, maxTaskAttachmentSize+1))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "读取文件失败: " + err.Error()})
+		i18n.LocalServerError(c, http.StatusBadRequest, err)
 		return
 	}
 	if int64(len(data)) > maxTaskAttachmentSize {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "文件大小不能超过 10MB"})
+		i18n.Error(c, http.StatusRequestEntityTooLarge, "localserver_attachment_size_exceeded", "attachment_size_exceeded")
 		return
 	}
 
@@ -95,12 +97,12 @@ func (h *TasksHandler) uploadTaskAttachment(c *gin.Context) {
 		if errors.Is(err, errTaskNotFound) {
 			status = http.StatusNotFound
 		}
-		c.JSON(status, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, status, err)
 		return
 	}
 	attachment, err := saveTaskAttachment(taskDir, header.Filename, data)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, http.StatusBadRequest, err)
 		return
 	}
 	c.JSON(http.StatusCreated, attachment)
@@ -432,12 +434,12 @@ func (h *TasksHandler) resolveSessionTaskAttachmentReferences(ctx context.Contex
 func (h *TasksHandler) getTaskAttachmentContent(c *gin.Context) {
 	relPath := filepath.Clean(strings.TrimSpace(c.Query("path")))
 	if relPath == "." || filepath.IsAbs(relPath) || relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "附件路径无效"})
+		i18n.Error(c, http.StatusBadRequest, "localserver_attachment_path_invalid", "attachment_path_invalid")
 		return
 	}
 	parts := strings.Split(filepath.ToSlash(relPath), "/")
 	if len(parts) != 2 || parts[0] != taskAttachmentDirectory || parts[1] == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "只能读取当前任务的附件"})
+		i18n.Error(c, http.StatusBadRequest, "localserver_attachment_current_task_only", "attachment_current_task_only")
 		return
 	}
 	taskDir, err := h.taskDirectory(c.Request.Context(), c.Param("uuid"))
@@ -446,27 +448,27 @@ func (h *TasksHandler) getTaskAttachmentContent(c *gin.Context) {
 		if errors.Is(err, errTaskNotFound) {
 			status = http.StatusNotFound
 		}
-		c.JSON(status, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, status, err)
 		return
 	}
 	absPath, err := h.safeTaskFilePath(taskDir, relPath)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, http.StatusBadRequest, err)
 		return
 	}
 	file, err := os.Open(absPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "附件不存在"})
+			i18n.Error(c, http.StatusNotFound, "localserver_attachment_not_found", "attachment_not_found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取附件失败: " + err.Error()})
+		i18n.LocalServerError(c, http.StatusInternalServerError, err)
 		return
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil || info.IsDir() {
-		c.JSON(http.StatusNotFound, gin.H{"error": "附件不存在"})
+		i18n.Error(c, http.StatusNotFound, "localserver_attachment_not_found", "attachment_not_found")
 		return
 	}
 	header := make([]byte, 512)

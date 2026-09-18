@@ -11,16 +11,20 @@
     "format": "prettier --write \"src/**/*.{vue,ts,tsx,css}\" vite.config.ts eslint.config.js env.d.ts index.html",
     "format:check": "prettier --check \"src/**/*.{vue,ts,tsx,css}\" vite.config.ts eslint.config.js env.d.ts index.html",
     "typecheck": "vue-tsc --noEmit",
-    "test": "npm run typecheck",
+    "i18n:check": "node scripts/i18n-check.mjs",
+    "test": "npm run typecheck && npm run i18n:check",
     "build": "npm run typecheck && vite build --mode production",
     "build:prod": "npm run build",
     "preview": "vite preview"
   },
   "dependencies": {
     "ant-design-vue": "^4.2.6",
+    "dayjs": "1.11.21",
     "markdown-it": "^14.3.0",
     "pinia": "^2.3.0",
+    "vditor": "^3.11.3",
     "vue": "^3.5.13",
+    "vue-i18n": "^11.0.0",
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
@@ -28,6 +32,7 @@
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^22.10.5",
     "@vitejs/plugin-vue": "^5.2.1",
+    "@intlify/eslint-plugin-vue-i18n": "~4.5.1",
     "eslint": "10.8.1",
     "eslint-config-prettier": "10.1.8",
     "eslint-plugin-vue": "10.10.0",

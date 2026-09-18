@@ -9,8 +9,8 @@
     @open-change="emit('update:open', $event)"
   >
     <template #content>
-      <div class="cli-picker" role="dialog" aria-label="选择 CLI 和模型">
-        <div class="cli-picker-clis" role="listbox" aria-label="CLI 列表">
+      <div class="cli-picker" role="dialog" :aria-label="t('workflows.task.progress.chooseRuntime')">
+        <div class="cli-picker-clis" role="listbox" :aria-label="t('workflows.task.progress.cliList')">
           <a-spin :spinning="cliLoading">
             <button
               v-for="cli in visibleCliOptions"
@@ -46,11 +46,11 @@
               v-if="!cliLoading && !visibleCliOptions.length"
               class="cli-picker-empty"
             >
-              暂无可用 CLI
+              {{ t('workflows.task.progress.noCli') }}
             </p>
           </a-spin>
         </div>
-        <div class="cli-picker-models" role="listbox" aria-label="模型列表">
+        <div class="cli-picker-models" role="listbox" :aria-label="t('workflows.task.progress.modelList')">
           <a-spin :spinning="modelLoading">
             <button
               v-for="model in modelOptions"
@@ -75,13 +75,13 @@
               v-if="!selectedCliType"
               class="cli-picker-empty"
             >
-              请选择 CLI
+              {{ t('workflows.task.progress.chooseCli') }}
             </p>
             <p
               v-else-if="!modelLoading && !modelOptions.length"
               class="cli-picker-empty"
             >
-              暂无可用模型
+              {{ t('workflows.task.progress.noModels') }}
             </p>
           </a-spin>
         </div>
@@ -95,6 +95,9 @@
 import { computed } from 'vue'
 import cliPickerCheckIcon from '@/assets/icons/cli-picker-check.svg'
 import type { DiscoveredCLI } from '@/views/agents/components/agentPipeline'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 const props = defineProps<{
   open: boolean

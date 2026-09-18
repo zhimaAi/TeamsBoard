@@ -8,11 +8,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"goteams-client/internal/i18n"
 )
 
 // MenuKeys are the left-navigation menu keys manageable by the tool center (in sidebar display order).
 // The tool center itself is fixed at the sidebar bottom and is not in this list.
-var MenuKeys = []string{"workflows", "tasks", "agents", "projects", "commands", "knowledge", "apis", "settings"}
+var MenuKeys = []string{"tasks", "workflows", "agents", "projects", "commands", "knowledge", "apis", "settings"}
 
 // MenuItem is a menu switch config item
 type MenuItem struct {
@@ -44,7 +46,7 @@ func (h *Handler) listMenu(c *gin.Context) {
 		toAnySlice(MenuKeys)...,
 	)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer rows.Close()
@@ -59,7 +61,7 @@ func (h *Handler) listMenu(c *gin.Context) {
 		var enabled int
 		var configJSON string
 		if err := rows.Scan(&key, &enabled, &configJSON); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		var config menuConfig
@@ -67,7 +69,7 @@ func (h *Handler) listMenu(c *gin.Context) {
 		storedItems[key] = storedMenuItem{enabled: enabled == 1, sortOrder: config.SortOrder}
 	}
 	if err := rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -101,18 +103,18 @@ func (h *Handler) saveMenu(c *gin.Context) {
 		Items []saveMenuItem `json:"items"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体格式错误: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	if len(req.Items) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "items 不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "tool_menu_items_required", "")
 		return
 	}
 
 	now := time.Now().UnixMilli()
 	tx, err := h.dbRef.Get().Begin()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer tx.Rollback()
@@ -121,7 +123,7 @@ func (h *Handler) saveMenu(c *gin.Context) {
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(tool_key) DO UPDATE SET enabled = excluded.enabled, config_json = excluded.config_json, updated_at = excluded.updated_at`)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer stmt.Close()
@@ -131,11 +133,11 @@ func (h *Handler) saveMenu(c *gin.Context) {
 	for _, item := range req.Items {
 		key := strings.TrimSpace(item.Key)
 		if !containsString(MenuKeys, key) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "未知的菜单 key: " + key})
+			i18n.Errorf(c, http.StatusBadRequest, "tool_menu_key_unknown", i18n.Params{"Key": key})
 			return
 		}
 		if seen[key] {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "重复的菜单 key: " + key})
+			i18n.Errorf(c, http.StatusBadRequest, "tool_menu_key_duplicate", i18n.Params{"Key": key})
 			return
 		}
 		seen[key] = true
@@ -144,11 +146,11 @@ func (h *Handler) saveMenu(c *gin.Context) {
 			sortOrder = *item.SortOrder
 		}
 		if sortOrder < 0 || sortOrder >= len(MenuKeys) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "菜单排序值超出范围: " + key})
+			i18n.Errorf(c, http.StatusBadRequest, "tool_menu_order_invalid", i18n.Params{"Key": key})
 			return
 		}
 		if seenOrder[sortOrder] {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "重复的菜单排序值"})
+			i18n.Error(c, http.StatusBadRequest, "tool_menu_order_duplicate", "")
 			return
 		}
 		seenOrder[sortOrder] = true
@@ -158,16 +160,16 @@ func (h *Handler) saveMenu(c *gin.Context) {
 		}
 		configJSON, err := json.Marshal(menuConfig{SortOrder: &sortOrder})
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		if _, err := stmt.Exec(key, enabled, string(configJSON), now, now); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
