@@ -2,7 +2,7 @@
   <a-modal
     :open="open"
     class="project-modal"
-    :title="project ? '编辑项目' : '新建项目'"
+    :title="project ? t('projects.editProject') : t('projects.newProject')"
     width="730px"
     @update:open="handleOpenChange"
   >
@@ -10,7 +10,7 @@
     <button
       class="project-icon-preview"
       type="button"
-      aria-label="选择自定义项目图标"
+      :aria-label="t('projects.selectCustomIcon')"
       @click="openFilePicker"
     >
       <span
@@ -31,7 +31,7 @@
         />
       </span>
     </button>
-    <p class="project-icon-preview-hint">建议尺寸100×100px，支持 PNG、JPEG、WebP，大小不超过2MB</p>
+    <p class="project-icon-preview-hint">{{ t('projects.iconHint') }}</p>
 
     <input
       ref="fileInput"
@@ -47,7 +47,7 @@
     >
       <a-form-item
         class="project-icon-form-item"
-        label="项目图标"
+        :label="t('projects.icon')"
       >
         <div class="project-icon-options">
           <button
@@ -55,7 +55,7 @@
             :key="iconType"
             type="button"
             :class="{ active: form.icon_type === iconType }"
-            :aria-label="`选择${iconType}项目图标`"
+            :aria-label="t('projects.selectPresetIcon', { type: iconType })"
             :aria-pressed="form.icon_type === iconType"
             @click="selectIcon(iconType)"
           >
@@ -78,14 +78,14 @@
         required
       >
         <template #label>
-          <span class="project-modal-label">项目名称</span>
-          <span class="project-modal-label-hint">（最多30个字）</span>
+          <span class="project-modal-label">{{ t('projects.name') }}</span>
+          <span class="project-modal-label-hint">{{ t('projects.nameLimit') }}</span>
         </template>
         <a-input
           v-model:value="form.name"
           :maxlength="30"
           :show-count="false"
-          placeholder="请输入项目名称"
+          :placeholder="t('projects.namePlaceholder')"
         />
       </a-form-item>
 
@@ -94,20 +94,20 @@
         required
       >
         <template #label>
-          <span class="project-modal-label">项目目录</span>
-          <span class="project-modal-label-hint">（绑定本地目录，选择文件夹）</span>
+          <span class="project-modal-label">{{ t('projects.directory') }}</span>
+          <span class="project-modal-label-hint">{{ t('projects.directoryHint') }}</span>
         </template>
         <a-input
           v-model:value="form.local_dir"
           :readonly="isDesktopRuntime()"
-          placeholder="请选择项目本地目录"
+          :placeholder="t('projects.directoryPlaceholder')"
         >
           <template #suffix>
             <button
               class="project-directory-select"
               type="button"
               :disabled="!isDesktopRuntime()"
-              aria-label="选择项目本地目录"
+              :aria-label="t('projects.selectDirectory')"
               @click.stop="chooseDirectory"
             >
               <img
@@ -123,13 +123,13 @@
 
     <template #footer>
       <div class="project-modal-footer-actions">
-        <a-button @click="handleOpenChange(false)">取消</a-button>
+        <a-button @click="handleOpenChange(false)">{{ t('projects.cancel') }}</a-button>
         <a-button
           type="primary"
           :loading="saving"
           @click="save"
         >
-          确定
+          {{ t('projects.confirm') }}
         </a-button>
       </div>
     </template>
@@ -153,6 +153,9 @@ import projectModalRocketIcon from '@/assets/icons/project-modal-icon-rocket.svg
 import { ICON_FILE_ACCEPT, useIconFile } from '@/composables/useIconFile'
 import { isDesktopRuntime, selectDirectory } from '@/composables/useDesktop'
 import type { LocalProject, ProjectIconKind } from '@/types/project'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 const props = defineProps<{
   open: boolean
@@ -260,7 +263,7 @@ function handleFileChange(event: Event) {
     selectFile(nextFile)
     form.icon_type = 'custom'
   } catch (error) {
-    message.warning(error instanceof Error ? error.message : '图片选择失败')
+    message.warning(error instanceof Error ? error.message : t('projects.selectImageFailed'))
   }
 }
 
@@ -269,15 +272,15 @@ async function chooseDirectory() {
     const value = await selectDirectory(form.local_dir)
     if (value) form.local_dir = value
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '无法打开目录选择器')
+    message.error(error instanceof Error ? error.message : t('projects.openDirectoryFailed'))
   }
 }
 
 async function save() {
-  if (!form.name.trim()) return message.warning('请输入项目名称')
-  if (!form.local_dir.trim()) return message.warning('请选择项目本地目录')
+  if (!form.name.trim()) return message.warning(t('projects.namePlaceholder'))
+  if (!form.local_dir.trim()) return message.warning(t('projects.directoryPlaceholder'))
   if (form.icon_type === 'custom' && !iconFile.value && !form.icon_url) {
-    return message.warning('请选择上传图片')
+    return message.warning(t('projects.selectImage'))
   }
 
   saving.value = true
@@ -301,11 +304,11 @@ async function save() {
       if (props.project) await apiClient.put(path, payload)
       else await apiClient.post(path, payload)
     }
-    message.success(props.project ? '项目已更新' : '项目已创建')
+    message.success(props.project ? t('projects.updated') : t('projects.created'))
     emit('saved')
     handleOpenChange(false)
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '项目保存失败')
+    message.error(error instanceof Error ? error.message : t('projects.saveFailed'))
   } finally {
     saving.value = false
   }

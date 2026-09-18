@@ -1,0 +1,112 @@
+{
+  "feedback": {
+    "copied": "Copied",
+    "copyFailed": "Copy failed"
+  },
+  "errors": {
+    "selectDirectoryUnsupported": "Selecting local folders is unavailable here. Use the TeamsBoard desktop app.",
+    "openDirectoryUnsupported": "Opening local folders is unavailable here. Use the TeamsBoard desktop app.",
+    "openCodexUnsupported": "Opening Codex automatically is unavailable here. Use the TeamsBoard desktop app.",
+    "desktopSettingsUnsupported": "Desktop app settings are unavailable here.",
+    "iconType": "Only PNG, JPEG, and WebP images are supported.",
+    "iconSize": "Images cannot exceed 2 MB.",
+    "indexedDbRequest": "The IndexedDB request failed.",
+    "indexedDbAborted": "The IndexedDB transaction was canceled.",
+    "indexedDbTransaction": "The IndexedDB transaction failed.",
+    "indexedDbUnsupported": "IndexedDB is unavailable in this environment.",
+    "indexedDbOpen": "Unable to open IndexedDB.",
+    "indexedDbBlocked": "Another page is blocking the IndexedDB upgrade."
+  },
+  "markdown": {
+    "empty": "No Markdown content",
+    "attachmentLoadFailed": "Attachment failed to load",
+    "attachmentDownloadFailed": "Attachment download failed",
+    "uploadUnavailable": "Image uploads are not enabled for this editor",
+    "uploadFailed": "Failed to paste image",
+    "placeholder": "Add a description…"
+  },
+  "placeholder": {
+    "developing": "{title} is under development"
+  },
+  "cliSelect": {
+    "detectFailed": "CLI detection failed",
+    "modelsLoadFailed": "Failed to load models",
+    "chooseCliWarning": "Select a CLI tool",
+    "title": "Select execution CLI",
+    "start": "Start",
+    "notInstalled": "Not installed",
+    "selected": "Selected",
+    "installHint": "Install it and add it to PATH first",
+    "modelConfig": "Model configuration",
+    "chooseModel": "Select a model",
+    "custom": "Custom",
+    "customPlaceholder": "Enter a model name, or leave blank to use the CLI default",
+    "chooseFromList": "← Select from the list",
+    "manualInput": "Enter a model manually",
+    "customHint": "Leave blank to use the CLI default. Entered models are saved to the list."
+  },
+  "login": {
+    "dialog": "Sign in",
+    "welcome": "Welcome back",
+    "subtitle": "Sign in to continue using Teams AI desk",
+    "serverAddress": "Server address",
+    "official": "Official",
+    "privateDeployment": "Private deployment",
+    "privateAddressPlaceholder": "Enter the private deployment URL, for example: https://t...",
+    "account": "Account",
+    "password": "Password",
+    "accountPlaceholder": "Enter your account",
+    "passwordPlaceholder": "Enter your password",
+    "privateAddressRequired": "Enter the private deployment URL",
+    "accountRequired": "Enter your account",
+    "passwordRequired": "Enter your password",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
+    "loggingIn": "Signing in…"
+  },
+  "resourceTable": {
+    "actions": "Actions",
+    "loadFailed": "Failed to load configuration",
+    "fieldRequired": "Enter {field}",
+    "saveSuccess": "Saved",
+    "saveFailed": "Save failed",
+    "deleteTitle": "Delete “{name}”",
+    "defaultName": "this configuration",
+    "deleteWarning": "Configurations that depend on this item may stop working after deletion.",
+    "deleted": "Deleted",
+    "deleteFailed": "Delete failed",
+    "connectionSuccess": "“{name}” connected successfully",
+    "connectionFailed": "Connection failed: {error}",
+    "unknownError": "Unknown error",
+    "testFailed": "Connection test failed",
+    "add": "Add",
+    "empty": "No {title}. Select “Add” in the upper-right corner to configure one.",
+    "testing": "Testing…",
+    "testConnection": "Test connection",
+    "editTitle": "Edit {title}",
+    "addTitle": "Add {title}",
+    "passwordUnchanged": "Leave blank to keep the current value"
+  },
+  "projectTable": {
+    "gitProject": "Git project",
+    "dockerProject": "Docker Compose project",
+    "name": "Name",
+    "remoteDirectory": "Remote working directory",
+    "composeFile": "Compose file",
+    "loadFailed": "Load failed",
+    "nameRequired": "Enter a name",
+    "gitFieldsRequired": "Select an SSH configuration and enter the remote working directory",
+    "dockerFieldsRequired": "Select an SSH configuration and enter the Compose file path",
+    "deleteWarning": "Only the TeamsBoard configuration is deleted. Remote code and Compose files remain unchanged.",
+    "gitDescription": "Git commands run over SSH in the configured remote working directory.",
+    "dockerDescription": "Docker commands run over SSH using docker compose -f on the remote server.",
+    "sshProfile": "SSH configuration",
+    "chooseSsh": "Select an SSH configuration",
+    "composeFilePath": "Compose file path"
+  },
+  "taskProgress": {
+    "running": "Running, please wait…",
+    "noResult": "This run returned no result",
+    "pastedImage": "Pasted image"
+  }
+}

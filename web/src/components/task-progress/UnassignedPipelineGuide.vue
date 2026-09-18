@@ -2,13 +2,16 @@
   <div class="unassigned-pipeline-guide">
     <button type="button" class="assign-guide-btn" @click="emit('assign')">
       <img class="assign-guide-icon" :src="quickAssignIcon" alt="" aria-hidden="true" />
-      <span>未指派流水线，点击快速分配</span>
+      <span>{{ t('workflows.task.progress.unassignedGuide') }}</span>
     </button>
   </div>
 </template>
 
 <script setup lang="ts">
 import quickAssignIcon from '@/assets/icons/pipeline-quick-assign.svg'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 const emit = defineEmits<{ assign: [] }>()
 </script>

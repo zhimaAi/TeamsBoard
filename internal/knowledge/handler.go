@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"goteams-client/internal/i18n"
 	"goteams-client/internal/storage"
 )
 
@@ -120,7 +121,7 @@ func (h *Handler) ListFolders(c *gin.Context) {
 	rows, err := h.dbRef.Get().QueryContext(c.Request.Context(),
 		`SELECT id, name, parent_id, created_at, updated_at FROM gt_knowledge_folders ORDER BY id ASC`)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询文件夹失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer rows.Close()
@@ -129,7 +130,7 @@ func (h *Handler) ListFolders(c *gin.Context) {
 	for rows.Next() {
 		var f FolderNode
 		if err := rows.Scan(&f.ID, &f.Name, &f.ParentID, &f.CreatedAt, &f.UpdatedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "扫描文件夹数据失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		folders = append(folders, f)
@@ -150,11 +151,11 @@ func (h *Handler) CreateFolder(c *gin.Context) {
 		ParentID int64  `json:"parent_id"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	if input.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name 不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "knowledge_name_required", "")
 		return
 	}
 
@@ -163,13 +164,13 @@ func (h *Handler) CreateFolder(c *gin.Context) {
 		`INSERT INTO gt_knowledge_folders (name, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?)`,
 		input.Name, input.ParentID, now, now)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建文件夹失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
 	id, err := res.LastInsertId()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取新建文件夹 ID 失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	c.JSON(http.StatusCreated, FolderNode{
@@ -186,7 +187,7 @@ func (h *Handler) CreateFolder(c *gin.Context) {
 func (h *Handler) UpdateFolder(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "")
 		return
 	}
 
@@ -195,7 +196,7 @@ func (h *Handler) UpdateFolder(c *gin.Context) {
 		ParentID *int64  `json:"parent_id"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 
@@ -205,11 +206,11 @@ func (h *Handler) UpdateFolder(c *gin.Context) {
 	err = h.dbRef.Get().QueryRowContext(c.Request.Context(),
 		`SELECT name, parent_id FROM gt_knowledge_folders WHERE id=?`, id).Scan(&name, &parentID)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "文件夹不存在"})
+		i18n.Error(c, http.StatusNotFound, "knowledge_folder_not_found", "")
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询文件夹失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -218,17 +219,17 @@ func (h *Handler) UpdateFolder(c *gin.Context) {
 	// Once a loop is formed, the entire subtree will disappear from the root node query and cannot be deleted anymore.
 	if input.ParentID != nil && *input.ParentID != parentID {
 		if *input.ParentID == id {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "不能将文件夹移动到自身下"})
+			i18n.Error(c, http.StatusBadRequest, "knowledge_folder_self_parent", "")
 			return
 		}
 		if *input.ParentID != 0 {
 			descendant, err := h.isDescendantFolder(c.Request.Context(), *input.ParentID, id)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "校验文件夹层级失败: " + err.Error()})
+				i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 				return
 			}
 			if descendant {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "不能将文件夹移动到其子目录下"})
+				i18n.Error(c, http.StatusBadRequest, "knowledge_folder_descendant", "")
 				return
 			}
 		}
@@ -246,7 +247,7 @@ func (h *Handler) UpdateFolder(c *gin.Context) {
 		`UPDATE gt_knowledge_folders SET name=?, parent_id=?, updated_at=? WHERE id=?`,
 		name, parentID, now, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新文件夹失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -284,13 +285,13 @@ func (h *Handler) isDescendantFolder(ctx context.Context, candidateID, ancestorI
 func (h *Handler) DeleteFolder(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "")
 		return
 	}
 
 	tx, err := h.dbRef.Get().BeginTx(c.Request.Context(), nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "开启事务失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer tx.Rollback()
@@ -298,14 +299,14 @@ func (h *Handler) DeleteFolder(c *gin.Context) {
 	//Move the documents in this folder to the root directory
 	if _, err := tx.ExecContext(c.Request.Context(),
 		`UPDATE gt_knowledge_documents SET folder_id=0 WHERE folder_id=?`, id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "移动文档失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
 	// Move subfolders to the root directory
 	if _, err := tx.ExecContext(c.Request.Context(),
 		`UPDATE gt_knowledge_folders SET parent_id=0 WHERE parent_id=?`, id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "移动子文件夹失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -313,21 +314,21 @@ func (h *Handler) DeleteFolder(c *gin.Context) {
 	res, err := tx.ExecContext(c.Request.Context(),
 		`DELETE FROM gt_knowledge_folders WHERE id=?`, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除文件夹失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	rowsAffected, err := res.RowsAffected()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取删除影响行数失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if rowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "文件夹不存在"})
+		i18n.Error(c, http.StatusNotFound, "knowledge_folder_not_found", "")
 		return
 	}
 
 	if err := tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "提交事务失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -349,7 +350,7 @@ func (h *Handler) ListDocuments(c *gin.Context) {
 	if folderIDStr != "" {
 		folderID, err := strconv.ParseInt(folderIDStr, 10, 64)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "folder_id 参数无效"})
+			i18n.Error(c, http.StatusBadRequest, "knowledge_folder_id_invalid", "")
 			return
 		}
 		query += ` AND folder_id=?`
@@ -366,7 +367,7 @@ func (h *Handler) ListDocuments(c *gin.Context) {
 
 	rows, err := h.dbRef.Get().QueryContext(c.Request.Context(), query, args...)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询文档失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer rows.Close()
@@ -377,7 +378,7 @@ func (h *Handler) ListDocuments(c *gin.Context) {
 		var tagsJSON string
 		if err := rows.Scan(&doc.UUID, &doc.FolderID, &doc.Title, &tagsJSON,
 			&doc.ContentHash, &doc.WordCount, &doc.CreatedAt, &doc.UpdatedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "扫描文档数据失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		doc.Tags = tagsFromJSON(tagsJSON)
@@ -395,13 +396,13 @@ func (h *Handler) ListDocuments(c *gin.Context) {
 func (h *Handler) GetDocument(c *gin.Context) {
 	docUUID := c.Param("uuid")
 	if docUUID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "uuid 参数不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "knowledge_uuid_required", "")
 		return
 	}
 
 	store, storeErr := h.getStore(c)
 	if storeErr != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "获取知识库存储失败: " + storeErr.Error()})
+		i18n.Error(c, http.StatusUnauthorized, "common_server_error", "")
 		return
 	}
 
@@ -413,11 +414,11 @@ func (h *Handler) GetDocument(c *gin.Context) {
 		Scan(&doc.UUID, &doc.FolderID, &doc.Title, &tagsJSON,
 			&doc.ContentHash, &doc.WordCount, &doc.CreatedAt, &doc.UpdatedAt)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "文档不存在"})
+		i18n.Error(c, http.StatusNotFound, "knowledge_document_not_found", "")
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询文档失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -426,7 +427,7 @@ func (h *Handler) GetDocument(c *gin.Context) {
 	//Read content from the file system
 	content, err := store.ReadFile(docUUID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取文档内容失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	doc.Content = content
@@ -448,7 +449,7 @@ func (h *Handler) GetDocument(c *gin.Context) {
 func (h *Handler) CreateDocument(c *gin.Context) {
 	store, storeErr := h.getStore(c)
 	if storeErr != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "获取知识库存储失败: " + storeErr.Error()})
+		i18n.Error(c, http.StatusUnauthorized, "common_server_error", "")
 		return
 	}
 
@@ -459,11 +460,11 @@ func (h *Handler) CreateDocument(c *gin.Context) {
 		Tags     []string `json:"tags"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 	if input.Title == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "title 不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "knowledge_title_required", "")
 		return
 	}
 
@@ -476,7 +477,7 @@ func (h *Handler) CreateDocument(c *gin.Context) {
 
 	// write to file
 	if err := store.WriteFile(docUUID, input.Content); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "写入文件失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -488,7 +489,7 @@ func (h *Handler) CreateDocument(c *gin.Context) {
 	if err != nil {
 		//Rollback file
 		_ = store.DeleteFile(docUUID)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建文档失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -510,13 +511,13 @@ func (h *Handler) CreateDocument(c *gin.Context) {
 func (h *Handler) UpdateDocument(c *gin.Context) {
 	docUUID := c.Param("uuid")
 	if docUUID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "uuid 参数不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "knowledge_uuid_required", "")
 		return
 	}
 
 	store, storeErr := h.getStore(c)
 	if storeErr != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "获取知识库存储失败: " + storeErr.Error()})
+		i18n.Error(c, http.StatusUnauthorized, "common_server_error", "")
 		return
 	}
 
@@ -528,7 +529,7 @@ func (h *Handler) UpdateDocument(c *gin.Context) {
 		BaseHash string   `json:"base_hash"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
 		return
 	}
 
@@ -541,11 +542,11 @@ func (h *Handler) UpdateDocument(c *gin.Context) {
 		Scan(&doc.UUID, &doc.FolderID, &doc.Title, &tagsJSON,
 			&doc.ContentHash, &doc.WordCount, &doc.CreatedAt, &doc.UpdatedAt)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "文档不存在"})
+		i18n.Error(c, http.StatusNotFound, "knowledge_document_not_found", "")
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询文档失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	doc.Tags = tagsFromJSON(tagsJSON)
@@ -553,7 +554,7 @@ func (h *Handler) UpdateDocument(c *gin.Context) {
 	// Read old content for historical version
 	oldContent, err := store.ReadFile(docUUID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取旧文档内容失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -583,7 +584,7 @@ func (h *Handler) UpdateDocument(c *gin.Context) {
 		diskHash := contentHash(oldContent)
 		if (input.BaseHash != "" && input.BaseHash != doc.ContentHash) || diskHash != doc.ContentHash {
 			c.JSON(http.StatusConflict, gin.H{
-				"error":         "文档已被其他程序或页面修改，请重新加载或另存为新文档",
+				"error":         i18n.T(c, "knowledge_document_conflict"),
 				"code":          "KNOWLEDGE_CONFLICT",
 				"base_hash":     input.BaseHash,
 				"current_hash":  doc.ContentHash,
@@ -600,24 +601,24 @@ func (h *Handler) UpdateDocument(c *gin.Context) {
 			VALUES (?, ?, ?, ?)`,
 			docUUID, doc.ContentHash, doc.WordCount, now)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "保存历史版本失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		historyID, err := histRes.LastInsertId()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "获取历史版本 ID 失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 
 		//Save old content to history file
 		if err := store.WriteHistoryFile(docUUID, historyID, oldContent); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "写入历史文件失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 
 		//Write new content
 		if err := store.WriteFile(docUUID, newContent); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "写入文件失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 
@@ -633,7 +634,7 @@ func (h *Handler) UpdateDocument(c *gin.Context) {
 		WHERE uuid=?`,
 		doc.FolderID, doc.Title, newTagsJSON, newHash, newWC, now, docUUID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新文档失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -650,7 +651,7 @@ func (h *Handler) UpdateDocument(c *gin.Context) {
 func (h *Handler) DeleteDocument(c *gin.Context) {
 	docUUID := c.Param("uuid")
 	if docUUID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "uuid 参数不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "knowledge_uuid_required", "")
 		return
 	}
 
@@ -659,16 +660,16 @@ func (h *Handler) DeleteDocument(c *gin.Context) {
 		`UPDATE gt_knowledge_documents SET deleted=1, updated_at=? WHERE uuid=? AND deleted=0`,
 		now, docUUID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除文档失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	rowsAffected, err := res.RowsAffected()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取删除影响行数失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if rowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "文档不存在"})
+		i18n.Error(c, http.StatusNotFound, "knowledge_document_not_found", "")
 		return
 	}
 
@@ -682,7 +683,7 @@ func (h *Handler) ListTrash(c *gin.Context) {
 		`SELECT uuid, folder_id, title, tags_json, content_hash, word_count, created_at, updated_at
 		FROM gt_knowledge_documents WHERE deleted=1 ORDER BY updated_at DESC`)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询回收站失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer rows.Close()
@@ -693,7 +694,7 @@ func (h *Handler) ListTrash(c *gin.Context) {
 		var tagsJSON string
 		if err := rows.Scan(&doc.UUID, &doc.FolderID, &doc.Title, &tagsJSON,
 			&doc.ContentHash, &doc.WordCount, &doc.CreatedAt, &doc.UpdatedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "扫描回收站数据失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		doc.Tags = tagsFromJSON(tagsJSON)
@@ -711,16 +712,16 @@ func (h *Handler) RestoreDocument(c *gin.Context) {
 		`UPDATE gt_knowledge_documents SET deleted=0, updated_at=? WHERE uuid=? AND deleted=1`,
 		now, docUUID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "恢复文档失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	rowsAffected, err := res.RowsAffected()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取恢复影响行数失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if rowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "回收站中不存在该文档"})
+		i18n.Error(c, http.StatusNotFound, "knowledge_trash_document_not_found", "")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"uuid": docUUID, "restored": true, "updated_at": now})
@@ -733,7 +734,7 @@ func (h *Handler) HardDeleteDocument(c *gin.Context) {
 
 	store, storeErr := h.getStore(c)
 	if storeErr != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "获取知识库存储失败: " + storeErr.Error()})
+		i18n.Error(c, http.StatusUnauthorized, "common_server_error", "")
 		return
 	}
 
@@ -741,41 +742,41 @@ func (h *Handler) HardDeleteDocument(c *gin.Context) {
 	err := h.dbRef.Get().QueryRowContext(c.Request.Context(),
 		`SELECT 1 FROM gt_knowledge_documents WHERE uuid=? AND deleted=1`, docUUID).Scan(&exists)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "回收站中不存在该文档"})
+		i18n.Error(c, http.StatusNotFound, "knowledge_trash_document_not_found", "")
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询回收站文档失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
 	tx, err := h.dbRef.Get().BeginTx(c.Request.Context(), nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "开启事务失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(c.Request.Context(),
 		`DELETE FROM gt_knowledge_history WHERE doc_uuid=?`, docUUID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除历史记录失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if _, err := tx.ExecContext(c.Request.Context(),
 		`DELETE FROM gt_knowledge_documents WHERE uuid=? AND deleted=1`, docUUID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除文档记录失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "提交删除事务失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
 	if err := store.DeleteFile(docUUID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	if err := store.DeleteHistoryFiles(docUUID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"uuid": docUUID, "deleted": true, "permanent": true})
@@ -788,7 +789,7 @@ func (h *Handler) HardDeleteDocument(c *gin.Context) {
 func (h *Handler) ListHistory(c *gin.Context) {
 	docUUID := c.Param("uuid")
 	if docUUID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "uuid 参数不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "knowledge_uuid_required", "")
 		return
 	}
 
@@ -796,7 +797,7 @@ func (h *Handler) ListHistory(c *gin.Context) {
 		`SELECT id, doc_uuid, content_hash, word_count, created_at
 		FROM gt_knowledge_history WHERE doc_uuid=? ORDER BY created_at DESC`, docUUID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询历史版本失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer rows.Close()
@@ -805,7 +806,7 @@ func (h *Handler) ListHistory(c *gin.Context) {
 	for rows.Next() {
 		var hist History
 		if err := rows.Scan(&hist.ID, &hist.DocUUID, &hist.ContentHash, &hist.WordCount, &hist.CreatedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "扫描历史数据失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		list = append(list, hist)
@@ -824,19 +825,19 @@ func (h *Handler) GetHistory(c *gin.Context) {
 
 	store, storeErr := h.getStore(c)
 	if storeErr != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "获取知识库存储失败: " + storeErr.Error()})
+		i18n.Error(c, http.StatusUnauthorized, "common_server_error", "")
 		return
 	}
 
 	historyIDStr := c.Param("historyId")
 	if docUUID == "" || historyIDStr == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不能为空"})
+		i18n.Error(c, http.StatusBadRequest, "knowledge_parameter_required", "")
 		return
 	}
 
 	historyID, err := strconv.ParseInt(historyIDStr, 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "historyId 参数无效"})
+		i18n.Error(c, http.StatusBadRequest, "knowledge_history_id_invalid", "")
 		return
 	}
 
@@ -847,18 +848,18 @@ func (h *Handler) GetHistory(c *gin.Context) {
 		FROM gt_knowledge_history WHERE id=? AND doc_uuid=?`, historyID, docUUID).
 		Scan(&hist.ID, &hist.DocUUID, &hist.ContentHash, &hist.WordCount, &hist.CreatedAt)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "历史版本不存在"})
+		i18n.Error(c, http.StatusNotFound, "knowledge_history_not_found", "")
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询历史版本失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
 	//Read the contents of the history file
 	content, err := store.ReadHistoryFile(docUUID, historyID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取历史内容失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 
@@ -879,7 +880,7 @@ func (h *Handler) GetHistory(c *gin.Context) {
 func (h *Handler) Search(c *gin.Context) {
 	store, storeErr := h.getStore(c)
 	if storeErr != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "获取知识库存储失败: " + storeErr.Error()})
+		i18n.Error(c, http.StatusUnauthorized, "common_server_error", "")
 		return
 	}
 
@@ -894,7 +895,7 @@ func (h *Handler) Search(c *gin.Context) {
 		`SELECT uuid, folder_id, title, tags_json, file_path
 		FROM gt_knowledge_documents WHERE deleted=0 ORDER BY updated_at DESC`)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询文档失败: " + err.Error()})
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 		return
 	}
 	defer rows.Close()
@@ -910,7 +911,7 @@ func (h *Handler) Search(c *gin.Context) {
 	for rows.Next() {
 		var d docInfo
 		if err := rows.Scan(&d.uuid, &d.folderID, &d.title, &d.tagsJSON, &d.filePath); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "扫描文档数据失败: " + err.Error()})
+			i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
 			return
 		}
 		docs = append(docs, d)

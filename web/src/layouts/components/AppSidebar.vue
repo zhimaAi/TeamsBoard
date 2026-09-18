@@ -10,6 +10,8 @@ import { useAppStore } from '@/stores/app'
 import type { MenuConfigItem } from '@/stores/app'
 // import { useAuthStore } from '@/stores/auth'
 import apiClient from '@/api/client'
+import { useAppI18n } from '@/i18n'
+import { useLocale } from '@/composables/useLocale'
 import sidebarLanguageDark from '@/assets/icons/sidebar-language-dark.svg'
 import sidebarLanguageLight from '@/assets/icons/sidebar-language-light.svg'
 // import sidebarLoginDarkCollapsed from '@/assets/icons/sidebar-login-dark-collapsed.svg'
@@ -33,6 +35,8 @@ const sidebarThemeStorageKey = 'goteams.sidebar.theme'
 // const router = useRouter()
 const route = useRoute()
 const appStore = useAppStore()
+const { t } = useAppI18n()
+const { locale, currentOption, setLocale } = useLocale()
 // const authStore = useAuthStore()
 
 function readSidebarCollapsed() {
@@ -75,14 +79,14 @@ const languageIcon = computed(() => (
 // })
 
 const menuItems = [
-  { key: 'workflows', label: '看板', path: '/board', icon: 'dashboard' },
-  { key: 'tasks', label: '对话', path: '/tasks', icon: 'task' },
-  { key: 'agents', label: '专家流水线', path: '/agents', icon: 'agent' },
-  { key: 'projects', label: '项目', path: '/projects', icon: 'project' },
-  { key: 'commands', label: '命令', path: '/commands', icon: 'command' },
-  { key: 'knowledge', label: '知识库', path: '/knowledge', icon: 'book' },
-  { key: 'apis', label: '接口管理', path: '/apis', icon: 'api' },
-  { key: 'settings', label: '配置中心', path: '/settings', icon: 'settings' },
+  { key: 'tasks', labelKey: 'layout.menu.tasks', path: '/tasks', icon: 'task' },
+  { key: 'workflows', labelKey: 'layout.menu.workflows', path: '/board', icon: 'dashboard' },
+  { key: 'agents', labelKey: 'layout.menu.agents', path: '/agents', icon: 'agent' },
+  { key: 'projects', labelKey: 'layout.menu.projects', path: '/projects', icon: 'project' },
+  { key: 'commands', labelKey: 'layout.menu.commands', path: '/commands', icon: 'command' },
+  { key: 'knowledge', labelKey: 'layout.menu.knowledge', path: '/knowledge', icon: 'book' },
+  { key: 'apis', labelKey: 'layout.menu.apis', path: '/apis', icon: 'api' },
+  { key: 'settings', labelKey: 'layout.menu.settings', path: '/settings', icon: 'settings' },
 ] as const
 
 const visibleMenuItems = computed(() => {
@@ -90,6 +94,7 @@ const visibleMenuItems = computed(() => {
   return [...menuItems]
     .sort((a, b) => (order.get(a.key) ?? menuItems.length) - (order.get(b.key) ?? menuItems.length))
     .filter((item) => appStore.isMenuVisible(item.key))
+    .map((item) => ({ ...item, label: t(item.labelKey) }))
 })
 
 const activeKey = computed(() => {
@@ -98,6 +103,13 @@ const activeKey = computed(() => {
   if (name.startsWith('workflows') || name.startsWith('board')) return 'workflows'
   if (name.startsWith('apis')) return 'apis'
   return menuItems.find((item) => item.key === name)?.key ?? ''
+})
+
+const unreadTaskCount = computed(() => appStore.unreadTaskNotifications)
+const unreadTaskBadge = computed(() => {
+  const count = unreadTaskCount.value
+  if (count <= 0) return ''
+  return count > 99 ? '99+' : String(count)
 })
 
 // 本期去掉登录：账号卡片隐藏，相关文案暂不使用
@@ -126,6 +138,10 @@ function toggleSidebar() {
 function toggleSidebarTheme() {
   sidebarTheme.value = sidebarTheme.value === 'light' ? 'dark' : 'light'
   persist(sidebarThemeStorageKey, sidebarTheme.value)
+}
+
+function toggleLocale() {
+  setLocale(locale.value === 'zh-CN' ? 'en-US' : 'zh-CN')
 }
 
 // 本期去掉登录：团队工作跳转入口隐藏，暂不使用
@@ -185,8 +201,8 @@ onMounted(loadMenuConfig)
         type="button"
         class="sidebar-toggle"
         :aria-expanded="!sidebarCollapsed"
-        :aria-label="sidebarCollapsed ? '展开导航菜单' : '收起导航菜单'"
-        :title="sidebarCollapsed ? '展开导航菜单' : '收起导航菜单'"
+        :aria-label="sidebarCollapsed ? t('layout.sidebar.expand') : t('layout.sidebar.collapse')"
+        :title="sidebarCollapsed ? t('layout.sidebar.expand') : t('layout.sidebar.collapse')"
         @click="toggleSidebar"
       >
         <img
@@ -198,7 +214,7 @@ onMounted(loadMenuConfig)
       </button>
     </header>
 
-    <nav class="sidebar-nav" aria-label="主导航">
+    <nav class="sidebar-nav" :aria-label="t('layout.sidebar.navigation')">
       <a-tooltip
         v-for="item in visibleMenuItems"
         :key="item.key"
@@ -213,6 +229,11 @@ onMounted(loadMenuConfig)
         >
           <SidebarMenuIcon class="nav-icon" :name="item.icon" :dark="sidebarTheme === 'dark'" />
           <span class="nav-label">{{ item.label }}</span>
+          <span
+            v-if="item.key === 'tasks' && unreadTaskBadge"
+            class="nav-unread-badge"
+            :aria-label="t('workflows.task.common.unreadCount', { count: unreadTaskCount })"
+          >{{ unreadTaskBadge }}</span>
         </RouterLink>
       </a-tooltip>
     </nav>
@@ -267,19 +288,23 @@ onMounted(loadMenuConfig)
           type="button"
           class="sidebar-control"
           :aria-pressed="sidebarTheme === 'dark'"
-          :aria-label="sidebarTheme === 'dark' ? '切换为浅色模式' : '切换为深色模式'"
-          :title="sidebarTheme === 'dark' ? '切换为浅色模式' : '切换为深色模式'"
+          :aria-label="sidebarTheme === 'dark' ? t('layout.sidebar.switchToLight') : t('layout.sidebar.switchToDark')"
+          :title="sidebarTheme === 'dark' ? t('layout.sidebar.switchToLight') : t('layout.sidebar.switchToDark')"
           @click="toggleSidebarTheme"
         >
           <img class="sidebar-control-icon theme-control-icon" :src="themeIcon" alt="">
-          <span>{{ sidebarTheme === 'dark' ? '深色' : '浅色' }}</span>
+          <span>{{ sidebarTheme === 'dark' ? t('layout.sidebar.dark') : t('layout.sidebar.light') }}</span>
         </button>
-        <a-tooltip title="英文版即将上线" placement="right">
-          <span class="sidebar-control language-control" aria-label="当前语言：中文" title="当前语言：中文">
-            <img class="sidebar-control-icon" :src="languageIcon" alt="">
-            <span>中</span>
-          </span>
-        </a-tooltip>
+        <button
+          type="button"
+          class="sidebar-control language-control"
+          :aria-label="t('layout.sidebar.currentLanguage', { language: currentOption.autonym })"
+          :title="t('layout.sidebar.currentLanguage', { language: currentOption.autonym })"
+          @click="toggleLocale"
+        >
+          <img class="sidebar-control-icon" :src="languageIcon" alt="">
+          <span>{{ currentOption.shortLabel }}</span>
+        </button>
       </div>
     </footer>
   </aside>
@@ -411,6 +436,7 @@ onMounted(loadMenuConfig)
 }
 
 .nav-item {
+  position: relative;
   display: flex;
   min-height: 36px;
   align-items: center;
@@ -444,10 +470,30 @@ onMounted(loadMenuConfig)
 }
 
 .nav-label {
+  min-width: 0;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.nav-unread-badge {
+  display: inline-flex;
+  min-width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  padding: 0 5px;
+  color: #fff;
+  background: #fb363f;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+}
+
 
 .sidebar-footer {
   display: grid;
@@ -582,7 +628,7 @@ onMounted(loadMenuConfig)
 }
 
 .language-control {
-  cursor: default;
+  cursor: pointer;
 }
 
 .sidebar-footer > .sidebar-controls {
@@ -657,6 +703,17 @@ onMounted(loadMenuConfig)
   justify-content: center;
   padding-right: 0;
   padding-left: 0;
+}
+
+.sidebar.collapsed .nav-unread-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 16px;
 }
 
 .sidebar.collapsed .sidebar-footer {

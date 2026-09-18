@@ -2,6 +2,9 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import apiClient from '@/api/client'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 export interface ConfigOption {
   label: string
@@ -48,7 +51,7 @@ const columns = computed(() => [
       key: field.key,
       width: field.width,
     })),
-  { title: '操作', key: 'actions', width: 200 },
+  { title: t('components.resourceTable.actions'), key: 'actions', width: 200 },
 ])
 
 function resetForm() {
@@ -64,7 +67,7 @@ async function load() {
     const response = await apiClient.get<{ items: Item[] }>(props.endpoint)
     items.value = response.items || []
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '加载配置失败')
+    message.error(error instanceof Error ? error.message : t('components.resourceTable.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -98,7 +101,7 @@ function displayValue(field: ConfigField, value: unknown) {
 async function save() {
   const missing = props.fields.find((field) => field.required && !String(form[field.key] ?? '').trim())
   if (missing) {
-    message.warning(`请填写${missing.label}`)
+    message.warning(t('components.resourceTable.fieldRequired', { field: missing.label }))
     return
   }
   const body: Record<string, string | number> = {}
@@ -114,12 +117,12 @@ async function save() {
     } else {
       await apiClient.post(props.endpoint, body)
     }
-    message.success('保存成功')
+    message.success(t('components.resourceTable.saveSuccess'))
     visible.value = false
     await load()
     emit('changed')
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '保存失败')
+    message.error(error instanceof Error ? error.message : t('components.resourceTable.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -127,19 +130,19 @@ async function save() {
 
 function remove(item: Item) {
   Modal.confirm({
-    title: `删除“${String(item.name || '该配置')}”`,
-    content: '删除后依赖此项的配置可能无法正常工作。',
-    okText: '删除',
+    title: t('components.resourceTable.deleteTitle', { name: String(item.name || t('components.resourceTable.defaultName')) }),
+    content: t('components.resourceTable.deleteWarning'),
+    okText: t('common.actions.delete'),
     okType: 'danger',
-    cancelText: '取消',
+    cancelText: t('common.actions.cancel'),
     async onOk() {
       try {
         await apiClient.delete(`${props.endpoint}/${item.id}`)
-        message.success('已删除')
+        message.success(t('components.resourceTable.deleted'))
         await load()
         emit('changed')
       } catch (error) {
-        message.error(error instanceof Error ? error.message : '删除失败')
+        message.error(error instanceof Error ? error.message : t('components.resourceTable.deleteFailed'))
       }
     },
   })
@@ -154,12 +157,12 @@ async function testConnection(item: Item) {
   try {
     const res = await apiClient.post<{ ok: boolean; error?: string }>(`${props.endpoint}/${id}/test`)
     if (res && res.ok) {
-      message.success(`“${String(item.name || '该配置')}”连接成功`)
+      message.success(t('components.resourceTable.connectionSuccess', { name: String(item.name || t('components.resourceTable.defaultName')) }))
     } else {
-      message.error(`连接失败：${res?.error || '未知错误'}`)
+      message.error(t('components.resourceTable.connectionFailed', { error: res?.error || t('components.resourceTable.unknownError') }))
     }
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '测试连接失败')
+    message.error(error instanceof Error ? error.message : t('components.resourceTable.testFailed'))
   } finally {
     testingID.value = null
   }
@@ -178,8 +181,8 @@ defineExpose({ load, openCreate })
   <a-card :title="title">
     <template #extra>
       <a-space>
-        <a-button @click="load">刷新</a-button>
-        <a-button type="primary" @click="openCreate">新增</a-button>
+        <a-button @click="load">{{ t('common.actions.refresh') }}</a-button>
+        <a-button type="primary" @click="openCreate">{{ t('components.resourceTable.add') }}</a-button>
       </a-space>
     </template>
     <a-alert :message="description" type="info" show-icon style="margin-bottom: 16px" />
@@ -189,19 +192,19 @@ defineExpose({ load, openCreate })
       :loading="loading"
       row-key="id"
       :pagination="false"
-      :locale="{ emptyText: emptyText || `暂无${title}，点击右上角“新增”开始配置` }"
+      :locale="{ emptyText: emptyText || t('components.resourceTable.empty', { title }) }"
       :scroll="{ x: 720 }"
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'actions'">
           <a-space>
-            <a @click="openEdit(record)">编辑</a>
+            <a @click="openEdit(record)">{{ t('common.actions.edit') }}</a>
             <a
               v-if="testable"
               :class="{ 'testing-link': testingID === Number(record.id) }"
               @click="testConnection(record)"
-            >{{ testingID === Number(record.id) ? '测试中…' : '测试链接' }}</a>
-            <a class="danger-link" @click="remove(record)">删除</a>
+            >{{ testingID === Number(record.id) ? t('components.resourceTable.testing') : t('components.resourceTable.testConnection') }}</a>
+            <a class="danger-link" @click="remove(record)">{{ t('common.actions.delete') }}</a>
           </a-space>
         </template>
         <template v-else>
@@ -213,10 +216,10 @@ defineExpose({ load, openCreate })
 
   <a-modal
     v-model:open="visible"
-    :title="editingID ? `编辑${title}` : `新增${title}`"
+    :title="editingID ? t('components.resourceTable.editTitle', { title }) : t('components.resourceTable.addTitle', { title })"
     :confirm-loading="saving"
-    ok-text="保存"
-    cancel-text="取消"
+    :ok-text="t('common.actions.save')"
+    :cancel-text="t('common.actions.cancel')"
     @ok="save"
   >
     <a-form layout="vertical">
@@ -248,7 +251,7 @@ defineExpose({ load, openCreate })
         <a-input-password
           v-else-if="field.type === 'password'"
           v-model:value="form[field.key]"
-          :placeholder="editingID ? '留空表示不修改' : field.placeholder"
+          :placeholder="editingID ? t('components.resourceTable.passwordUnchanged') : field.placeholder"
         />
         <a-input
           v-else

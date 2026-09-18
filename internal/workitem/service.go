@@ -136,8 +136,8 @@ func (s *Service) CreateTask(ctx context.Context, opts CreateTaskOptions) (strin
 
 	_, err = tx.Exec(
 		`INSERT INTO gt_tasks (uuid, cloud_admin_id, cloud_user_id, cloud_agent_id, cloud_agent_name_snapshot, cloud_agent_color_snapshot, cli_type, cloud_work_item_type, cloud_work_item_id, title, content_snapshot, work_dir,
-		 status, execution_status, cloud_workflow_snapshot_hash, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?)`,
+		 status, execution_status, execution_mode, cloud_workflow_snapshot_hash, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', 'pipeline', ?, ?, ?)`,
 		taskUUID, opts.AdminID, opts.UserID,
 		fmt.Sprintf("%d", opts.PipelineSnapshot.ID),
 		opts.PipelineSnapshot.Name, opts.PipelineSnapshot.Color, opts.PipelineSnapshot.CLIType,

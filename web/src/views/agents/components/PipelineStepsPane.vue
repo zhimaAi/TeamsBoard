@@ -8,9 +8,9 @@
             alt=""
             aria-hidden="true"
           />
-          专家流水线
+          {{ t('agents.title') }}
         </span>
-        <h3>{{ pipeline?.name || '请选择流水线' }}</h3>
+        <h3>{{ pipeline?.name || t('agents.selectPipeline') }}</h3>
       </div>
       <div
         v-if="pipeline"
@@ -34,47 +34,14 @@
               aria-hidden="true"
             />
           </template>
-          {{ batchMode ? '取消批量配置' : '批量配置' }}
+          {{ batchMode ? t('agents.cancelBatch') : t('agents.batch') }}
         </a-button>
-        <a-dropdown
+        <AgentAddDropdown
           v-if="!isCloudPipeline && !batchMode"
-          :open="addMenuOpen"
-          :trigger="['click']"
-          @update:open="addMenuOpen = $event"
-        >
-          <a-button
-            type="primary"
-            size="small"
-            class="add-button"
-            aria-haspopup="menu"
-            :aria-expanded="addMenuOpen"
-          >
-            <template #icon><PlusOutlined /></template>
-            添加
-          </a-button>
-          <template #overlay>
-            <a-menu @click="handleAddMenuClick">
-              <a-menu-item key="create">
-                <img
-                  class="add-menu-icon add-menu-icon--new"
-                  :src="pipelineAddAgentIcon"
-                  alt=""
-                  aria-hidden="true"
-                />
-                新建 Agent
-              </a-menu-item>
-              <a-menu-item key="copy">
-                <img
-                  class="add-menu-icon"
-                  :src="pipelineSelectAgentIcon"
-                  alt=""
-                  aria-hidden="true"
-                />
-                从已添加 Agent 选择
-              </a-menu-item>
-            </a-menu>
-          </template>
-        </a-dropdown>
+          ref="addDropdownRef"
+          @create="emit('create-agent')"
+          @copy="emit('copy-agent')"
+        />
       </div>
     </header>
     <div
@@ -100,18 +67,18 @@
       </template>
       <a-empty
         v-if="pipeline && !sortedSteps.length"
-        description="当前流水线暂无 Agent，点击上方“添加”开始编排"
+        :description="t('agents.emptyAgents')"
       />
       <a-empty
         v-else-if="!pipeline"
-        description="请选择左侧流水线"
+        :description="t('agents.selectLeftPipeline')"
       />
     </div>
     <div
       v-if="pipeline && batchMode"
       class="batch-bar"
       role="toolbar"
-      aria-label="批量配置 CLI"
+      :aria-label="t('agents.batchCli')"
     >
       <span class="batch-count">
         <img
@@ -120,14 +87,14 @@
           alt=""
           aria-hidden="true"
         />
-        已选 {{ selectedStepUuids.length }} 个
+        {{ t('agents.selectedCount', { count: selectedStepUuids.length }) }}
       </span>
       <a-select
         v-model:value="batchCliType"
         class="batch-select"
         :loading="cliLoading"
         :disabled="batchSaving"
-        placeholder="请选择 CLI"
+        :placeholder="t('agents.selectCli')"
         @change="handleCliChange(String($event))"
       >
         <a-select-option
@@ -145,7 +112,7 @@
         :loading="modelLoading"
         :disabled="!batchCliType || batchSaving"
         show-search
-        :placeholder="batchCliType ? '请选择模型' : '请先选择 CLI'"
+        :placeholder="batchCliType ? t('agents.selectModel') : t('agents.selectCliFirst')"
       >
         <a-select-option
           v-for="model in modelOptions"
@@ -163,7 +130,7 @@
         :disabled="!canApplyBatch"
         @click="applyBatchConfiguration"
       >
-        应用
+        {{ t('agents.apply') }}
       </a-button>
       <a-button
         size="small"
@@ -171,7 +138,7 @@
         :disabled="batchSaving"
         @click="clearBatchSelection"
       >
-        取消
+        {{ t('agents.cancel') }}
       </a-button>
     </div>
   </section>
@@ -179,7 +146,6 @@
 
 <script setup lang="ts">
 import { computed, onDeactivated, ref, watch } from 'vue'
-import { PlusOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import apiClient from '@/api/client'
 import { useCliModelOptions } from '@/composables/useCliModelOptions'
@@ -187,14 +153,15 @@ import type { Pipeline, PipelineStep } from '@/types/pipeline'
 import agentOrchestrationIcon from '@/assets/icons/agent-orchestration.svg'
 import batchCancelIcon from '@/assets/icons/batch-cancel.svg'
 import batchSelectedCountIcon from '@/assets/icons/batch-selected-count.svg'
-import pipelineAddAgentIcon from '@/assets/icons/pipeline-add-agent.svg'
-import pipelineSelectAgentIcon from '@/assets/icons/pipeline-select-agent.svg'
 import { isPipelineCloud as isCloudPipelineSource, sortPipelineSteps } from './agentPipeline'
 import PipelineStepCard from './PipelineStepCard.vue'
+import AgentAddDropdown from './AgentAddDropdown.vue'
+import { useAppI18n } from '@/i18n'
 
 const props = defineProps<{
   pipeline?: Pipeline
 }>()
+const { t } = useAppI18n()
 
 const emit = defineEmits<{
   'create-agent': []
@@ -207,7 +174,7 @@ const emit = defineEmits<{
 
 const isCloudPipeline = computed(() => isCloudPipelineSource(props.pipeline))
 const sortedSteps = computed(() => sortPipelineSteps(props.pipeline?.steps || []))
-const addMenuOpen = ref(false)
+const addDropdownRef = ref<InstanceType<typeof AgentAddDropdown>>()
 const batchMode = ref(false)
 const batchSaving = ref(false)
 const selectedStepUuids = ref<string[]>([])
@@ -242,26 +209,17 @@ watch(
   },
 )
 
-function handleAddMenuClick({ key }: { key: string | number }) {
-  addMenuOpen.value = false
-  if (key === 'create') {
-    emit('create-agent')
-    return
-  }
-  if (key === 'copy') emit('copy-agent')
-}
-
 async function toggleBatchMode() {
   if (batchMode.value) {
     resetBatchState()
     return
   }
-  addMenuOpen.value = false
+  addDropdownRef.value?.close()
   batchMode.value = true
   try {
     await loadCliOptions()
   } catch (error) {
-    message.error(error instanceof Error ? error.message : 'CLI 列表加载失败')
+    message.error(error instanceof Error ? error.message : t('agents.cliListLoadFailed'))
   }
 }
 
@@ -294,7 +252,7 @@ async function handleCliChange(cliType: string) {
   try {
     await loadModelOptions(cliType)
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '模型列表加载失败')
+    message.error(error instanceof Error ? error.message : t('agents.modelListLoadFailed'))
   }
 }
 
@@ -311,17 +269,17 @@ async function applyBatchConfiguration() {
       },
     )
     emit('updated', updated)
-    message.success(`已更新 ${selectedStepUuids.value.length} 个 Agent 的执行配置`)
+    message.success(t('agents.batchUpdated', { count: selectedStepUuids.value.length }))
     resetBatchState()
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '批量配置失败')
+    message.error(error instanceof Error ? error.message : t('agents.batchFailed'))
   } finally {
     batchSaving.value = false
   }
 }
 
 onDeactivated(() => {
-  addMenuOpen.value = false
+  addDropdownRef.value?.close()
 })
 </script>
 
@@ -492,18 +450,6 @@ onDeactivated(() => {
 
 .step-list--batch {
   padding: 0 0 96px;
-}
-
-.add-menu-icon {
-  width: 16px;
-  height: 16px;
-  margin-right: 4px;
-  vertical-align: -3px;
-}
-
-.add-menu-icon--new {
-  box-sizing: border-box;
-  padding: 2.35px;
 }
 
 @media (max-width: 900px) {

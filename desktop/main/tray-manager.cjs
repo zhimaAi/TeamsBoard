@@ -1,6 +1,7 @@
 'use strict'
 
 const TASK_STATUS_STALE_MS = 30_000
+const { t } = require('./desktop-i18n.cjs')
 
 function normalizeTaskCount(value) {
   if (!Number.isFinite(value)) return null
@@ -59,25 +60,27 @@ class TrayManager {
   }
 
   getTooltip() {
-    if (this.starting) return 'TeamsBoard · 正在启动'
+    if (this.starting) return t('tray.tooltip.starting')
     const status = this.getTaskStatus()
-    return status.known && status.count > 0 ? `TeamsBoard · ${status.count} 个任务执行中` : 'TeamsBoard'
+    return status.known && status.count > 0
+      ? t('tray.tooltip.runningTasks', { count: status.count })
+      : 'TeamsBoard'
   }
 
   getMenuTemplate() {
     const status = this.getTaskStatus()
     const taskLabel = this.starting
-      ? '任务状态：正在启动'
+      ? t('tray.menu.statusStarting')
       : status.known
-        ? `执行中任务：${status.count}`
-        : '任务状态：等待同步'
+        ? t('tray.menu.runningTasks', { count: status.count })
+        : t('tray.menu.statusWaiting')
     return [
-      { label: '打开 TeamsBoard', click: this.onShowWindow },
-      { label: '隐藏主窗口', visible: this.isWindowVisible(), click: this.onHideWindow },
+      { label: t('tray.menu.show'), click: this.onShowWindow },
+      { label: t('tray.menu.hide'), visible: this.isWindowVisible(), click: this.onHideWindow },
       { type: 'separator' },
       { label: taskLabel, enabled: false },
       { type: 'separator' },
-      { label: '退出 TeamsBoard', click: this.onQuit },
+      { label: t('tray.menu.quit'), click: this.onQuit },
     ]
   }
 

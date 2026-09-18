@@ -1,7 +1,8 @@
 import type { TaskNotification, TaskProgress } from '@/types/pipeline'
 import type { TaskWithDetails } from '@/types/task-detail'
+import { t } from '@/i18n'
 
-const DATABASE_NAME = 'goteams-task-conversations'
+const DATABASE_NAME = 'teamsboard-conversations'
 const DATABASE_VERSION = 1
 const CACHE_SCHEMA_VERSION = 1
 const NOTIFICATION_STORE = 'notificationSnapshots'
@@ -49,15 +50,15 @@ let databasePromise: Promise<IDBDatabase> | undefined
 function requestResult<T>(request: IDBRequest<T>) {
   return new Promise<T>((resolve, reject) => {
     request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error || new Error('IndexedDB 请求失败'))
+    request.onerror = () => reject(request.error || new Error(t('components.errors.indexedDbRequest')))
   })
 }
 
 function transactionCompleted(transaction: IDBTransaction) {
   return new Promise<void>((resolve, reject) => {
     transaction.oncomplete = () => resolve()
-    transaction.onabort = () => reject(transaction.error || new Error('IndexedDB 事务已取消'))
-    transaction.onerror = () => reject(transaction.error || new Error('IndexedDB 事务失败'))
+    transaction.onabort = () => reject(transaction.error || new Error(t('components.errors.indexedDbAborted')))
+    transaction.onerror = () => reject(transaction.error || new Error(t('components.errors.indexedDbTransaction')))
   })
 }
 
@@ -65,7 +66,7 @@ function openDatabase() {
   if (databasePromise) return databasePromise
   databasePromise = new Promise<IDBDatabase>((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
-      reject(new Error('当前环境不支持 IndexedDB'))
+      reject(new Error(t('components.errors.indexedDbUnsupported')))
       return
     }
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION)
@@ -91,11 +92,11 @@ function openDatabase() {
     }
     request.onerror = () => {
       databasePromise = undefined
-      reject(request.error || new Error('无法打开 IndexedDB'))
+      reject(request.error || new Error(t('components.errors.indexedDbOpen')))
     }
     request.onblocked = () => {
       databasePromise = undefined
-      reject(new Error('IndexedDB 升级被其他页面阻塞'))
+      reject(new Error(t('components.errors.indexedDbBlocked')))
     }
   })
   return databasePromise

@@ -2,8 +2,8 @@
   <div class="agent-page">
     <header class="page-bar">
       <div class="page-identity">
-        <h1>专家流水线</h1>
-        <div class="page-description">管理专家流水线与编排配置</div>
+        <h1>{{ t('agents.title') }}</h1>
+        <div class="page-description">{{ t('agents.description') }}</div>
       </div>
       <!-- <a-button
         size="small"
@@ -19,18 +19,22 @@
       class="agent-layout"
       :aria-busy="!initialLoadFinished"
     >
-      <template v-if="initialLoadFinished">
+	  <template v-if="initialLoadFinished">
         <PipelineListPane
           :pipelines="pipelines"
-          :selected-uuid="selectedUuid"
+		  :expert-groups="expertGroups"
+		  :selected-uuid="selectedResourceUuid"
           :copying-uuid="copyingUuid"
-          @copy="copyPipeline"
-          @create="openPipelineModal()"
-          @delete="deletePipeline"
-          @edit="openPipelineModal"
-          @select="loadPipeline"
+		  :mode="managementMode"
+		  @change-mode="changeManagementMode"
+		  @copy="copyResource"
+		  @create="createResource"
+		  @delete="deleteResource"
+		  @edit="editResource"
+		  @select="selectResource"
         />
         <PipelineStepsPane
+		  v-if="managementMode === 'pipeline'"
           :pipeline="selectedPipeline"
           @create-agent="openAgentModal()"
           @copy-agent="copyModalOpen = true"
@@ -39,13 +43,18 @@
           @remove-agent="removeStep"
           @updated="pipelineStore.upsertPipeline"
         />
+		<ExpertGroupsWorkspace
+		  v-else
+		  ref="expertWorkspaceRef"
+		  v-model:selected-uuid="selectedExpertUuid"
+		/>
       </template>
       <span
         v-else
         class="visually-hidden"
         role="status"
       >
-        正在加载流水线
+        {{ t('agents.loading') }}
       </span>
     </div>
 
@@ -80,12 +89,14 @@ import { useRoute } from 'vue-router'
 import apiClient, { ApiError } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { usePipelineStore } from '@/stores/pipeline'
-import type { Pipeline, PipelineStep } from '@/types/pipeline'
+import { useExpertGroupStore } from '@/stores/expert-group'
+import type { ExpertGroup, Pipeline, PipelineStep } from '@/types/pipeline'
 import AgentEditorModal from './components/AgentEditorModal.vue'
 import CopyAgentModal from './components/CopyAgentModal.vue'
 import PipelineEditorModal from './components/PipelineEditorModal.vue'
 import PipelineListPane from './components/PipelineListPane.vue'
 import PipelineStepsPane from './components/PipelineStepsPane.vue'
+import ExpertGroupsWorkspace from './components/ExpertGroupsWorkspace.vue'
 import {
   AGENT_AVATARS,
   type DeleteResponse,
@@ -95,14 +106,19 @@ import {
   type ReusablePipelineStep,
   sortPipelineSteps,
 } from './components/agentPipeline'
+import { useAppI18n } from '@/i18n'
 
 const route = useRoute()
 const authStore = useAuthStore()
 const pipelineStore = usePipelineStore()
 const { pipelines, loaded } = storeToRefs(pipelineStore)
+const expertGroupStore = useExpertGroupStore()
+const { items: expertGroups } = storeToRefs(expertGroupStore)
 const initialLoadFinished = ref(loaded.value)
 const syncing = ref(false)
 const selectedUuid = ref('')
+const selectedExpertUuid = ref('')
+const expertWorkspaceRef = ref<InstanceType<typeof ExpertGroupsWorkspace>>()
 const handledPipelineQuery = ref('')
 const pipelineModalOpen = ref(false)
 const agentModalOpen = ref(false)
@@ -112,10 +128,15 @@ const editingPipeline = ref<Pipeline>()
 const editingStep = ref<PipelineStep>()
 const editingStepAvatar = ref<string>(AGENT_AVATARS[0])
 const pageActive = ref(true)
+const managementMode = ref<'pipeline' | 'expert_group'>('pipeline')
+const { t } = useAppI18n()
 let hasActivatedOnce = false
 
 const selectedPipeline = computed(() =>
   pipelines.value.find((item) => item.uuid === selectedUuid.value),
+)
+const selectedResourceUuid = computed(() =>
+	managementMode.value === 'expert_group' ? selectedExpertUuid.value : selectedUuid.value,
 )
 const isCloudPipeline = computed(() => isPipelineCloud(selectedPipeline.value))
 const allReusableSteps = computed<ReusablePipelineStep[]>(() =>
@@ -129,13 +150,25 @@ function pipelineUuidFromQuery() {
   return Array.isArray(value) ? value[0] || '' : value || ''
 }
 
+function syncManagementModeFromQuery() {
+  const value = Array.isArray(route.query.mode) ? route.query.mode[0] : route.query.mode
+  managementMode.value = value === 'expert_group' ? 'expert_group' : 'pipeline'
+}
+
 function isActiveAgentRoute() {
   return pageActive.value && route.name === 'agents'
 }
 
 async function load(showError = true) {
   try {
-    await pipelineStore.loadPipelines(true)
+	const [pipelineResult, expertResult] = await Promise.allSettled([
+	  pipelineStore.loadPipelines(true),
+	  expertGroupStore.load(true),
+	])
+	if (pipelineResult.status === 'rejected') throw pipelineResult.reason
+	if (expertResult.status === 'rejected' && managementMode.value === 'expert_group') {
+	  throw expertResult.reason
+	}
     const queryPipelineUuid = pipelineUuidFromQuery()
     if (
       queryPipelineUuid &&
@@ -148,8 +181,11 @@ async function load(showError = true) {
       selectedUuid.value = pipelines.value[0]?.uuid || ''
     }
     if (selectedUuid.value) await loadPipeline(selectedUuid.value, false)
+	if (!expertGroups.value.some((item) => item.uuid === selectedExpertUuid.value)) {
+	  selectedExpertUuid.value = expertGroups.value[0]?.uuid || ''
+	}
   } catch (error) {
-    if (showError) message.error(error instanceof Error ? error.message : '流水线加载失败')
+    if (showError) message.error(error instanceof Error ? error.message : t('agents.loadFailed'))
   } finally {
     initialLoadFinished.value = true
   }
@@ -161,7 +197,7 @@ async function loadPipeline(uuid: string, showError = true) {
     const detail = await apiClient.get<Pipeline>(`/pipelines/${uuid}`)
     pipelineStore.upsertPipeline(detail)
   } catch (error) {
-    if (showError) message.error(error instanceof Error ? error.message : '流水线详情加载失败')
+    if (showError) message.error(error instanceof Error ? error.message : t('agents.detailLoadFailed'))
   }
 }
 
@@ -186,16 +222,18 @@ async function syncCloudPipelines(manual = false) {
     const result = await apiClient.post<{ synced?: number }>('/pipelines/sync-cloud', {})
     if (manual)
       message.success(
-        `云端流水线同步完成${result.synced === undefined ? '' : `，更新 ${result.synced} 条`}`,
+        result.synced === undefined
+          ? t('agents.synced')
+          : t('agents.syncedCount', { count: result.synced }),
       )
     await load(false)
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
       authStore.clearCloudAuth()
-      if (manual) message.warning('云端登录已失效，请重新登录')
+      if (manual) message.warning(t('agents.sessionExpired'))
       return
     }
-    message.warning(error instanceof Error ? error.message : '云端流水线同步失败')
+    message.warning(error instanceof Error ? error.message : t('agents.syncFailed'))
   } finally {
     syncing.value = false
   }
@@ -222,9 +260,9 @@ async function copyPipeline(pipeline: Pipeline) {
     )
     pipelineStore.upsertPipeline(copied)
     selectedUuid.value = copied.uuid
-    message.success(`已复制为“${copied.name}”`)
+    message.success(t('agents.copied', { name: copied.name }))
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '流水线复制失败')
+    message.error(error instanceof Error ? error.message : t('agents.copyFailed'))
   } finally {
     copyingUuid.value = ''
   }
@@ -255,15 +293,15 @@ async function handlePipelineUpdated() {
 function deletePipeline(pipeline: Pipeline) {
   if (isPipelineCloud(pipeline)) return
   Modal.confirm({
-    title: `删除流水线“${pipeline.name}”？`,
-    content: '不会影响已经创建任务中的执行快照。',
+    title: t('agents.deleteTitle', { name: pipeline.name }),
+    content: t('agents.deleteDescription'),
     okType: 'danger',
     onOk: async () => {
       try {
         await apiClient.delete<DeleteResponse>(`/pipelines/${pipeline.uuid}`)
         await load()
       } catch (error) {
-        message.error(error instanceof Error ? error.message : '流水线删除失败')
+        message.error(error instanceof Error ? error.message : t('agents.deleteFailed'))
         throw error
       }
     },
@@ -290,14 +328,14 @@ async function moveStep(step: PipelineStep, offset: number) {
     })
     await refreshSelectedPipeline()
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '排序失败')
+    message.error(error instanceof Error ? error.message : t('agents.sortFailed'))
   }
 }
 
 function removeStep(step: PipelineStep) {
   if (isCloudPipeline.value) return
   Modal.confirm({
-    title: `从流水线移除“${step.name}”？`,
+    title: t('agents.removeTitle', { name: step.name }),
     okType: 'danger',
     onOk: async () => {
       try {
@@ -306,7 +344,7 @@ function removeStep(step: PipelineStep) {
         )
         await refreshSelectedPipeline()
       } catch (error) {
-        message.error(error instanceof Error ? error.message : '移除 Agent 失败')
+        message.error(error instanceof Error ? error.message : t('agents.removeFailed'))
         throw error
       }
     },
@@ -314,12 +352,14 @@ function removeStep(step: PipelineStep) {
 }
 
 onMounted(async () => {
+  syncManagementModeFromQuery()
   await load()
   await syncCloudPipelines(false)
 })
 
 onActivated(() => {
   pageActive.value = true
+  syncManagementModeFromQuery()
   // KeepAlive 首次挂载也会触发激活钩子，首轮请求继续只由 onMounted 负责。
   if (!hasActivatedOnce) {
     hasActivatedOnce = true
@@ -361,6 +401,72 @@ watch(
     void selectPipelineFromQuery()
   },
 )
+
+watch(
+  () => route.query.mode,
+  () => {
+    if (!isActiveAgentRoute()) return
+    syncManagementModeFromQuery()
+  },
+)
+
+function isExpertGroup(resource: Pipeline | ExpertGroup): resource is ExpertGroup {
+  return 'ready' in resource
+}
+
+async function changeManagementMode(mode: 'pipeline' | 'expert_group') {
+  managementMode.value = mode
+	if (mode === 'expert_group') {
+	  try {
+		await expertGroupStore.load(true)
+		if (!expertGroups.value.some((item) => item.uuid === selectedExpertUuid.value)) {
+		  selectedExpertUuid.value = expertGroups.value[0]?.uuid || ''
+		}
+	  } catch (error) {
+		message.error(error instanceof Error ? error.message : t('expertGroups.loadFailed'))
+	  }
+  }
+}
+
+function selectResource(uuid: string) {
+  if (managementMode.value === 'expert_group') {
+    selectedExpertUuid.value = uuid
+    return
+  }
+  void loadPipeline(uuid)
+}
+
+function createResource() {
+  if (managementMode.value === 'expert_group') {
+    expertWorkspaceRef.value?.openGroupEditor()
+    return
+  }
+  openPipelineModal()
+}
+
+function editResource(resource: Pipeline | ExpertGroup) {
+  if (isExpertGroup(resource)) {
+    expertWorkspaceRef.value?.openGroupEditor(resource)
+    return
+  }
+  openPipelineModal(resource)
+}
+
+function copyResource(resource: Pipeline | ExpertGroup) {
+  if (isExpertGroup(resource)) {
+    void expertWorkspaceRef.value?.handleGroupAction('copy', resource)
+    return
+  }
+  void copyPipeline(resource)
+}
+
+function deleteResource(resource: Pipeline | ExpertGroup) {
+  if (isExpertGroup(resource)) {
+    void expertWorkspaceRef.value?.handleGroupAction('delete', resource)
+    return
+  }
+  deletePipeline(resource)
+}
 </script>
 
 <style scoped>

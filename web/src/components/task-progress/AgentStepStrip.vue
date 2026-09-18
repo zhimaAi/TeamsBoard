@@ -1,7 +1,7 @@
 <template>
   <nav
     class="step-strip scrollbar--subtle"
-    aria-label="Agent 编排步骤"
+    :aria-label="t('workflows.task.progress.orchestrationSteps')"
   >
     <template
       v-for="(step, stepIndex) in steps"
@@ -50,6 +50,9 @@
 import { ArrowRightOutlined, CheckOutlined } from '@ant-design/icons-vue'
 import { resolveAgentAvatar } from '@/config/agentAvatars'
 import type { PipelineStep } from '@/types/pipeline'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 const props = withDefaults(
   defineProps<{

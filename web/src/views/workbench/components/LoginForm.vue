@@ -3,6 +3,9 @@ import { reactive, ref, watch } from 'vue'
 import { LockOutlined, UserOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { useLastLogin } from '@/composables/useLastLogin'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 const props = defineProps<{
   loading: boolean
@@ -52,17 +55,17 @@ function handleSubmit() {
 
   const serverUrl = serverType.value === 'official' ? (props.officialUrl ?? '').trim() : form.serverUrl.trim()
   if (serverType.value === 'custom' && !serverUrl) {
-    message.warning('请输入自定义云端地址')
+    message.warning(t('workbench.enterCustomAddress'))
     return
   }
   if (!serverType.value || (serverType.value === 'official' && !serverUrl)) {
-    message.warning('官方云端地址未配置，请选择自定义地址')
+    message.warning(t('workbench.officialAddressMissing'))
     return
   }
 
   const username = form.username.trim()
   if (!username || !form.password) {
-    message.warning('请输入账号和密码')
+    message.warning(t('workbench.enterCredentials'))
     return
   }
 
@@ -91,12 +94,12 @@ function handleSubmit() {
             :disabled="!officialUrl?.trim()"
           >
           <span class="radio-dot" />
-          <span class="radio-text">官方</span>
+          <span class="radio-text">{{ t('workbench.official') }}</span>
         </label>
         <label class="server-type-option" :class="{ active: serverType === 'custom' }">
           <input v-model="serverType" type="radio" value="custom">
           <span class="radio-dot" />
-          <span class="radio-text">自定义地址</span>
+          <span class="radio-text">{{ t('workbench.customAddress') }}</span>
         </label>
       </div>
 
@@ -105,8 +108,8 @@ function handleSubmit() {
         :readonly="serverType === 'official'"
         :disabled="loading"
         :placeholder="serverType === 'official'
-          ? (officialUrl?.trim() ? '官方地址（来自 config.ini）' : '未配置官方地址，请选择自定义地址')
-          : '请输入自定义云端地址，例如：https://teamsboard.example.com'"
+          ? (officialUrl?.trim() ? t('workbench.officialAddress') : t('workbench.officialAddressMissing'))
+          : t('workbench.customAddressPlaceholder')"
         size="large"
       >
         <template #prefix>
@@ -124,7 +127,7 @@ function handleSubmit() {
         v-model:value="form.username"
         autocomplete="username"
         :disabled="loading"
-        placeholder="账号"
+        :placeholder="t('workbench.account')"
         size="large"
       >
         <template #prefix><UserOutlined /></template>
@@ -136,7 +139,7 @@ function handleSubmit() {
         v-model:value="form.password"
         autocomplete="current-password"
         :disabled="loading"
-        placeholder="密码"
+        :placeholder="t('workbench.password')"
         size="large"
       >
         <template #prefix><LockOutlined /></template>
@@ -145,7 +148,7 @@ function handleSubmit() {
 
     <a-form-item class="submit-item">
       <a-button type="primary" html-type="submit" size="large" :loading="loading" block>
-        登录
+        {{ t('workbench.login') }}
       </a-button>
     </a-form-item>
   </a-form>

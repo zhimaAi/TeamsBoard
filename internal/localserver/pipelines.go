@@ -14,6 +14,7 @@ import (
 
 	"goteams-client/internal/applog"
 	"goteams-client/internal/cloud"
+	"goteams-client/internal/i18n"
 	"goteams-client/internal/pipeline"
 )
 
@@ -38,7 +39,7 @@ func (h *PipelinesHandler) RegisterCloudRoutes(r *gin.RouterGroup) {
 
 func (h *PipelinesHandler) syncCloud(c *gin.Context) {
 	if h.cloudClient == nil || h.cloudClient() == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "云端客户端未初始化"})
+		i18n.LocalServerError(c, http.StatusServiceUnavailable, errors.New("云端客户端未初始化"))
 		return
 	}
 	client := h.cloudClient()
@@ -48,7 +49,7 @@ func (h *PipelinesHandler) syncCloud(c *gin.Context) {
 	}
 	result, err := syncCloudPipelines(c.Request.Context(), svc, client)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, http.StatusBadGateway, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": result, "synced": len(result)})
@@ -104,7 +105,7 @@ func (h *PipelinesHandler) RegisterRoutes(r *gin.RouterGroup) {
 
 func (h *PipelinesHandler) service(c *gin.Context) (*pipeline.Service, bool) {
 	if h.db == nil || h.db() == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "本地任务数据库尚未就绪"})
+		i18n.LocalServerError(c, http.StatusServiceUnavailable, errors.New("本地任务数据库尚未就绪"))
 		return nil, false
 	}
 	return pipeline.NewService(h.db()), true
@@ -117,7 +118,7 @@ func (h *PipelinesHandler) list(c *gin.Context) {
 	}
 	items, err := svc.List(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, http.StatusInternalServerError, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
@@ -154,7 +155,7 @@ func (h *PipelinesHandler) create(c *gin.Context) {
 		if newAvatarURL != "" && h.iconStore != nil {
 			_ = h.iconStore.Remove(newAvatarURL)
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, http.StatusBadRequest, err)
 		return
 	}
 	c.JSON(http.StatusCreated, item)
@@ -181,7 +182,7 @@ func (h *PipelinesHandler) update(c *gin.Context) {
 	pipelineUUID := c.Param("uuid")
 	previousPipeline, previousErr := svc.Get(c.Request.Context(), pipelineUUID)
 	if isMultipartRequest(c) && (previousErr != nil || previousPipeline.SourceType != "local") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "仅本地流水线支持上传图标"})
+		i18n.Error(c, http.StatusBadRequest, "localserver_pipeline_upload_local_only", "local_pipeline_only")
 		return
 	}
 	input, newAvatarURL, err := h.bindPipelineInput(c)
@@ -248,7 +249,7 @@ func (h *PipelinesHandler) addStep(c *gin.Context) {
 func (h *PipelinesHandler) batchUpdateStepExecution(c *gin.Context) {
 	var input pipeline.BatchStepExecutionInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, http.StatusBadRequest, err)
 		return
 	}
 	svc, ok := h.service(c)
@@ -272,7 +273,7 @@ func (h *PipelinesHandler) updateStep(c *gin.Context) {
 	stepUUID := c.Param("step_uuid")
 	previousPipeline, previousErr := svc.Get(c.Request.Context(), pipelineUUID)
 	if isMultipartRequest(c) && (previousErr != nil || previousPipeline.SourceType != "local") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "仅本地 Agent 支持上传头像"})
+		i18n.Error(c, http.StatusBadRequest, "localserver_agent_upload_local_only", "local_agent_only")
 		return
 	}
 	previousStep := findPipelineStep(previousPipeline, stepUUID)
@@ -454,10 +455,10 @@ func findPipelineStep(item *pipeline.Pipeline, stepUUID string) *pipeline.Step {
 
 func pipelineAvatarError(c *gin.Context, err error) {
 	if errors.Is(err, ErrIconTooLarge) {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, http.StatusRequestEntityTooLarge, err)
 		return
 	}
-	c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	i18n.LocalServerError(c, http.StatusBadRequest, err)
 }
 
 func (h *PipelinesHandler) reorderSteps(c *gin.Context) {
@@ -465,7 +466,7 @@ func (h *PipelinesHandler) reorderSteps(c *gin.Context) {
 		IDs []string `json:"ids"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, http.StatusBadRequest, err)
 		return
 	}
 	svc, ok := h.service(c)
@@ -482,8 +483,8 @@ func (h *PipelinesHandler) reorderSteps(c *gin.Context) {
 func pipelineError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, pipeline.ErrNotFound), errors.Is(err, pipeline.ErrStepNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, http.StatusNotFound, err)
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, http.StatusBadRequest, err)
 	}
 }

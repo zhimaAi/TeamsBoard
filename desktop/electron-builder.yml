@@ -38,3 +38,7 @@ mac:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  # electron-builder 为开始菜单快捷方式写入与 Main 一致的 AppUserModelID，
+  # Windows Toast 需要此安装身份；不要用复制出来的裸 exe 验收通知。
+  createStartMenuShortcut: true
+  shortcutName: TeamsBoard

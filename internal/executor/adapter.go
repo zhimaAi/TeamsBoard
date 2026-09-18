@@ -27,6 +27,7 @@ const (
 const (
 	EventStart      = "start"
 	EventMessage    = "message"
+	EventThinking   = "thinking"
 	EventToolCall   = "tool_call"
 	EventToolResult = "tool_result"
 	EventPermission = "permission_request"
@@ -44,9 +45,13 @@ type PermissionRequest struct {
 
 // ExecutorEvent CLI executor generated events
 type ExecutorEvent struct {
-	Type               string              `json:"type"`
-	Content            string              `json:"content,omitempty"`
-	SessionID          string              `json:"session_id,omitempty"` // External session ID (thread_id / session_id)
+	Type      string `json:"type"`
+	Content   string `json:"content,omitempty"`
+	SessionID string `json:"session_id,omitempty"` // External session ID (thread_id / session_id)
+	// ToolUseID 是协议侧的工具调用 ID，用于把 tool_result 精确归属到对应的 tool_call。
+	// 并行工具调用的结果并不按调用顺序返回（实测 pi 会乱序回传），仅靠事件顺序无法配对。
+	// 协议未提供该字段时为空，此时不得按顺序猜测归属。
+	ToolUseID          string              `json:"tool_use_id,omitempty"`
 	InputTokens        int                 `json:"input_tokens,omitempty"`
 	OutputTokens       int                 `json:"output_tokens,omitempty"`
 	Error              string              `json:"error,omitempty"`
@@ -71,8 +76,10 @@ type ResumeOptions struct {
 }
 
 // Adapter CLI adapter interface.
-// The specific implementation is provided by codex, claude, codebuddy, and opencode sub-packages.
-// The construction entry is NewAdapter() of each sub-package, which is injected by the workflow factory according to the CLI type.
+// The concrete implementation lives in the internal/executor/<cli> sub-packages.
+// The construction entry is NewAdapter() of each sub-package, registered into the
+// workflow adapter registry at bootstrap and looked up by CLI type at run time;
+// most adapters are assembled from executor.NewStreamAdapter with an AdapterSpec.
 // CLI version and model detection are unified through DiscoverCLIs, and are not implemented repeatedly on the adapter.
 type Adapter interface {
 	// NewConversation new conversation

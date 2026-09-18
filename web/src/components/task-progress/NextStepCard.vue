@@ -1,9 +1,9 @@
 <template>
   <div class="next-step-card">
     <div class="next-step-copy">
-      <strong>{{ isLastStep ? '当前流水线已到最后一步' : `下一步：${nextStepName}` }}</strong>
+      <strong>{{ isLastStep ? t('workflows.task.progress.lastStepTitle') : t('workflows.task.progress.nextStepTitle', { step: nextStepName }) }}</strong>
       <span>{{
-        isLastStep ? '确认后完成整个任务' : `点击后自动 @${nextStepName} 并发送工作指令`
+        isLastStep ? t('workflows.task.progress.lastStepDescription') : t('workflows.task.progress.nextStepDescription', { step: nextStepName })
       }}</span>
     </div>
     <button
@@ -11,7 +11,7 @@
       :disabled="disabled"
       @click="emit('confirm')"
     >
-      <span>{{ completing ? '处理中…' : isLastStep ? '完成任务' : '进入下一步' }}</span>
+      <span>{{ completing ? t('workflows.task.progress.processing') : isLastStep ? t('workflows.task.progress.completeTask') : t('workflows.task.progress.enterNext') }}</span>
       <ArrowRightOutlined v-if="!completing" />
     </button>
   </div>
@@ -19,6 +19,9 @@
 
 <script setup lang="ts">
 import { ArrowRightOutlined } from '@ant-design/icons-vue'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 withDefaults(
   defineProps<{

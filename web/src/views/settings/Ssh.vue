@@ -1,21 +1,24 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import ConfigResourceTable, { type ConfigField } from '@/components/ConfigResourceTable.vue'
+import { useAppI18n } from '@/i18n'
 
-const fields: ConfigField[] = [
-  { key: 'name', label: '名称', required: true, placeholder: '例如：测试服务器' },
-  { key: 'host', label: '主机', required: true, placeholder: '192.168.1.10' },
-  { key: 'port', label: '端口', type: 'number', defaultValue: 22, width: 90 },
-  { key: 'username', label: '用户名', placeholder: 'root' },
-  { key: 'password', label: '密码', type: 'password', table: false },
+const { t } = useAppI18n()
+const fields = computed<ConfigField[]>(() => [
+  { key: 'name', label: t('settings.name'), required: true, placeholder: t('settings.exampleServer') },
+  { key: 'host', label: t('settings.host'), required: true, placeholder: '192.168.1.10' },
+  { key: 'port', label: t('settings.port'), type: 'number', defaultValue: 22, width: 90 },
+  { key: 'username', label: t('settings.username'), placeholder: 'root' },
+  { key: 'password', label: t('settings.password'), type: 'password', table: false },
   // { key: 'key_path', label: 'Private key path', placeholder: 'C:\Users\me\.ssh\id_ed25519' },
-]
+])
 </script>
 
 <template>
   <ConfigResourceTable
-    title="SSH 配置"
+    :title="t('settings.sshConfig')"
     endpoint="/config/ssh-profiles"
-    description="供数据库隧道和远程命令使用。密码写入系统安全存储，不会在列表中返回。"
+    :description="t('settings.sshDescription')"
     :fields="fields"
     :testable="true"
   />

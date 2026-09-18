@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"goteams-client/internal/i18n"
 	"goteams-client/internal/project"
 )
 
@@ -33,7 +34,7 @@ func (h *ProjectsHandler) RegisterRoutes(r *gin.RouterGroup) {
 
 func (h *ProjectsHandler) service(c *gin.Context) (*project.Service, bool) {
 	if h.db == nil || h.db() == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "本地任务数据库尚未就绪"})
+		i18n.LocalServerError(c, http.StatusServiceUnavailable, errors.New("本地任务数据库尚未就绪"))
 		return nil, false
 	}
 	return project.NewService(h.db()), true
@@ -46,7 +47,7 @@ func (h *ProjectsHandler) list(c *gin.Context) {
 	}
 	items, err := svc.List(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, http.StatusInternalServerError, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
@@ -178,19 +179,19 @@ func (h *ProjectsHandler) bindInput(c *gin.Context) (project.Input, string, erro
 
 func projectIconError(c *gin.Context, err error) {
 	if errors.Is(err, ErrIconTooLarge) {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, http.StatusRequestEntityTooLarge, err)
 		return
 	}
-	c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	i18n.LocalServerError(c, http.StatusBadRequest, err)
 }
 
 func projectError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, project.ErrNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, http.StatusNotFound, err)
 	case errors.Is(err, project.ErrInUse):
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, http.StatusConflict, err)
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		i18n.LocalServerError(c, http.StatusBadRequest, err)
 	}
 }

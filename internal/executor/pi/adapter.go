@@ -1,63 +1,45 @@
-// Package pi provides Pi CLI execution adaptation.
+// Package pi 提供 Pi CLI 的执行适配。
 package pi
 
 import (
-	"bufio"
-	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"os"
-	"os/exec"
 	"strings"
-	"sync"
-	"time"
 
 	"goteams-client/internal/executor"
 )
 
 const displayName = "Pi Agent"
 
-// Adapter Pi CLI adapter.
+// NewAdapter 创建 Pi CLI 适配器。
 //
-// Pi CLI's `--mode json` outputs type-based JSONL events:
-// session / agent_start / agent_end / turn_start / turn_end /
+// Pi CLI 的 `--mode json` 输出 type-based JSONL 事件：
+// session / agent_start / agent_end / agent_settled / turn_start / turn_end /
 // message_start / message_update / message_end /
-// tool_execution_start / tool_execution_update / tool_execution_end.
-type Adapter struct {
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	cancel context.CancelFunc
-	pid    int
-}
-
-// NewAdapter creates the Pi CLI adapter
+// tool_execution_start / tool_execution_update / tool_execution_end。
 func NewAdapter() executor.Adapter {
-	return &Adapter{}
+	return executor.NewStreamAdapter(executor.AdapterSpec{
+		DisplayName:     displayName,
+		BuildInvocation: buildInvocation,
+		NewDecoder: func(name string) executor.Decoder {
+			return NewDecoder(name)
+		},
+	})
 }
 
-// NewConversation starts a new conversation: pi --mode json [--provider <p>] [--model <m>]
-// The prompt is passed via stdin, which avoids cmd.exe reinterpreting multi-line prompts on Windows.
-func (a *Adapter) NewConversation(ctx context.Context, opts executor.RunOptions) (<-chan executor.ExecutorEvent, error) {
-	args := []string{"--mode", "json"}
+// buildInvocation 构造 pi 命令行。Prompt 走 stdin，避免 Windows 下 cmd.exe 重新解释多行内容。
+func buildInvocation(opts executor.RunOptions, resumeSession string) executor.Invocation {
+	args := make([]string, 0, 8)
+	if resumeSession != "" {
+		args = append(args, "--session", resumeSession)
+	}
+	args = append(args, "--mode", "json")
 	args = append(args, modelArgs(opts.ModelProfile)...)
 	args = append(args, opts.ExtraArgs...)
-
-	return a.runCommand(ctx, opts, args)
+	return executor.Invocation{Args: args, StdinText: opts.Prompt}
 }
 
-// ResumeConversation continues a conversation: pi --session <id> --mode json [...]
-func (a *Adapter) ResumeConversation(ctx context.Context, opts executor.ResumeOptions) (<-chan executor.ExecutorEvent, error) {
-	args := []string{"--session", opts.ExternalSessionID, "--mode", "json"}
-	args = append(args, modelArgs(opts.ModelProfile)...)
-	args = append(args, opts.ExtraArgs...)
-
-	return a.runCommand(ctx, opts.RunOptions, args)
-}
-
-// modelArgs converts "provider/model" or bare "model" into --provider / --model flags.
-// "auto" is skipped since pi uses it as the default.
+// modelArgs 把 "provider/model" 或裸模型名转换为 --provider / --model 参数。
+// "auto" 是 pi 的默认值，无需显式传递。
 func modelArgs(modelProfile string) []string {
 	if modelProfile == "" || modelProfile == "auto" {
 		return nil
@@ -69,501 +51,231 @@ func modelArgs(modelProfile string) []string {
 	return []string{"--model", modelProfile}
 }
 
-// runCommand executes the command and returns the event channel
-func (a *Adapter) runCommand(ctx context.Context, opts executor.RunOptions, args []string) (<-chan executor.ExecutorEvent, error) {
-	innerCtx, cancel := context.WithCancel(ctx)
-	a.mu.Lock()
-	a.cancel = cancel
-	a.mu.Unlock()
-
-	cmd := exec.CommandContext(innerCtx, opts.ExecPath, args...)
-	executor.CreateProcessGroup(cmd)
-
-	if opts.WorkDir != "" {
-		cmd.Dir = opts.WorkDir
-	}
-
-	// Set environment variables
-	if len(opts.EnvVars) > 0 {
-		env := append([]string{}, os.Environ()...)
-		for k, v := range opts.EnvVars {
-			env = append(env, fmt.Sprintf("%s=%s", k, v))
-		}
-		cmd.Env = env
-	}
-
-	// Prompt is passed via stdin.
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("创建 stdin 管道失败: %w", err)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("创建 stdout 管道失败: %w", err)
-	}
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("创建 stderr 管道失败: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("启动 %s 失败: %w", displayName, err)
-	}
-
-	a.mu.Lock()
-	a.cmd = cmd
-	a.pid = cmd.Process.Pid
-	a.mu.Unlock()
-
-	stdinDone := make(chan error, 1)
-	go func() {
-		_, writeErr := io.WriteString(stdin, opts.Prompt)
-		closeErr := stdin.Close()
-		if writeErr == nil {
-			writeErr = closeErr
-		}
-		stdinDone <- writeErr
-	}()
-
-	// Retain stderr for diagnostics.
-	var stderrDiagnostic diagnosticTail
-	var stderrWG sync.WaitGroup
-	stderrWG.Add(1)
-	go func() {
-		defer stderrWG.Done()
-		scanner := bufio.NewScanner(stderr)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		for scanner.Scan() {
-			stderrDiagnostic.AppendLine(scanner.Text())
-		}
-	}()
-
-	eventCh := make(chan executor.ExecutorEvent, 100)
-
-	// Read --mode json output
-	go func() {
-		defer close(eventCh)
-		defer cancel()
-
-		eventCh <- executor.NewEvent(executor.EventStart)
-
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
-
-		sessionID := ""
-		inputTokens := 0
-		outputTokens := 0
-		resultError := ""
-		resultFailed := false
-		sawResult := false
-		// Pi 的 text_delta 按字符/短片段输出，直接转发会让前端逐字渲染。
-		// 与其它 CLI 一致，缓冲到 message_end 完整事件后再输出。
-		messageBuffer := ""
-		var stdoutDiagnostic diagnosticTail
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-
-			var event piEvent
-			if err := json.Unmarshal([]byte(line), &event); err != nil {
-				stdoutDiagnostic.AppendLine(line)
-				continue
-			}
-
-			switch event.Type {
-			case "session":
-				sessionID = event.ID
-
-			case "agent_start":
-				// Agent started — no content to emit
-
-			case "agent_end":
-				sawResult = true
-				if event.Usage.InputTokens > 0 || event.Usage.OutputTokens > 0 {
-					inputTokens = event.Usage.InputTokens
-					outputTokens = event.Usage.OutputTokens
-				}
-
-			case "turn_start", "turn_end":
-				// Turn lifecycle — no content to emit
-
-			case "message_start":
-				// 新消息开始，重置流式缓冲
-				messageBuffer = ""
-				if content := extractMessageText(event.Message); content != "" {
-					eventCh <- executor.ExecutorEvent{
-						Type:      executor.EventMessage,
-						Content:   content,
-						SessionID: sessionID,
-						Timestamp: nowMillis(),
-					}
-				}
-
-			case "message_update":
-				// Deltas: text_delta carries streaming text; toolcall_start
-				// announces a new tool call generated by the model.
-				if event.AssistantEvent != nil {
-					switch event.AssistantEvent.Type {
-					case "text_delta":
-						// 累积流式片段，message_end 时随完整文本一并输出
-						messageBuffer += event.AssistantEvent.Delta
-					case "toolcall_start":
-						toolName := event.AssistantEvent.ToolName
-						if toolName == "" {
-							toolName = "tool_call"
-						}
-						eventCh <- executor.ExecutorEvent{
-							Type:      executor.EventToolCall,
-							Content:   toolName,
-							SessionID: sessionID,
-							Timestamp: nowMillis(),
-						}
-					}
-				}
-
-			case "message_end":
-				// Message complete — usage may be present
-				if event.Usage.InputTokens > 0 {
-					inputTokens = event.Usage.InputTokens
-				}
-				if event.Usage.OutputTokens > 0 {
-					outputTokens = event.Usage.OutputTokens
-				}
-				content := extractMessageText(event.Message)
-				if content == "" {
-					content = strings.TrimSpace(messageBuffer)
-				}
-				messageBuffer = ""
-				if content != "" {
-					eventCh <- executor.ExecutorEvent{
-						Type:      executor.EventMessage,
-						Content:   content,
-						SessionID: sessionID,
-						Timestamp: nowMillis(),
-					}
-				}
-
-			case "tool_execution_start":
-				content := event.ToolName
-				if argStr := renderToolArgs(event.Args); argStr != "" {
-					content = strings.TrimSpace(content + " " + argStr)
-				}
-				eventCh <- executor.ExecutorEvent{
-					Type:      executor.EventToolCall,
-					Content:   content,
-					SessionID: sessionID,
-					Timestamp: nowMillis(),
-				}
-
-			case "tool_execution_update":
-				// Tool execution progress — forward as tool result content
-				if event.Content != "" {
-					eventCh <- executor.ExecutorEvent{
-						Type:      executor.EventToolResult,
-						Content:   event.Content,
-						SessionID: sessionID,
-						Timestamp: nowMillis(),
-					}
-				}
-
-			case "tool_execution_end":
-				content := event.Result
-				if content == "" {
-					content = event.Content
-				}
-				if content != "" {
-					eventCh <- executor.ExecutorEvent{
-						Type:      executor.EventToolResult,
-						Content:   content,
-						SessionID: sessionID,
-						Timestamp: nowMillis(),
-					}
-				}
-
-			case "bash_execution_update":
-				// Streaming terminal output during bash execution
-				if event.Content != "" {
-					eventCh <- executor.ExecutorEvent{
-						Type:      executor.EventToolResult,
-						Content:   event.Content,
-						SessionID: sessionID,
-						Timestamp: nowMillis(),
-					}
-				}
-
-			case "queue_update":
-				// Queue changes — no content to emit
-
-			case "compaction_start", "compaction_end":
-				// Compaction events — no content to emit
-
-			case "auto_retry_start", "auto_retry_end":
-				// Auto-retry lifecycle — no content to emit
-
-			case "error":
-				sawResult = true
-				resultFailed = true
-				resultError = event.Error
-				if resultError == "" {
-					resultError = event.Content
-				}
-			}
-		}
-
-		stdoutScanErr := scanner.Err()
-		if stdoutScanErr != nil {
-			cancel()
-		}
-		stderrWG.Wait()
-
-		waitErr := cmd.Wait()
-		stdinErr := <-stdinDone
-		a.clearProcess(cmd)
-
-		failureDetails := make([]string, 0, 4)
-		if resultError != "" {
-			failureDetails = append(failureDetails, resultError)
-		} else if resultFailed {
-			failureDetails = append(failureDetails, displayName+" 返回错误结果，但未提供错误详情")
-		}
-		if stdinErr != nil {
-			failureDetails = append(failureDetails, "写入 "+displayName+" Prompt 失败: "+stdinErr.Error())
-		}
-		if !sawResult {
-			failureDetails = append(failureDetails, displayName+" 未输出有效的 agent_end 或 error 结束事件")
-			if output := stdoutDiagnostic.String(); output != "" {
-				failureDetails = append(failureDetails, "未解析的 "+displayName+" 输出:\n"+output)
-			}
-		}
-
-		if len(failureDetails) > 0 || stdoutScanErr != nil || waitErr != nil {
-			eventCh <- executor.ExecutorEvent{
-				Type:      executor.EventError,
-				Error:     formatExecutionError(strings.Join(failureDetails, "\n"), stderrDiagnostic.String(), stdoutScanErr, waitErr),
-				SessionID: sessionID,
-				Timestamp: nowMillis(),
-			}
-			return
-		}
-
-		eventCh <- executor.NewCompleteEvent(sessionID, inputTokens, outputTokens)
-	}()
-
-	return eventCh, nil
-}
-
-// Stop stops execution
-func (a *Adapter) Stop() error {
-	a.mu.Lock()
-	cmd := a.cmd
-	pid := a.pid
-	cancel := a.cancel
-	a.mu.Unlock()
-
-	var terminateErr error
-	if cmd != nil && cmd.Process != nil && pid > 0 {
-		terminateErr = executor.TerminateProcessTree(pid)
-	}
-	if terminateErr == nil && cancel != nil {
-		cancel()
-	}
-	return terminateErr
-}
-
-func (a *Adapter) clearProcess(cmd *exec.Cmd) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.cmd != cmd {
-		return
-	}
-	a.cmd = nil
-	a.cancel = nil
-	a.pid = 0
-}
-
-// piEvent is a tolerant union of all Pi CLI --mode json event types.
-// Fields that may carry arrays or objects use json.RawMessage so a single
-// struct can decode every event without type-mismatch failures.
+// piEvent 是 Pi CLI --mode json 的宽容联合事件结构。
+// 可能承载数组或对象的字段使用 json.RawMessage，保证单个结构体能解码全部事件类型。
 type piEvent struct {
 	Type           string            `json:"type"`
 	ID             string            `json:"id"`
-	Version        json.RawMessage   `json:"version"` // number in JSON, skip direct mapping
 	Name           string            `json:"name"`
 	ToolName       string            `json:"toolName"`
 	ToolCallID     string            `json:"toolCallId"`
 	Args           json.RawMessage   `json:"args"`
 	Content        string            `json:"content"`
-	Result         string            `json:"result"`
+	Result         json.RawMessage   `json:"result"`
 	Error          string            `json:"error"`
 	IsError        bool              `json:"isError"`
 	Message        *piMessage        `json:"message"`
 	AssistantEvent *piAssistantEvent `json:"assistantMessageEvent"`
 	Usage          piUsage           `json:"usage"`
-	CWD            string            `json:"cwd"`
 }
 
 type piMessage struct {
 	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"` // array of content blocks, not a plain string
+	Content json.RawMessage `json:"content"`
+	Usage   piUsage         `json:"usage"`
 }
 
 type piAssistantEvent struct {
 	Type         string `json:"type"`
 	ContentIndex int    `json:"contentIndex"`
 	Delta        string `json:"delta"`
-	ID           string `json:"id"`       // present for toolcall_start
-	ToolName     string `json:"toolName"` // present for toolcall_start
+	ID           string `json:"id"`
+	ToolName     string `json:"toolName"`
 }
 
+// piUsage 是 pi 上报的 token 用量。
+// 注意字段名是 input/output/totalTokens，而不是 input_tokens/output_tokens。
 type piUsage struct {
-	InputTokens  int `json:"inputTokens"`
-	OutputTokens int `json:"outputTokens"`
+	Input  int `json:"input"`
+	Output int `json:"output"`
+	Total  int `json:"totalTokens"`
 }
 
-// extractMessageText extracts human-readable text from a message object.
-// The content field is a JSON array of content blocks; we rebuild a simple
-// concatenation of text-delta blocks for display.
-func extractMessageText(msg *piMessage) string {
-	if msg == nil || len(msg.Content) == 0 {
-		return ""
-	}
-	// Try string (unlikely for --mode json, but tolerate)
-	var text string
-	if json.Unmarshal(msg.Content, &text) == nil && strings.TrimSpace(text) != "" {
-		return strings.TrimSpace(text)
-	}
-	// Try array of content blocks: [{"type":"text","text":"..."}, ...]
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if json.Unmarshal(msg.Content, &blocks) == nil {
-		var parts []string
-		for _, b := range blocks {
-			if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
-				parts = append(parts, strings.TrimSpace(b.Text))
-			}
-		}
-		if len(parts) > 0 {
-			return strings.Join(parts, "\n")
-		}
-	}
-	return ""
+// piContentBlock 是 pi 消息的内容块。
+type piContentBlock struct {
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	Thinking string `json:"thinking"`
 }
 
-// renderToolArgs produces a short human-readable representation of tool
-// execution arguments for the tool-call event content.
-func renderToolArgs(raw json.RawMessage) string {
-	if len(raw) == 0 || string(raw) == "null" || string(raw) == "{}" {
-		return ""
-	}
-	// Unmarshal into a generic map and join key=value pairs.
-	var args map[string]interface{}
-	if json.Unmarshal(raw, &args) != nil {
-		return string(raw)
-	}
-	var pairs []string
-	for k, v := range args {
-		vs := fmt.Sprintf("%v", v)
-		if vs == "" || vs == "null" {
-			continue
-		}
-		pairs = append(pairs, k+"="+vs)
-	}
-	if len(pairs) == 0 {
-		return ""
-	}
-	return strings.Join(pairs, " ")
+// Decoder 解码 Pi CLI 的 JSONL 输出。
+type Decoder struct {
+	executor.BaseDecoder
+
+	// message_delta 是逐片输出的流式文本，缓冲到 message_end 后整体输出，
+	// 避免前端逐字渲染。
+	messageBuffer  string
+	thinkingBuffer string
+
+	// token 用量。pi 在 message_update 里上报的是「当前消息」的累计值，
+	// 所以消息内取最大值、message_end 时并入总量，避免把增量叠加成多倍。
+	usageInput   int
+	usageOutput  int
+	messageUsage piUsage
 }
 
-func formatExecutionError(resultError, stderrText string, stdoutScanErr, waitErr error) string {
-	details := make([]string, 0, 3)
-	appendDetail := func(detail string) {
-		detail = strings.TrimSpace(detail)
-		if detail == "" {
-			return
-		}
-		for _, existing := range details {
-			if existing == detail {
-				return
-			}
-		}
-		details = append(details, detail)
+// NewDecoder 创建 Pi 解码器。
+func NewDecoder(name string) executor.Decoder {
+	if strings.TrimSpace(name) == "" {
+		name = displayName
 	}
-
-	appendDetail(resultError)
-	appendDetail(stderrText)
-	if stdoutScanErr != nil {
-		appendDetail("读取 " + displayName + " 输出失败: " + stdoutScanErr.Error())
-	}
-
-	exitCode := -1
-	var exitErr *exec.ExitError
-	if errors.As(waitErr, &exitErr) {
-		exitCode = exitErr.ExitCode()
-	}
-
-	exitLabel := ""
-	if exitCode >= 0 {
-		exitLabel = fmt.Sprintf("（退出码 %d）", exitCode)
-	}
-	if len(details) > 0 {
-		return fmt.Sprintf("%s 运行失败%s：%s", displayName, exitLabel, strings.Join(details, "\n"))
-	}
-	if waitErr != nil && exitCode < 0 {
-		waitReason := strings.TrimSpace(waitErr.Error())
-		if waitReason != "" && !strings.HasPrefix(waitReason, "exit status") {
-			return fmt.Sprintf("%s 运行失败：%s", displayName, waitReason)
-		}
-	}
-	return fmt.Sprintf(
-		"%s 运行失败%s：CLI 未输出错误详情，请检查 %s 登录状态、网络、模型和 CLI 配置",
-		displayName,
-		exitLabel,
-		displayName,
-	)
+	return &Decoder{BaseDecoder: executor.NewBaseDecoder(name)}
 }
 
-// diagnosticTail only retains the end of the CLI diagnostic output
-type diagnosticTail struct {
-	data []byte
-}
-
-const maxDiagnosticBytes = 64 * 1024
-
-func (b *diagnosticTail) AppendLine(line string) {
-	if len(b.data) > 0 {
-		b.append([]byte{'\n'})
-	}
-	b.append([]byte(line))
-}
-
-func (b *diagnosticTail) String() string {
-	return strings.TrimSpace(string(b.data))
-}
-
-func (b *diagnosticTail) append(chunk []byte) {
-	if len(chunk) >= maxDiagnosticBytes {
-		b.data = append(b.data[:0], chunk[len(chunk)-maxDiagnosticBytes:]...)
+// Decode 解析一行输出。
+func (d *Decoder) Decode(raw string, emit executor.EmitFunc) {
+	line := strings.TrimSpace(raw)
+	if line == "" {
 		return
 	}
-	overflow := len(b.data) + len(chunk) - maxDiagnosticBytes
-	if overflow > 0 {
-		copy(b.data, b.data[overflow:])
-		b.data = b.data[:len(b.data)-overflow]
+	var event piEvent
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		return
 	}
-	b.data = append(b.data, chunk...)
+
+	switch event.Type {
+	case "session":
+		d.SetSession(event.ID)
+
+	case "agent_start", "agent_settled", "turn_start", "turn_end",
+		"queue_update", "compaction_start", "compaction_end",
+		"auto_retry_start", "auto_retry_end":
+		// 生命周期事件，无需展示
+
+	case "agent_end":
+		// 该事件不带 usage（只有 type/messages/willRetry），
+		// token 已按消息累计，由 Done 统一上报
+		d.MarkTerminal()
+
+	case "message_start":
+		// 新一轮消息开始，清空上一轮的流式缓冲与本条消息的用量累计
+		d.messageBuffer = ""
+		d.thinkingBuffer = ""
+		d.messageUsage = piUsage{}
+
+	case "message_update":
+		d.trackUsage(event.Usage)
+		d.decodeAssistantDelta(event)
+
+	case "message_end":
+		// 本条消息的用量并入整次执行
+		d.usageInput += d.messageUsage.Input
+		d.usageOutput += d.messageUsage.Output
+		d.messageUsage = piUsage{}
+		d.decodeMessageEnd(event, emit)
+
+	case "tool_execution_start":
+		d.ToolCall(event.ToolCallID, event.ToolName, executor.FormatToolArgs(event.Args), emit)
+
+	case "tool_execution_update":
+		d.ToolResult(event.ToolCallID, event.Content, emit)
+
+	case "tool_execution_end":
+		// result 既可能是字符串，也可能是 {content:[{type,text}]} 形态的对象
+		d.ToolResult(event.ToolCallID, executor.RawText(event.Result), emit)
+
+	case "bash_execution_update":
+		d.ToolResult(event.ToolCallID, event.Content, emit)
+
+	case "error":
+		reason := strings.TrimSpace(event.Error)
+		if reason == "" {
+			reason = strings.TrimSpace(event.Content)
+		}
+		if reason == "" {
+			reason = d.DisplayName + " 执行失败"
+		}
+		d.Fail(reason)
+	}
 }
 
-func nowMillis() int64 {
-	return time.Now().UnixMilli()
+// decodeAssistantDelta 处理流式增量。
+// toolcall_start 不在此处产出事件：工具调用由 tool_execution_start 统一承载（含参数），
+// 两处都产出会让同一次调用在界面上重复出现。
+func (d *Decoder) decodeAssistantDelta(event piEvent) {
+	if event.AssistantEvent == nil {
+		return
+	}
+	switch event.AssistantEvent.Type {
+	case "text_delta":
+		d.messageBuffer += event.AssistantEvent.Delta
+	case "thinking_delta":
+		d.thinkingBuffer += event.AssistantEvent.Delta
+	}
+}
+
+// decodeMessageEnd 在消息结束时输出思考与文本。
+// 只处理 assistant 角色：user 与 toolResult 消息属于回显，把它们当作输出会污染动态区。
+func (d *Decoder) decodeMessageEnd(event piEvent, emit executor.EmitFunc) {
+	if event.Message == nil || !strings.EqualFold(event.Message.Role, "assistant") {
+		return
+	}
+
+	thinking := extractBlocks(event.Message, "thinking", "thinking")
+	if thinking == "" {
+		thinking = strings.TrimSpace(d.thinkingBuffer)
+	}
+	d.thinkingBuffer = ""
+
+	content := extractBlocks(event.Message, "text", "text")
+	if content == "" {
+		content = strings.TrimSpace(d.messageBuffer)
+	}
+	d.messageBuffer = ""
+
+	// 思考先于文本输出，与 CLI 的实际推理顺序一致
+	d.Thinking(thinking, emit)
+	d.Message(content, emit)
+}
+
+// Done 在输出结束后校验终态事件。
+// trackUsage 记录 pi 在本条消息上累计的用量。
+// message_update 会反复上报同一消息的累计值，因此取最大值而非相加。
+func (d *Decoder) trackUsage(usage piUsage) {
+	if usage.Input > d.messageUsage.Input {
+		d.messageUsage.Input = usage.Input
+	}
+	if usage.Output > d.messageUsage.Output {
+		d.messageUsage.Output = usage.Output
+	}
+}
+
+func (d *Decoder) Done(emit executor.EmitFunc) {
+	// 收尾残留的流式缓冲（异常中断时未收到 message_end）
+	d.Thinking(d.thinkingBuffer, emit)
+	d.Message(d.messageBuffer, emit)
+	d.thinkingBuffer = ""
+	d.messageBuffer = ""
+	// 异常中断时可能收不到 message_end，把尚未并入的当前消息用量补上；
+	// 正常路径下 message_end 已清零，这里加的是 0，不会重复计量
+	d.usageInput += d.messageUsage.Input
+	d.usageOutput += d.messageUsage.Output
+	d.messageUsage = piUsage{}
+	d.SetUsage(d.usageInput, d.usageOutput)
+	d.FailMissingTerminal("agent_end")
+}
+
+// extractBlocks 按块类型拼接内容块文本。
+func extractBlocks(message *piMessage, blockType, field string) string {
+	if message == nil || len(message.Content) == 0 {
+		return ""
+	}
+	var blocks []piContentBlock
+	if json.Unmarshal(message.Content, &blocks) != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if !strings.EqualFold(block.Type, blockType) {
+			continue
+		}
+		value := block.Text
+		if field == "thinking" {
+			value = block.Thinking
+		}
+		if text := strings.TrimSpace(value); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }

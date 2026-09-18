@@ -1,0 +1,31 @@
+{
+  "sidebar": {
+    "navigation": "主导航",
+    "collapse": "收起导航菜单",
+    "expand": "展开导航菜单",
+    "light": "浅色",
+    "dark": "深色",
+    "switchToLight": "切换为浅色模式",
+    "switchToDark": "切换为深色模式",
+    "currentLanguage": "当前语言：{language}"
+  },
+  "menu": {
+    "workflows": "看板",
+    "tasks": "对话",
+    "agents": "专家流水线",
+    "projects": "项目",
+    "commands": "命令",
+    "knowledge": "知识库",
+    "apis": "接口管理",
+    "settings": "配置中心"
+  },
+  "notifications": {
+    "readyTitle": "{step}已就绪",
+    "openTask": "打开 TeamsBoard 查看任务{task}",
+    "details": "详情",
+    "unavailableTitle": "任务已完成，但系统通知未能确认送达",
+    "sendFailedTitle": "任务已完成，但系统通知发送失败",
+    "unavailableHint": "请检查系统通知权限及勿扰设置。",
+    "sendFailedHint": "请确认本地服务连接正常，并检查系统通知权限。"
+  }
+}

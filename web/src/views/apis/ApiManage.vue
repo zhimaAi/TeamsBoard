@@ -19,6 +19,10 @@ import { useDocumentTitle } from '@/composables/useDocumentTitle'
 import moveIcon from '@/assets/api-move.svg'
 import responseEmptyIcon from '@/assets/api-response-empty.svg'
 import saveIcon from '@/assets/api-save.svg'
+import { useAppI18n } from '@/i18n'
+
+const { t, locale } = useAppI18n()
+const variableSyntaxExample = '{{name}}'
 
 type Collection = {
   id: number
@@ -133,12 +137,12 @@ const responseTab = ref('response')
 const requestTab = ref('params')
 const execution = ref<Execution | null>(null)
 
-const workspaceTabTitles = {
-  apis: '接口管理',
-  environments: '环境配置',
-} as const
+const workspaceTabTitles = computed(() => ({
+  apis: t('apis.title'),
+  environments: t('apis.environments'),
+}))
 const workspaceTabTitle = computed(() =>
-  selectedCollectionID.value ? workspaceTabTitles[workspaceTab.value] : undefined,
+  selectedCollectionID.value ? workspaceTabTitles.value[workspaceTab.value] : undefined,
 )
 
 useDocumentTitle(workspaceTabTitle)
@@ -203,7 +207,7 @@ const rootRequests = computed(() => visibleRequests.value.filter((item) => !item
 
 const prettyResponseBody = computed(() => {
   const body = execution.value?.body || ''
-  if (!body) return '（空响应）'
+  if (!body) return t('apis.emptyResponse')
   try {
     return JSON.stringify(JSON.parse(body), null, 2)
   } catch {
@@ -313,7 +317,7 @@ async function dropFolder(event: DragEvent, targetFolderID: number) {
     })
   } catch (error) {
     folders.value = previous
-    message.error(error instanceof Error ? error.message : '目录排序保存失败')
+    message.error(error instanceof Error ? error.message : t('apis.folderSortFailed'))
   } finally {
     folderSortSaving.value = false
   }
@@ -446,7 +450,7 @@ async function saveCollection() {
   if (!selectedCollectionID.value) return
   const name = collectionModalName.value.trim()
   if (!name) {
-    message.error('集合名称不能为空')
+    message.error(t('apis.nameRequired'))
     return
   }
   saving.value = true
@@ -458,9 +462,9 @@ async function saveCollection() {
     const index = collections.value.findIndex((item) => item.id === updated.id)
     if (index >= 0) collections.value[index] = updated
     collectionModal.value = false
-    message.success('集合已保存')
+    message.success(t('apis.collectionSaved'))
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '保存失败')
+    message.error(error instanceof Error ? error.message : t('apis.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -470,10 +474,10 @@ function deleteCollection() {
   if (!selectedCollectionID.value) return
   const target = collections.value.find((item) => item.id === selectedCollectionID.value)
   Modal.confirm({
-    title: `删除集合“${target?.name || ''}”`,
-    content: '集合下的目录、接口和执行记录将一并删除。',
-    okText: '删除',
-    cancelText: '取消',
+    title: t('apis.deleteCollectionTitle', { name: target?.name || '' }),
+    content: t('apis.deleteCollectionDescription'),
+    okText: t('apis.delete'),
+    cancelText: t('apis.cancel'),
     okType: 'danger',
     async onOk() {
       try {
@@ -482,7 +486,7 @@ function deleteCollection() {
         selectedRequestID.value = undefined
         await loadCollections()
       } catch (error) {
-        message.error(error instanceof Error ? error.message : '删除失败')
+        message.error(error instanceof Error ? error.message : t('apis.delete'))
         return Promise.reject(error)
       }
     },
@@ -521,10 +525,10 @@ async function confirmRenameFolder() {
 
 function deleteFolder(folder: Folder) {
   Modal.confirm({
-    title: `删除目录“${folder.name}”`,
-    content: '目录内接口不会删除，将移动到集合根目录。',
-    okText: '删除',
-    cancelText: '取消',
+    title: t('apis.deleteFolderTitle', { name: folder.name }),
+    content: t('apis.deleteFolderDescription'),
+    okText: t('apis.delete'),
+    cancelText: t('apis.cancel'),
     okType: 'danger',
     async onOk() {
       await apiClient.delete(`/apis/folders/${folder.id}`)
@@ -583,14 +587,14 @@ function currentPayload() {
 async function saveRequest(showSuccess = true) {
   if (!selectedRequestID.value) return false
   if (!form.name.trim()) {
-    message.error('接口名称不能为空')
+    message.error(t('apis.requestNameRequired'))
     return false
   }
   if (form.bodyType === 'json' && form.body.trim()) {
     try {
       JSON.parse(form.body)
     } catch {
-      message.error('请求体不是合法 JSON')
+      message.error(t('apis.invalidJson'))
       requestTab.value = 'body'
       return false
     }
@@ -603,10 +607,10 @@ async function saveRequest(showSuccess = true) {
     )
     const index = requests.value.findIndex((item) => item.id === updated.id)
     if (index >= 0) requests.value[index] = updated
-    if (showSuccess) message.success('接口已保存')
+    if (showSuccess) message.success(t('apis.requestSaved'))
     return true
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '保存失败')
+    message.error(error instanceof Error ? error.message : t('apis.saveFailed'))
     return false
   } finally {
     saving.value = false
@@ -625,7 +629,7 @@ async function executeRequest() {
     )
     await loadHistory()
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '请求失败')
+    message.error(error instanceof Error ? error.message : t('apis.requestFailed'))
     await loadHistory()
   } finally {
     executing.value = false
@@ -638,12 +642,12 @@ async function copyRequest() {
     collection_id: selectedCollectionID.value,
     folder_id: selectedFolderID.value,
     ...currentPayload(),
-    name: `${form.name} - 副本`,
+    name: t('apis.copySuffix', { name: form.name }),
   })
   await loadCollectionData(selectedCollectionID.value)
   const item = requests.value.find((request) => request.id === created.id)
   if (item) await selectRequest(item)
-  message.success('接口已复制')
+  message.success(t('apis.requestCopied'))
 }
 
 async function moveRequest() {
@@ -657,9 +661,9 @@ async function moveRequest() {
 function deleteRequest() {
   if (!selectedRequestID.value) return
   Modal.confirm({
-    title: `删除接口“${form.name}”`,
-    okText: '删除',
-    cancelText: '取消',
+    title: t('apis.deleteRequestTitle', { name: form.name }),
+    okText: t('apis.delete'),
+    cancelText: t('apis.cancel'),
     okType: 'danger',
     async onOk() {
       await apiClient.delete(`/apis/requests/${selectedRequestID.value}`)
@@ -685,9 +689,9 @@ async function importCurl() {
     await loadCollectionData(selectedCollectionID.value)
     const item = requests.value.find((request) => request.id === created.id)
     if (item) await selectRequest(item)
-    message.success('Curl 已导入，可继续编辑')
+    message.success(t('apis.curlImported'))
   } catch (error) {
-    message.error(error instanceof Error ? error.message : 'Curl 导入失败')
+    message.error(error instanceof Error ? error.message : t('apis.curlImportFailed'))
   }
 }
 
@@ -723,9 +727,9 @@ function showHistory(item: RunHistory) {
 function clearHistory() {
   if (!selectedRequestID.value || !histories.value.length) return
   Modal.confirm({
-    title: '清空当前接口的执行历史？',
-    okText: '清空',
-    cancelText: '取消',
+    title: t('apis.clearHistoryTitle'),
+    okText: t('apis.clear'),
+    cancelText: t('apis.cancel'),
     okType: 'danger',
     async onOk() {
       await apiClient.delete(`/apis/requests/${selectedRequestID.value}/history`)
@@ -770,7 +774,7 @@ function resetEnvironmentForm() {
 
 async function saveEnvironment() {
   if (!selectedCollectionID.value || !environmentForm.name.trim()) {
-    message.error('环境名称不能为空')
+    message.error(t('apis.environmentNameRequired'))
     return
   }
   const payload = {
@@ -793,14 +797,14 @@ async function saveEnvironment() {
   } else {
     newEnvironment()
   }
-  message.success('环境已保存')
+  message.success(t('apis.environmentSaved'))
 }
 
 function deleteEnvironment(environment: Environment) {
   Modal.confirm({
-    title: `删除环境“${environment.name}”`,
-    okText: '删除',
-    cancelText: '取消',
+    title: t('apis.deleteEnvironmentTitle', { name: environment.name }),
+    okText: t('apis.delete'),
+    cancelText: t('apis.cancel'),
     okType: 'danger',
     async onOk() {
       await apiClient.delete(`/apis/environments/${environment.id}`)
@@ -837,7 +841,7 @@ function statusColor(status: number) {
 }
 
 function formatTime(timestamp?: number) {
-  return timestamp ? new Date(timestamp).toLocaleString() : ''
+  return timestamp ? new Date(timestamp).toLocaleString(locale.value) : ''
 }
 
 function handleShortcut(event: KeyboardEvent) {
@@ -858,7 +862,7 @@ onMounted(async () => {
   try {
     await loadCollections()
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '加载接口数据失败')
+    message.error(error instanceof Error ? error.message : t('apis.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -871,7 +875,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
   <a-spin :spinning="loading">
     <div class="api-workbench">
       <div class="collection-bar">
-        <h1 class="api-title">接口管理</h1>
+        <h1 class="api-title">{{ t('apis.title') }}</h1>
         <button
           v-for="collection in collections"
           :key="collection.id"
@@ -881,13 +885,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
         >
           <span class="ellipsis">{{ collection.name }}</span>
         </button>
-        <button class="collection-tab collection-tab-add" title="新建集合" @click="openCreateCollection()">
+        <button class="collection-tab collection-tab-add" :title="t('apis.newCollection')" @click="openCreateCollection()">
           <PlusOutlined />
         </button>
       </div>
 
       <div v-if="selectedCollectionID" class="workspace-tab-bar">
-        <div class="workspace-tabs" role="tablist" aria-label="接口工作区">
+        <div class="workspace-tabs" role="tablist" :aria-label="t('apis.workspace')">
           <button
             type="button"
             role="tab"
@@ -896,7 +900,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
             :aria-selected="workspaceTab === 'apis'"
             @click="switchWorkspaceTab('apis')"
           >
-            接口管理
+            {{ t('apis.title') }}
           </button>
           <button
             type="button"
@@ -906,16 +910,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
             :aria-selected="workspaceTab === 'environments'"
             @click="switchWorkspaceTab('environments')"
           >
-            环境配置
+            {{ t('apis.environments') }}
           </button>
         </div>
         <div class="workspace-tab-actions">
-          <a-tooltip title="编辑集合">
+          <a-tooltip :title="t('apis.editCollection')">
             <a-button type="text" class="collection-action" @click="openEditCollection">
               <SettingOutlined />
             </a-button>
           </a-tooltip>
-          <a-tooltip title="删除集合">
+          <a-tooltip :title="t('apis.deleteCollection')">
             <a-button type="text" class="collection-action danger" @click="deleteCollection">
               <DeleteOutlined />
             </a-button>
@@ -926,14 +930,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
       <aside v-if="selectedCollectionID && workspaceTab === 'apis'" class="tree-panel">
         <template v-if="selectedCollectionID">
           <div class="tree-toolbar">
-            <a-input v-model:value="searchKeyword" allow-clear placeholder="搜索接口" />
+            <a-input v-model:value="searchKeyword" allow-clear :placeholder="t('apis.search')" />
           <a-dropdown :trigger="['click']">
             <a class="tree-add" @click.stop><PlusOutlined /></a>
             <template #overlay>
               <a-menu>
-                <a-menu-item @click="openCreateRequest(0)">新建接口</a-menu-item>
-                <a-menu-item @click="folderModal = true">新建目录</a-menu-item>
-                <a-menu-item @click="selectedFolderID = 0; curlModal = true">从 Curl 导入</a-menu-item>
+                <a-menu-item @click="openCreateRequest(0)">{{ t('apis.newRequest') }}</a-menu-item>
+                <a-menu-item @click="folderModal = true">{{ t('apis.newFolder') }}</a-menu-item>
+                <a-menu-item @click="selectedFolderID = 0; curlModal = true">{{ t('apis.importCurl') }}</a-menu-item>
               </a-menu>
             </template>
           </a-dropdown>
@@ -975,13 +979,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
                 <span class="tree-group-meta">
                   <span class="count">{{ folderRequestCount(folder.id) }}</span>
                   <a-dropdown>
-                    <a class="tree-more" aria-label="更多操作" @click.stop><MoreOutlined /></a>
+                    <a class="tree-more" :aria-label="t('apis.more')" @click.stop><MoreOutlined /></a>
                     <template #overlay>
                       <a-menu>
-                        <a-menu-item @click="openCreateRequest(folder.id)">新建接口</a-menu-item>
-                        <a-menu-item @click="selectedFolderID = folder.id; curlModal = true">从 Curl 导入</a-menu-item>
-                        <a-menu-item @click="openRenameFolder(folder)">重命名</a-menu-item>
-                        <a-menu-item danger @click="deleteFolder(folder)">删除目录</a-menu-item>
+                        <a-menu-item @click="openCreateRequest(folder.id)">{{ t('apis.newRequest') }}</a-menu-item>
+                        <a-menu-item @click="selectedFolderID = folder.id; curlModal = true">{{ t('apis.importCurl') }}</a-menu-item>
+                        <a-menu-item @click="openRenameFolder(folder)">{{ t('apis.rename') }}</a-menu-item>
+                        <a-menu-item danger @click="deleteFolder(folder)">{{ t('apis.deleteFolder') }}</a-menu-item>
                       </a-menu>
                     </template>
                   </a-dropdown>
@@ -1018,15 +1022,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
         <div class="editor-header">
           <div class="request-heading">
             <a-tag :color="methodColor(form.method)">{{ form.method }}</a-tag>
-            <a-input v-model:value="form.name" class="name-input" placeholder="接口名称" />
+            <a-input v-model:value="form.name" class="name-input" :placeholder="t('apis.requestName')" />
           </div>
           <div class="editor-actions">
-            <a-tooltip title="复制接口">
+            <a-tooltip :title="t('apis.copyRequest')">
               <a-button type="text" class="action-icon" @click="copyRequest">
                 <CopyOutlined />
               </a-button>
             </a-tooltip>
-            <a-tooltip title="移动接口">
+            <a-tooltip :title="t('apis.moveRequest')">
               <a-button
                 type="text"
                 class="action-icon"
@@ -1035,12 +1039,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
                 <img class="action-icon-image" :src="moveIcon" alt="" />
               </a-button>
             </a-tooltip>
-            <a-tooltip title="删除接口">
+            <a-tooltip :title="t('apis.deleteRequest')">
               <a-button type="text" class="action-icon danger" @click="deleteRequest">
                 <DeleteOutlined />
               </a-button>
             </a-tooltip>
-            <a-tooltip title="保存 (Ctrl+S)">
+            <a-tooltip :title="t('apis.saveShortcut')">
               <a-button type="text" class="action-icon save" :loading="saving" @click="saveRequest()">
                 <img v-if="!saving" class="action-icon-image" :src="saveIcon" alt="" />
               </a-button>
@@ -1063,27 +1067,27 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
             v-model:value="form.environmentID"
             class="env-select"
           >
-            <a-select-option :value="0">无环境</a-select-option>
+            <a-select-option :value="0">{{ t('apis.noEnvironment') }}</a-select-option>
             <a-select-option v-for="env in environments" :key="env.id" :value="env.id">
               {{ env.name }}
             </a-select-option>
           </a-select>
           <a-button type="primary" ghost class="send-btn" :loading="executing" @click="executeRequest">
-            发送
+            {{ t('apis.send') }}
           </a-button>
         </div>
 
-        <div class="shortcut-tip">Ctrl+S 保存 · Ctrl+Enter 发送 · 变量使用 {{ '{' }}{name}}</div>
+        <div class="shortcut-tip">{{ t('apis.shortcutTip', { syntax: variableSyntaxExample }) }}</div>
 
         <a-tabs v-model:active-key="requestTab" class="request-tabs">
           <a-tab-pane key="params" :tab="`Params (${form.query.filter((item) => item.key).length})`">
             <div class="kv-table">
               <div class="kv-row kv-head">
-                <span>参数名</span><span>参数值</span><span>启用</span>
+                <span>{{ t('apis.parameterName') }}</span><span>{{ t('apis.parameterValue') }}</span><span>{{ t('apis.enabled') }}</span>
               </div>
               <div v-for="(item, index) in form.query" :key="index" class="kv-row">
                 <a-input v-model:value="item.key" placeholder="key" />
-                <a-input v-model:value="item.value" placeholder="value 或 {{variable}}" />
+                <a-input v-model:value="item.value" :placeholder="`${t('apis.parameterValue')} / {{variable}}`" />
                 <div class="kv-enable">
                   <a-switch v-model:checked="item.enabled" size="small" />
                   <a-button type="text" class="remove-row" size="small" @click="removeRow(form.query, index)">
@@ -1091,14 +1095,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
                   </a-button>
                 </div>
               </div>
-              <a-button type="dashed" block class="kv-add" @click="addRow(form.query)">＋ 添加Params</a-button>
+              <a-button type="dashed" block class="kv-add" @click="addRow(form.query)">{{ t('apis.addParams') }}</a-button>
             </div>
           </a-tab-pane>
 
           <a-tab-pane key="headers" :tab="`Headers (${form.headers.filter((item) => item.key).length})`">
             <div class="kv-table">
               <div class="kv-row kv-head">
-                <span>Header</span><span>值</span><span>启用</span>
+                <span>Header</span><span>{{ t('apis.value') }}</span><span>{{ t('apis.enabled') }}</span>
               </div>
               <div v-for="(item, index) in form.headers" :key="index" class="kv-row">
                 <a-input v-model:value="item.key" placeholder="Content-Type" />
@@ -1110,7 +1114,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
                   </a-button>
                 </div>
               </div>
-              <a-button type="dashed" block class="kv-add" @click="addRow(form.headers)">＋ 添加Headers</a-button>
+              <a-button type="dashed" block class="kv-add" @click="addRow(form.headers)">{{ t('apis.addHeaders') }}</a-button>
             </div>
           </a-tab-pane>
 
@@ -1127,11 +1131,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
               v-model:value="form.body"
               :rows="18"
               class="code-input"
-              :placeholder="form.bodyType === 'json' ? '{\n  &quot;name&quot;: &quot;{{name}}&quot;\n}' : '原始请求内容'"
+              :placeholder="form.bodyType === 'json' ? '{\n  &quot;name&quot;: &quot;{{name}}&quot;\n}' : t('apis.rawBody')"
             />
             <div v-else-if="['form', 'multipart'].includes(form.bodyType)" class="kv-table body-form">
               <div class="kv-row kv-head">
-                <span>字段名</span><span>字段值</span><span>启用</span>
+                <span>{{ t('apis.fieldName') }}</span><span>{{ t('apis.fieldValue') }}</span><span>{{ t('apis.enabled') }}</span>
               </div>
               <div v-for="(item, index) in form.bodyForm" :key="index" class="kv-row">
                 <a-input v-model:value="item.key" placeholder="field" />
@@ -1143,16 +1147,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
                   </a-button>
                 </div>
               </div>
-              <a-button type="dashed" block class="kv-add" @click="addRow(form.bodyForm)">＋ 添加字段</a-button>
+              <a-button type="dashed" block class="kv-add" @click="addRow(form.bodyForm)">{{ t('apis.addField') }}</a-button>
             </div>
-            <a-empty v-else :image="false" description="该请求不发送 Body" />
+            <a-empty v-else :image="false" :description="t('apis.noBody')" />
           </a-tab-pane>
 
-          <a-tab-pane key="description" tab="说明">
+          <a-tab-pane key="description" :tab="t('apis.description')">
             <a-textarea
               v-model:value="form.description"
               :rows="16"
-              placeholder="记录接口用途、字段说明和注意事项（支持 Markdown 文本）"
+              :placeholder="t('apis.descriptionPlaceholder')"
             />
           </a-tab-pane>
         </a-tabs>
@@ -1160,7 +1164,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
 
       <section v-if="workspaceTab === 'apis' && selectedRequestID" class="result-panel">
         <a-tabs v-model:active-key="responseTab" class="result-tabs">
-          <a-tab-pane key="response" tab="响应">
+          <a-tab-pane key="response" :tab="t('apis.response')">
             <div v-if="execution" class="response-content">
               <div class="response-summary">
                 <a-tag :color="statusColor(execution.status)">
@@ -1178,7 +1182,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
               <a-alert
                 v-if="execution.body_truncated"
                 type="warning"
-                message="响应超过 2 MiB，已截断"
+                :message="t('apis.responseTruncated')"
                 show-icon
               />
               <a-tabs size="small">
@@ -1199,14 +1203,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
               <div class="response-empty-icon">
                 <img :src="responseEmptyIcon" alt="" />
               </div>
-              <p>发送请求后在这里查看响应</p>
+              <p>{{ t('apis.responseHint') }}</p>
             </div>
           </a-tab-pane>
 
-          <a-tab-pane key="history" :tab="`历史 (${histories.length})`">
+          <a-tab-pane key="history" :tab="t('apis.history', { count: histories.length })">
             <div class="history-toolbar">
-              <span>本机最近 50 次执行</span>
-              <a v-if="histories.length" class="danger-link" @click="clearHistory">清空</a>
+              <span>{{ t('apis.recentRuns') }}</span>
+              <a v-if="histories.length" class="danger-link" @click="clearHistory">{{ t('apis.clear') }}</a>
             </div>
             <button
               v-for="item in histories"
@@ -1224,15 +1228,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
               <time>{{ formatTime(item.started_at) }}</time>
               <span class="history-url">{{ item.url }}</span>
             </button>
-            <a-empty v-if="!histories.length" :image="false" description="暂无执行历史" />
+            <a-empty v-if="!histories.length" :image="false" :description="t('apis.emptyHistory')" />
           </a-tab-pane>
         </a-tabs>
       </section>
 
       <section v-if="selectedCollectionID && workspaceTab === 'environments'" class="environment-list-panel">
         <div class="environment-list-toolbar">
-          <a-input v-model:value="environmentKeyword" allow-clear placeholder="搜索环境" />
-          <a-tooltip title="新建环境">
+          <a-input v-model:value="environmentKeyword" allow-clear :placeholder="t('apis.searchEnvironment')" />
+          <a-tooltip :title="t('apis.newEnvironment')">
             <a-button type="text" class="tree-add" @click="newEnvironment"><PlusOutlined /></a-button>
           </a-tooltip>
         </div>
@@ -1247,55 +1251,55 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
             <FolderOutlined />
             <span class="ellipsis">{{ environment.name }}</span>
             <a-dropdown :trigger="['click']">
-              <span class="environment-more" aria-label="更多操作" @click.stop><MoreOutlined /></span>
+              <span class="environment-more" :aria-label="t('apis.more')" @click.stop><MoreOutlined /></span>
               <template #overlay>
                 <a-menu>
-                  <a-menu-item danger @click="deleteEnvironment(environment)">删除</a-menu-item>
+                  <a-menu-item danger @click="deleteEnvironment(environment)">{{ t('apis.delete') }}</a-menu-item>
                 </a-menu>
               </template>
             </a-dropdown>
           </button>
           <button v-if="!editingEnvironmentID" class="environment-list-item active draft-environment" @click="focusEnvNameInput">
             <FolderOutlined />
-            <span class="ellipsis">{{ environmentForm.name || '新建环境' }}</span>
+            <span class="ellipsis">{{ environmentForm.name || t('apis.newEnvironment') }}</span>
           </button>
-          <a-empty v-if="editingEnvironmentID && !visibleEnvironments.length" :image="false" description="未找到环境" />
+          <a-empty v-if="editingEnvironmentID && !visibleEnvironments.length" :image="false" :description="t('apis.noEnvironmentFound')" />
         </div>
       </section>
 
       <section v-if="selectedCollectionID && workspaceTab === 'environments'" class="environment-workspace">
         <div class="environment-editor">
           <a-form layout="vertical">
-            <a-form-item label="环境名称">
+            <a-form-item :label="t('apis.environmentName')">
               <a-input
                 ref="envNameInputRef"
                 v-model:value="environmentForm.name"
                 class="env-name-input"
-                placeholder="请输入"
+                :placeholder="t('apis.enter')"
               />
             </a-form-item>
-            <a-form-item label="变量">
+            <a-form-item :label="t('apis.variables')">
               <div class="env-kv-table">
                 <div v-for="(item, index) in environmentForm.variables" :key="index" class="env-kv-row">
-                  <a-input v-model:value="item.key" placeholder="变量名" />
+                  <a-input v-model:value="item.key" :placeholder="t('apis.variableName')" />
                   <a-input-password
                     v-if="isSensitiveKey(item.key)"
                     v-model:value="item.value"
-                    placeholder="变量值（敏感）"
+                    :placeholder="t('apis.secretVariableValue')"
                   />
-                  <a-input v-else v-model:value="item.value" placeholder="变量值" />
+                  <a-input v-else v-model:value="item.value" :placeholder="t('apis.variableValue')" />
                   <a-button type="text" class="remove-row" @click="removeRow(environmentForm.variables, index)">
                     <CloseCircleOutlined />
                   </a-button>
                 </div>
                 <a-button type="dashed" block class="kv-add" @click="addRow(environmentForm.variables)">
-                  ＋ 添加变量
+                  {{ t('apis.addVariable') }}
                 </a-button>
               </div>
             </a-form-item>
             <a-space>
-              <a-button type="primary" @click="saveEnvironment">保存环境</a-button>
-              <a-button @click="resetEnvironmentForm">重置</a-button>
+              <a-button type="primary" @click="saveEnvironment">{{ t('apis.saveEnvironment') }}</a-button>
+              <a-button @click="resetEnvironmentForm">{{ t('apis.reset') }}</a-button>
             </a-space>
           </a-form>
         </div>
@@ -1310,70 +1314,70 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
             <FileTextOutlined class="empty-document" />
             <span class="empty-check"><CheckOutlined /></span>
           </div>
-          <h2>请选择一个接口或目录</h2>
-          <p>展开目录后选择接口，即可开始阅读或编辑</p>
+          <h2>{{ t('apis.emptySelectionTitle') }}</h2>
+          <p>{{ t('apis.emptySelectionDescription') }}</p>
         </div>
       </div>
       <a-empty
         v-if="!selectedCollectionID"
         class="workspace-empty"
-        description="点击上方 ＋ 创建一个集合，开始管理接口、环境与执行历史"
+        :description="t('apis.emptyCollection')"
       >
-        <a-button type="primary" @click="openCreateCollection()">创建集合</a-button>
+        <a-button type="primary" @click="openCreateCollection()">{{ t('apis.createCollection') }}</a-button>
       </a-empty>
     </div>
   </a-spin>
 
   <a-modal
     v-model:open="collectionModal"
-    :title="collectionModalMode === 'edit' ? '编辑接口集合' : '新建接口集合'"
-    :ok-text="collectionModalMode === 'edit' ? '保存' : '创建'"
-    cancel-text="取消"
+    :title="collectionModalMode === 'edit' ? t('apis.editApiCollection') : t('apis.newApiCollection')"
+    :ok-text="collectionModalMode === 'edit' ? t('apis.save') : t('apis.create')"
+    :cancel-text="t('apis.cancel')"
     @ok="collectionModalMode === 'edit' ? saveCollection() : createCollection()"
   >
     <a-form layout="vertical">
-      <a-form-item label="集合名称">
+      <a-form-item :label="t('apis.collectionName')">
         <a-input
           v-model:value="collectionModalName"
           autofocus
-          placeholder="集合名称"
+          :placeholder="t('apis.collectionName')"
           @press-enter="collectionModalMode === 'edit' ? saveCollection() : createCollection()"
         />
       </a-form-item>
-      <a-form-item label="说明">
+      <a-form-item :label="t('apis.description')">
         <a-textarea
           v-model:value="collectionModalDescription"
           :rows="4"
-          placeholder="记录集合用途、接口分组与注意事项"
+          :placeholder="t('apis.collectionDescriptionPlaceholder')"
         />
       </a-form-item>
     </a-form>
   </a-modal>
 
-  <a-modal v-model:open="folderModal" title="新建目录" ok-text="创建" cancel-text="取消" @ok="createFolder">
+  <a-modal v-model:open="folderModal" :title="t('apis.newFolder')" :ok-text="t('apis.create')" :cancel-text="t('apis.cancel')" @ok="createFolder">
     <a-form layout="vertical">
-      <a-form-item label="目录名称">
+      <a-form-item :label="t('apis.folderName')">
         <a-input v-model:value="newFolderName" autofocus @press-enter="createFolder" />
       </a-form-item>
     </a-form>
   </a-modal>
 
-  <a-modal v-model:open="renameFolderModal" title="重命名目录" ok-text="保存" cancel-text="取消" @ok="confirmRenameFolder">
+  <a-modal v-model:open="renameFolderModal" :title="t('apis.renameFolder')" :ok-text="t('apis.save')" :cancel-text="t('apis.cancel')" @ok="confirmRenameFolder">
     <a-form layout="vertical">
-      <a-form-item label="目录名称">
+      <a-form-item :label="t('apis.folderName')">
         <a-input v-model:value="renameFolderName" autofocus @press-enter="confirmRenameFolder" />
       </a-form-item>
     </a-form>
   </a-modal>
 
-  <a-modal v-model:open="requestModal" title="新建接口" ok-text="创建" cancel-text="取消" @ok="createRequest">
+  <a-modal v-model:open="requestModal" :title="t('apis.newRequest')" :ok-text="t('apis.create')" :cancel-text="t('apis.cancel')" @ok="createRequest">
     <a-form layout="vertical">
-      <a-form-item label="接口名称">
+      <a-form-item :label="t('apis.requestName')">
         <a-input v-model:value="newRequestName" autofocus @press-enter="createRequest" />
       </a-form-item>
-      <a-form-item label="所属目录">
+      <a-form-item :label="t('apis.targetFolder')">
         <a-select v-model:value="selectedFolderID">
-          <a-select-option :value="0">集合根目录</a-select-option>
+          <a-select-option :value="0">{{ t('apis.collectionRoot') }}</a-select-option>
           <a-select-option v-for="folder in folders" :key="folder.id" :value="folder.id">
             {{ folder.name }}
           </a-select-option>
@@ -1382,10 +1386,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
     </a-form>
   </a-modal>
 
-  <a-modal v-model:open="curlModal" title="从 Curl Bash导入接口" width="760px" ok-text="导入" cancel-text="取消" @ok="importCurl">
+  <a-modal v-model:open="curlModal" :title="t('apis.curlModalTitle')" width="760px" :ok-text="t('apis.import')" :cancel-text="t('apis.cancel')" @ok="importCurl">
     <a-alert
       type="info"
-      message="支持 URL、Method、Headers、Cookie、Basic Auth、Query、JSON、表单和 multipart 参数。"
+      :message="t('apis.curlSupport')"
       class="modal-alert"
     />
     <a-textarea
@@ -1396,11 +1400,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
     />
   </a-modal>
 
-  <a-modal v-model:open="moveModal" title="移动接口" ok-text="移动" cancel-text="取消" @ok="moveRequest">
+  <a-modal v-model:open="moveModal" :title="t('apis.moveRequest')" :ok-text="t('apis.move')" :cancel-text="t('apis.cancel')" @ok="moveRequest">
     <a-form layout="vertical">
-      <a-form-item label="目标目录">
+      <a-form-item :label="t('apis.moveTarget')">
         <a-select v-model:value="moveFolderID">
-          <a-select-option :value="0">集合根目录</a-select-option>
+          <a-select-option :value="0">{{ t('apis.collectionRoot') }}</a-select-option>
           <a-select-option v-for="folder in folders" :key="folder.id" :value="folder.id">
             {{ folder.name }}
           </a-select-option>
@@ -1455,12 +1459,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleShortcut))
 
 .workspace-tab {
   height: 34px;
-  padding: 0 20px;
+  padding: 0 12px;
   border: 0;
   background: #fff;
   color: #262626;
   font-size: 14px;
   line-height: 22px;
+  white-space: nowrap;
   cursor: pointer;
 }
 

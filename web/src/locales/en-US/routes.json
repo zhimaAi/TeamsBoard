@@ -1,0 +1,13 @@
+{
+  "commands": "Command overview",
+  "board": "Board",
+  "workflowImport": "Import task",
+  "taskDetail": "Task details",
+  "tasks": "Chat",
+  "agents": "Agent pipelines",
+  "projects": "Projects",
+  "knowledge": "Knowledge base",
+  "apis": "API management",
+  "settings": "Settings",
+  "tools": "Tools"
+}

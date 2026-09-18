@@ -1,3 +1,5 @@
+import { t } from '@/i18n'
+
 export async function copyText(text: string): Promise<void> {
   const value = normalizeClipboardText(text)
   try {
@@ -34,7 +36,7 @@ function copyTextWithExecCommand(text: string) {
   textarea.setSelectionRange(0, textarea.value.length)
 
   try {
-    if (!document.execCommand('copy')) throw new Error('复制失败')
+    if (!document.execCommand('copy')) throw new Error(t('components.feedback.copyFailed'))
   } finally {
     textarea.remove()
     if (selection) {

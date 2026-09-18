@@ -1,0 +1,19 @@
+{
+  "actions": {
+    "cancel": "取消",
+    "close": "关闭",
+    "confirm": "确认",
+    "delete": "删除",
+    "edit": "编辑",
+    "refresh": "刷新",
+    "retry": "重试",
+    "save": "保存"
+  },
+  "states": {
+    "noData": "暂无数据"
+  },
+  "feedback": {
+    "languageChangedRetry": "语言已切换，请重试以获取当前语言的提示",
+    "completedAfterLanguageChange": "操作已完成。语言已切换，请刷新以查看最新提示"
+  }
+}

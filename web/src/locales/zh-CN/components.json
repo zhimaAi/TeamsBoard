@@ -1,0 +1,112 @@
+{
+  "feedback": {
+    "copied": "已复制",
+    "copyFailed": "复制失败"
+  },
+  "errors": {
+    "selectDirectoryUnsupported": "当前环境不支持选择本地文件夹，请使用 TeamsBoard 桌面客户端",
+    "openDirectoryUnsupported": "当前环境不支持打开本地文件夹，请使用 TeamsBoard 桌面客户端",
+    "openCodexUnsupported": "当前环境不支持自动打开 Codex，请使用 TeamsBoard 桌面客户端",
+    "desktopSettingsUnsupported": "当前环境不支持桌面客户端设置",
+    "iconType": "仅支持 PNG、JPEG、WebP 图片",
+    "iconSize": "图片大小不能超过 2MB",
+    "indexedDbRequest": "IndexedDB 请求失败",
+    "indexedDbAborted": "IndexedDB 事务已取消",
+    "indexedDbTransaction": "IndexedDB 事务失败",
+    "indexedDbUnsupported": "当前环境不支持 IndexedDB",
+    "indexedDbOpen": "无法打开 IndexedDB",
+    "indexedDbBlocked": "IndexedDB 升级被其他页面阻塞"
+  },
+  "markdown": {
+    "empty": "暂无 Markdown 内容",
+    "attachmentLoadFailed": "附件加载失败",
+    "attachmentDownloadFailed": "附件下载失败",
+    "uploadUnavailable": "当前编辑器未启用图片粘贴",
+    "uploadFailed": "图片粘贴失败",
+    "placeholder": "添加描述…"
+  },
+  "placeholder": {
+    "developing": "{title}功能开发中"
+  },
+  "cliSelect": {
+    "detectFailed": "CLI 探测失败",
+    "modelsLoadFailed": "模型列表加载失败",
+    "chooseCliWarning": "请选择一个 CLI 工具",
+    "title": "选择执行 CLI",
+    "start": "开始执行",
+    "notInstalled": "未安装",
+    "selected": "已选择",
+    "installHint": "请先安装并加入 PATH",
+    "modelConfig": "模型配置",
+    "chooseModel": "选择模型",
+    "custom": "自定义",
+    "customPlaceholder": "输入模型名称（可留空使用 CLI 默认模型）",
+    "chooseFromList": "← 从列表选择",
+    "manualInput": "手动输入模型",
+    "customHint": "留空则使用 CLI 默认模型，输入后会自动记录到列表"
+  },
+  "login": {
+    "dialog": "登录",
+    "welcome": "欢迎回来",
+    "subtitle": "请登录以继续使用 Teams AI desk",
+    "serverAddress": "服务器地址",
+    "official": "官方",
+    "privateDeployment": "私有化部署",
+    "privateAddressPlaceholder": "请输入私有化部署地址，例如：https://t...",
+    "account": "账号",
+    "password": "密码",
+    "accountPlaceholder": "请输入账号",
+    "passwordPlaceholder": "请输入密码",
+    "privateAddressRequired": "请输入私有化部署地址",
+    "accountRequired": "请输入账号",
+    "passwordRequired": "请输入密码",
+    "showPassword": "显示密码",
+    "hidePassword": "隐藏密码",
+    "loggingIn": "登录中…"
+  },
+  "resourceTable": {
+    "actions": "操作",
+    "loadFailed": "加载配置失败",
+    "fieldRequired": "请填写{field}",
+    "saveSuccess": "保存成功",
+    "saveFailed": "保存失败",
+    "deleteTitle": "删除“{name}”",
+    "defaultName": "该配置",
+    "deleteWarning": "删除后依赖此项的配置可能无法正常工作。",
+    "deleted": "已删除",
+    "deleteFailed": "删除失败",
+    "connectionSuccess": "“{name}”连接成功",
+    "connectionFailed": "连接失败：{error}",
+    "unknownError": "未知错误",
+    "testFailed": "测试连接失败",
+    "add": "新增",
+    "empty": "暂无{title}，点击右上角“新增”开始配置",
+    "testing": "测试中…",
+    "testConnection": "测试链接",
+    "editTitle": "编辑{title}",
+    "addTitle": "新增{title}",
+    "passwordUnchanged": "留空表示不修改"
+  },
+  "projectTable": {
+    "gitProject": "Git 项目",
+    "dockerProject": "Docker Compose 项目",
+    "name": "名称",
+    "remoteDirectory": "远程工作目录",
+    "composeFile": "Compose 文件",
+    "loadFailed": "加载失败",
+    "nameRequired": "请输入名称",
+    "gitFieldsRequired": "请选择 SSH 配置并填写远程工作目录",
+    "dockerFieldsRequired": "请选择 SSH 配置并填写 Compose 文件路径",
+    "deleteWarning": "只删除 TeamsBoard 中的配置，不会删除远程代码或 Compose 文件。",
+    "gitDescription": "Git 命令会通过 SSH 在配置的远程工作目录中执行。",
+    "dockerDescription": "Docker 命令会通过 SSH 在远程服务器上以 docker compose -f 指定文件执行。",
+    "sshProfile": "SSH 配置",
+    "chooseSsh": "请选择 SSH 配置",
+    "composeFilePath": "Compose 文件路径"
+  },
+  "taskProgress": {
+    "running": "正在执行，请稍候…",
+    "noResult": "本次执行未返回结果",
+    "pastedImage": "已粘贴图片"
+  }
+}

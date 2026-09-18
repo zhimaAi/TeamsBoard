@@ -7,17 +7,20 @@ import DockerCompose from './DockerCompose.vue'
 import Database from './Database.vue'
 import DesktopClientSettings from './DesktopClientSettings.vue'
 import { isDesktopRuntime } from '@/composables/useDesktop'
+import { useAppI18n } from '@/i18n'
 
-const tabTitles = {
-  git: 'Git 项目',
+const { t } = useAppI18n()
+
+const tabTitles = computed(() => ({
+  git: t('settings.gitProjects'),
   ssh: 'SSH',
   docker: 'Docker Compose',
   database: 'MySQL / PgSQL',
-  desktop: '客户端',
-} as const
+  desktop: t('settings.desktop'),
+}))
 
-const activeTab = ref<keyof typeof tabTitles>('git')
-const activeTabTitle = computed(() => tabTitles[activeTab.value])
+const activeTab = ref<'git' | 'ssh' | 'docker' | 'database' | 'desktop'>('git')
+const activeTabTitle = computed(() => tabTitles.value[activeTab.value])
 const desktopRuntime = isDesktopRuntime()
 
 useDocumentTitle(activeTabTitle)
@@ -25,7 +28,7 @@ useDocumentTitle(activeTabTitle)
 
 <template>
   <a-tabs v-model:activeKey="activeTab" type="card" class="settings-tabs">
-    <a-tab-pane key="git" tab="Git 项目">
+    <a-tab-pane key="git" :tab="t('settings.gitProjects')">
       <GitProjects />
     </a-tab-pane>
     <a-tab-pane key="ssh" tab="SSH">
@@ -37,7 +40,7 @@ useDocumentTitle(activeTabTitle)
     <a-tab-pane key="database" tab="MySQL / PgSQL">
       <Database />
     </a-tab-pane>
-    <a-tab-pane v-if="desktopRuntime" key="desktop" tab="客户端">
+    <a-tab-pane v-if="desktopRuntime" key="desktop" :tab="t('settings.desktop')">
       <DesktopClientSettings />
     </a-tab-pane>
   </a-tabs>

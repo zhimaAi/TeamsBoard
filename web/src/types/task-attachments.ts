@@ -4,4 +4,5 @@ export interface ChatComposerSubmission {
   content: string
   display_content?: string
   config: ConversationRuntimeConfig
+  member_uuid?: string
 }

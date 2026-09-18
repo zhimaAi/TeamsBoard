@@ -26,19 +26,22 @@ import (
 
 // App is the main structure of the client application
 type App struct {
-	dataDir         string
-	configDir       string
-	runtimeDir      string
-	taskDir         string
-	cloud           *config.CloudConfig
-	secretStore     *secrets.DelegatingStore
-	bootstrapStore  secrets.Store
-	server          *localserver.Server
-	listener        net.Listener
-	browserTicket   string
-	apiToken        string
-	apiTokenFromEnv bool
-	lock            interface{}
+	dataDir          string
+	configDir        string
+	runtimeDir       string
+	taskDir          string
+	skillsDir        string
+	codexSkillReady  bool
+	codexSkillReason string
+	cloud            *config.CloudConfig
+	secretStore      *secrets.DelegatingStore
+	bootstrapStore   secrets.Store
+	server           *localserver.Server
+	listener         net.Listener
+	browserTicket    string
+	apiToken         string
+	apiTokenFromEnv  bool
+	lock             interface{}
 
 	//Basic components (not dependent on database)
 	cloudClient  *cloud.Client
@@ -74,6 +77,7 @@ func New(ctx context.Context) (*App, error) {
 	if err := app.acquireLockImpl(); err != nil {
 		return nil, fmt.Errorf("获取实例锁失败: %w", err)
 	}
+	app.codexSkillReady, app.codexSkillReason = app.installBuiltinSkills()
 
 	// 4. Initialize SecretStore.
 	store := secrets.NewDelegating()
@@ -165,24 +169,27 @@ func (a *App) Run(ctx context.Context) error {
 
 	//Create local HTTP service
 	a.server = localserver.New(localserver.Config{
-		DataDir:         a.dataDir,
-		ConfigDir:       a.configDir,
-		RuntimeDir:      a.runtimeDir,
-		TaskRoot:        a.taskDir,
-		BaseProfileDir:  a.dataDir,
-		BootstrapStore:  a.bootstrapStore,
-		SecretStore:     a.secretStore,
-		CloudConfig:     a.cloud,
-		BrowserTicket:   a.browserTicket,
-		DesktopToken:    strings.TrimSpace(os.Getenv("GOTEAMS_DESKTOP_TOKEN")),
-		APIToken:        a.apiToken,
-		APITokenFromEnv: a.apiTokenFromEnv,
-		Shutdown:        cancelRun,
-		CloudClient:     a.cloudClient,
-		AccountMgr:      a.accountMgr,
-		TaskDB:          a.localRuntime.DB,
-		Orchestrator:    a.localRuntime.Orchestrator,
-		WSHub:           a.localRuntime.WSHub,
+		DataDir:          a.dataDir,
+		ConfigDir:        a.configDir,
+		RuntimeDir:       a.runtimeDir,
+		TaskRoot:         a.taskDir,
+		SkillsRoot:       a.skillsDir,
+		CodexSkillReady:  a.codexSkillReady,
+		CodexSkillReason: a.codexSkillReason,
+		BaseProfileDir:   a.dataDir,
+		BootstrapStore:   a.bootstrapStore,
+		SecretStore:      a.secretStore,
+		CloudConfig:      a.cloud,
+		BrowserTicket:    a.browserTicket,
+		DesktopToken:     strings.TrimSpace(os.Getenv("GOTEAMS_DESKTOP_TOKEN")),
+		APIToken:         a.apiToken,
+		APITokenFromEnv:  a.apiTokenFromEnv,
+		Shutdown:         cancelRun,
+		CloudClient:      a.cloudClient,
+		AccountMgr:       a.accountMgr,
+		TaskDB:           a.localRuntime.DB,
+		Orchestrator:     a.localRuntime.Orchestrator,
+		WSHub:            a.localRuntime.WSHub,
 	})
 
 	srv := &http.Server{
@@ -270,6 +277,7 @@ func (a *App) initDirs() error {
 	a.configDir = filepath.Join(root, "config")
 	a.runtimeDir = filepath.Join(root, "runtime")
 	a.taskDir = filepath.Join(root, "task")
+	a.skillsDir = filepath.Join(home, ".codex", "skills")
 
 	dirs := []string{
 		a.dataDir,

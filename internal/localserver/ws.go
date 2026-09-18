@@ -14,6 +14,7 @@ import (
 
 	"goteams-client/internal/applog"
 	"goteams-client/internal/executor"
+	"goteams-client/internal/i18n"
 	"goteams-client/internal/storage/log"
 )
 
@@ -46,10 +47,13 @@ type WSHub struct {
 
 // wsClient local WebSocket client
 type wsClient struct {
-	conn        *websocket.Conn
-	taskUUID    string
-	sessionUUID string
-	writeMu     sync.Mutex
+	conn     *websocket.Conn
+	taskUUID string
+	// subscribedSessions 本连接订阅执行事件的 CLI 会话集合。
+	// 旧协议一次只订阅一个 session，动态区与执行窗口可能同时订阅不同
+	// session，因此改为集合，保持互不覆盖。
+	subscribedSessions map[string]bool
+	writeMu            sync.Mutex
 }
 
 // NewWSHub creates a WebSocket manager
@@ -158,6 +162,20 @@ func (h *WSHub) BroadcastTaskChanged(taskUUID string) {
 	h.BroadcastToAll("task.changed", map[string]interface{}{"task_uuid": taskUUID})
 }
 
+// BroadcastExecutorCompleted notifies global app listeners that a CLI reply has
+// finished successfully and can be surfaced as a desktop notification.
+func (h *WSHub) BroadcastExecutorCompleted(taskUUID, stepKey, sessionUUID, status string) {
+	if taskUUID == "" || sessionUUID == "" {
+		return
+	}
+	h.BroadcastToAll("executor.completed", map[string]interface{}{
+		"task_uuid":    taskUUID,
+		"step_key":     stepKey,
+		"session_uuid": sessionUUID,
+		"status":       status,
+	})
+}
+
 // BroadcastActivity pushes the throttled latest CLI activity to all clients.
 // Task views filter by task_uuid and patch the running-step subtitle locally,
 // so it stays fresh without polling /progress.
@@ -206,14 +224,14 @@ func (h *WSHub) HandleWebSocket(c *gin.Context) {
 	h.mu.RUnlock()
 	if expected != "" && (len(token) != len(expected) ||
 		subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1) {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "无效的访问令牌"})
+		i18n.Error(c, http.StatusForbidden, "common_access_token_invalid", "access_token_invalid")
 		return
 	}
 
 	// Validate the Session Cookie
 	sessionID, err := c.Cookie("goteams_local_session")
 	if err != nil || sessionID == "" {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
+		i18n.Error(c, http.StatusUnauthorized, "common_not_authenticated", "not_authenticated")
 		return
 	}
 
@@ -221,7 +239,7 @@ func (h *WSHub) HandleWebSocket(c *gin.Context) {
 	session, ok := sessionMgr.sessions[sessionID]
 	sessionMgr.mu.RUnlock()
 	if !ok || time.Now().After(session.ExpiresAt) {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "会话已过期"})
+		i18n.Error(c, http.StatusUnauthorized, "common_session_expired", "session_expired")
 		return
 	}
 
@@ -275,11 +293,22 @@ func (h *WSHub) readLoop(conn *websocket.Conn, client *wsClient) {
 		switch msg.Type {
 		case "executor.subscribe":
 			client.taskUUID = msg.TaskUUID
-			client.sessionUUID = msg.SessionUUID
+			if client.subscribedSessions == nil {
+				client.subscribedSessions = make(map[string]bool)
+			}
+			if msg.SessionUUID != "" {
+				client.subscribedSessions[msg.SessionUUID] = true
+			}
 			h.backfillEvents(client, msg.SessionUUID, msg.AfterSeq)
 		case "executor.unsubscribe":
-			client.taskUUID = ""
-			client.sessionUUID = ""
+			// 带 session_uuid 时只退订该会话（动态区与执行窗口可能同时
+			// 订阅不同 session），不带则清空全部订阅，保持旧协议语义。
+			if msg.SessionUUID != "" && client.subscribedSessions != nil {
+				delete(client.subscribedSessions, msg.SessionUUID)
+			} else {
+				client.taskUUID = ""
+				client.subscribedSessions = nil
+			}
 		}
 	}
 }
@@ -315,7 +344,7 @@ func (h *WSHub) BroadcastEvent(sessionUUID string, sequence int, event executor.
 	h.mu.RLock()
 	clients := make([]*wsClient, 0, len(h.clients))
 	for _, c := range h.clients {
-		if c.sessionUUID == sessionUUID {
+		if c.subscribedSessions[sessionUUID] {
 			clients = append(clients, c)
 		}
 	}
@@ -372,6 +401,9 @@ func (h *WSHub) BroadcastStateChanged(taskUUID, stepKey, sessionUUID, status str
 	// pages use the shared socket, so publish a lightweight global invalidation
 	// event as well and let each page filter by task_uuid.
 	h.BroadcastTaskChanged(taskUUID)
+	if status == "success" {
+		h.BroadcastExecutorCompleted(taskUUID, stepKey, sessionUUID, status)
+	}
 }
 
 func writeClientJSON(client *wsClient, value interface{}) error {

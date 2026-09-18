@@ -3,17 +3,23 @@
     :open="open"
     :footer="null"
     :closable="false"
+    :mask="!fullscreen"
+    :z-index="fullscreen ? 1100 : 1000"
     :body-style="{ padding: 0 }"
-    :width="922"
-    :mask-style="{ backgroundColor: 'rgba(0, 0, 0, 0.45)' }"
-    centered
-    :wrap-class-name="editing ? 'task-detail-info-modal task-edit-modal' : 'task-detail-info-modal'"
+    :width="fullscreen ? '100%' : 922"
+    :centered="!fullscreen"
+    :transition-name="fullscreen ? '' : undefined"
+    :mask-transition-name="fullscreen ? '' : undefined"
+    :class="{ 'task-detail-dialog-fullscreen': fullscreen }"
+    :style="fullscreen ? { width: '100%', maxWidth: '100%', height: '100%', top: 0, margin: 0, paddingBottom: 0 } : undefined"
+    :wrap-class-name="`${editing ? 'task-detail-info-modal task-edit-modal' : 'task-detail-info-modal'}${fullscreen ? ' is-fullscreen' : ''}`"
+    :wrap-props="fullscreen ? { style: { position: 'fixed', top: '0', left: '0', right: '0', bottom: '0', width: '100%', height: '100%', overflow: 'hidden' } } : undefined"
     @cancel="handleOpenChange(false)"
     @update:open="handleOpenChange"
   >
     <div
       class="task-detail-modal"
-      :class="{ 'is-editing': editing }"
+      :class="{ 'is-editing': editing, 'is-fullscreen': fullscreen }"
     >
       <template v-if="task && editing">
         <div class="modal-body edit-modal-body">
@@ -23,27 +29,33 @@
                 v-model:value="form.title"
                 :maxlength="50"
                 :bordered="false"
-                placeholder="任务标题"
+                :placeholder="t('workflows.task.create.titleRequired')"
                 class="title-input"
               />
             </div>
             <div class="description-box">
-              <a-textarea
-                v-model:value="form.description"
-                :auto-size="false"
-                :bordered="false"
-                placeholder="添加描述…"
-                class="description-input"
+              <MarkdownEditor
+                v-if="open && editing"
+                ref="descriptionEditor"
+                v-model="form.description"
+                cache-id="edit-task-description"
+                :placeholder="t('workflows.task.create.description')"
+                :disabled="saving"
+                :on-upload-images="handleDescriptionImages"
               />
             </div>
           </section>
 
           <aside class="task-info-pane edit-task-info-pane">
-            <h3>任务信息</h3>
+            <h3>{{ t('workflows.task.detail.taskInfo') }}</h3>
+            <button type="button" class="task-info-fullscreen" :aria-label="fullscreen ? t('workflows.task.common.exitFullscreen') : t('workflows.task.common.fullscreen')" @click="fullscreen = !fullscreen">
+              <FullscreenExitOutlined v-if="fullscreen" /><FullscreenOutlined v-else />
+            </button>
             <button
               type="button"
               class="task-info-close"
-              aria-label="关闭编辑任务弹窗"
+              :disabled="saving"
+              :aria-label="t('workflows.task.detail.closeEdit')"
               @click="handleOpenChange(false)"
             >
               <img
@@ -62,18 +74,18 @@
                   />
                 </span>
                 <div class="info-content">
-                  <span class="info-label">工作目录</span>
+                  <span class="info-label">{{ t('workflows.task.detail.workDirectory') }}</span>
                   <button
                     type="button"
                     class="chip info-control"
                     :class="{ selected: form.work_dir }"
                     :disabled="!canEditContext"
                     :title="
-                      canEditContext ? '选择任务主工作目录（必选）' : form.work_dir || '工作目录'
+                      canEditContext ? t('workflows.task.create.mainDirectory') : form.work_dir || t('workflows.task.detail.workDirectory')
                     "
                     @click="chooseMainDirectory"
                   >
-                    <span class="chip-label">{{ form.work_dir || '选择工作目录' }}</span>
+                    <span class="chip-label">{{ form.work_dir || t('workflows.task.create.chooseDirectory') }}</span>
                     <b v-if="canEditContext">*</b>
                     <DownOutlined />
                   </button>
@@ -89,7 +101,7 @@
                   />
                 </span>
                 <div class="info-content">
-                  <span class="info-label">任务优先级</span>
+                  <span class="info-label">{{ t('workflows.task.detail.priority') }}</span>
                   <a-dropdown trigger="click">
                     <button
                       type="button"
@@ -104,12 +116,12 @@
                           medium: form.priority === '中',
                           low: form.priority === '低',
                         }"
-                        >{{ form.priority }}</span
+                        >{{ normalizePriority(form.priority) }}</span
                       >
                       <span
                         v-else
                         class="chip-label"
-                        >选择优先级</span
+                        >{{ t('workflows.task.create.choosePriority') }}</span
                       >
                       <DownOutlined />
                     </button>
@@ -118,22 +130,22 @@
                         <a-menu-item
                           key=""
                           @click="form.priority = ''"
-                          >不选择</a-menu-item
+                          >{{ t('workflows.task.create.none') }}</a-menu-item
                         >
                         <a-menu-item
                           key="high"
                           @click="form.priority = '高'"
-                          >🔴 高</a-menu-item
+                          >🔴 {{ t('workflows.task.priority.high') }}</a-menu-item
                         >
                         <a-menu-item
                           key="medium"
                           @click="form.priority = '中'"
-                          >🟡 中</a-menu-item
+                          >🟡 {{ t('workflows.task.priority.medium') }}</a-menu-item
                         >
                         <a-menu-item
                           key="low"
                           @click="form.priority = '低'"
-                          >🔵 低</a-menu-item
+                          >🔵 {{ t('workflows.task.priority.low') }}</a-menu-item
                         >
                       </a-menu>
                     </template>
@@ -150,7 +162,7 @@
                   />
                 </span>
                 <div class="info-content">
-                  <span class="info-label">任务状态</span>
+                  <span class="info-label">{{ t('workflows.task.detail.status') }}</span>
                   <span
                     class="info-value"
                     :class="statusClass"
@@ -168,7 +180,7 @@
                   />
                 </span>
                 <div class="info-content">
-                  <span class="info-label">所属项目</span>
+                  <span class="info-label">{{ t('workflows.task.detail.project') }}</span>
                   <a-dropdown
                     v-if="canEditContext"
                     trigger="click"
@@ -186,7 +198,7 @@
                         <a-menu-item
                           key="none"
                           @click="chooseProject('')"
-                          >不选择项目</a-menu-item
+                          >{{ t('workflows.task.create.noProject') }}</a-menu-item
                         >
                         <a-menu-divider />
                         <a-menu-item
@@ -221,7 +233,7 @@
                   />
                 </span>
                 <div class="info-content">
-                  <span class="info-label">流水线</span>
+                  <span class="info-label">{{ executionLabel }}</span>
                   <a-dropdown
                     v-if="canEditPipeline"
                     trigger="click"
@@ -245,7 +257,7 @@
                         <a-menu-item
                           key="none"
                           @click="choosePipeline('')"
-                          >暂不指定流水线</a-menu-item
+                          >{{ t('workflows.task.create.noPipeline') }}</a-menu-item
                         >
                         <a-menu-divider />
                         <a-menu-item
@@ -255,8 +267,8 @@
                         >
                           <span class="menu-primary">{{ pipeline.name }}</span>
                           <small>
-                            {{ isPipelineCloud(pipeline) ? '团队同步' : '本地流水线' }} ·
-                            {{ pipeline.steps?.length || 0 }} 步
+                            {{ isPipelineCloud(pipeline) ? t('workflows.task.create.teamSync') : t('workflows.task.create.localPipeline') }} ·
+                            {{ t('workflows.task.create.steps', { count: pipeline.steps?.length || 0 }) }}
                           </small>
                         </a-menu-item>
                       </a-menu>
@@ -289,19 +301,19 @@
                   />
                 </span>
                 <div class="info-content">
-                  <span class="info-label">预期开始 / 结束</span>
+                  <span class="info-label">{{ t('workflows.task.detail.expectedDates') }}</span>
                   <div class="date-range-control">
                     <a-date-picker
                       v-model:value="form.planned_start_date"
                       value-format="YYYY-MM-DD"
-                      placeholder="开始日期"
+                      :placeholder="t('workflows.task.create.expectedStart')"
                       size="small"
                     />
                     <span aria-hidden="true">～</span>
                     <a-date-picker
                       v-model:value="form.planned_end_date"
                       value-format="YYYY-MM-DD"
-                      placeholder="结束日期"
+                      :placeholder="t('workflows.task.create.expectedEnd')"
                       size="small"
                     />
                   </div>
@@ -317,14 +329,14 @@
                   />
                 </span>
                 <div class="info-content">
-                  <span class="info-label">关联项目</span>
+                  <span class="info-label">{{ t('workflows.task.detail.relatedProject') }}</span>
                   <a-select
                     v-model:value="form.child_project_uuids"
                     class="info-select"
                     mode="multiple"
                     :max-tag-count="1"
                     :options="childProjectOptions"
-                    placeholder="请选择"
+                    :placeholder="t('workflows.task.create.choose')"
                     size="small"
                     :disabled="!canEditContext"
                   />
@@ -340,7 +352,7 @@
                   />
                 </span>
                 <div class="info-content">
-                  <span class="info-label">关联目录</span>
+                  <span class="info-label">{{ t('workflows.task.detail.relatedDirectories') }}</span>
                   <div class="directory-content info-directory-control">
                     <div
                       v-if="form.additional_dirs.length"
@@ -351,11 +363,11 @@
                         :key="`${dir}-${index}`"
                         class="directory-item"
                       >
-                        <span :title="dir || '未填写'">{{ dir || '未填写' }}</span>
+                        <span :title="dir || t('workflows.task.create.notEntered')">{{ dir || t('workflows.task.create.notEntered') }}</span>
                         <button
                           v-if="canEditContext"
                           type="button"
-                          aria-label="移除关联目录"
+                          :aria-label="t('workflows.task.detail.removeRelatedDirectory')"
                           @click="form.additional_dirs.splice(index, 1)"
                         >
                           ×
@@ -368,12 +380,12 @@
                       class="directory-add"
                       @click="addDirectory"
                     >
-                      <PlusOutlined />添加关联目录
+                      <PlusOutlined />{{ t('workflows.task.create.addRelatedDirectory') }}
                     </a-button>
                     <span
                       v-else-if="!form.additional_dirs.length"
                       class="directory-empty"
-                      >未设置</span
+                      >{{ t('workflows.task.detail.notSet') }}</span
                     >
                   </div>
                 </div>
@@ -386,13 +398,13 @@
           <a-button
             :disabled="saving"
             @click="cancelEdit"
-            >取消</a-button
+            >{{ t('common.actions.cancel') }}</a-button
           >
           <a-button
             type="primary"
             :loading="saving"
             @click="save"
-            >保存</a-button
+            >{{ t('common.actions.save') }}</a-button
           >
         </footer>
       </template>
@@ -418,7 +430,7 @@
             class="detail-desc-markdown"
             :content="task.description"
             :task-uuid="task.uuid"
-            empty-text="暂无描述"
+            :empty-text="t('workflows.task.detail.emptyDescription')"
             @click="handleDescriptionClick"
           />
           <button
@@ -427,16 +439,19 @@
             @click="enterEdit"
           >
             <EditOutlined />
-            <span>编辑</span>
+            <span>{{ t('workflows.task.detail.edit') }}</span>
           </button>
         </section>
 
         <aside class="task-info-pane">
-          <h3>任务信息</h3>
+          <h3>{{ t('workflows.task.detail.taskInfo') }}</h3>
+          <button type="button" class="task-info-fullscreen" :aria-label="fullscreen ? t('workflows.task.common.exitFullscreen') : t('workflows.task.common.fullscreen')" @click="fullscreen = !fullscreen">
+            <FullscreenExitOutlined v-if="fullscreen" /><FullscreenOutlined v-else />
+          </button>
           <button
             type="button"
             class="task-info-close"
-            aria-label="关闭需求详情弹窗"
+            :aria-label="t('workflows.task.detail.closeDetails')"
             @click="handleOpenChange(false)"
           >
             <img
@@ -455,7 +470,7 @@
                 />
               </span>
               <div class="info-content">
-                <span class="info-label">工作目录</span>
+                <span class="info-label">{{ t('workflows.task.detail.workDirectory') }}</span>
                 <span
                   class="info-value"
                   :title="primaryWorkDir"
@@ -473,11 +488,11 @@
                 />
               </span>
               <div class="info-content">
-                <span class="info-label">任务优先级</span>
+                <span class="info-label">{{ t('workflows.task.detail.priority') }}</span>
                 <span
                   class="info-value"
                   :class="priorityClass"
-                  >{{ priorityLabel || '未设置' }}</span
+                  >{{ priorityLabel || t('workflows.task.detail.notSet') }}</span
                 >
               </div>
             </div>
@@ -491,7 +506,7 @@
                 />
               </span>
               <div class="info-content">
-                <span class="info-label">任务状态</span>
+                <span class="info-label">{{ t('workflows.task.detail.status') }}</span>
                 <span
                   class="info-value"
                   :class="statusClass"
@@ -509,7 +524,7 @@
                 />
               </span>
               <div class="info-content">
-                <span class="info-label">所属项目</span>
+                <span class="info-label">{{ t('workflows.task.detail.project') }}</span>
                 <span class="info-value info-value-with-avatar">
                   <span
                     class="project-symbol"
@@ -517,8 +532,8 @@
                   >
                     {{ projectIconSymbol(task.project_icon) }}
                   </span>
-                  <span :title="task.project_name || '未设置'">
-                    {{ task.project_name || '未设置' }}
+                  <span :title="task.project_name || t('workflows.task.detail.notSet')">
+                    {{ task.project_name || t('workflows.task.detail.notSet') }}
                   </span>
                 </span>
               </div>
@@ -533,7 +548,7 @@
                 />
               </span>
               <div class="info-content">
-                <span class="info-label">流水线</span>
+                <span class="info-label">{{ executionLabel }}</span>
                 <span class="info-value info-value-with-avatar">
                   <img
                     v-if="task.pipeline_avatar_snapshot"
@@ -554,7 +569,7 @@
                 />
               </span>
               <div class="info-content">
-                <span class="info-label">预期开始 / 结束</span>
+                <span class="info-label">{{ t('workflows.task.detail.expectedDates') }}</span>
                 <span
                   class="info-value"
                   :title="plannedDateRange"
@@ -572,7 +587,7 @@
                 />
               </span>
               <div class="info-content">
-                <span class="info-label">关联项目</span>
+                <span class="info-label">{{ t('workflows.task.detail.relatedProject') }}</span>
                 <span
                   v-for="project in relatedProjects"
                   :key="project.uuid"
@@ -589,7 +604,7 @@
                 <span
                   v-if="!relatedProjects.length"
                   class="info-value"
-                  >未设置</span
+                  >{{ t('workflows.task.detail.notSet') }}</span
                 >
               </div>
             </div>
@@ -603,7 +618,7 @@
                 />
               </span>
               <div class="info-content">
-                <span class="info-label">关联目录</span>
+                <span class="info-label">{{ t('workflows.task.detail.relatedDirectories') }}</span>
                 <span
                   v-for="dir in relatedDirectories"
                   :key="dir"
@@ -615,7 +630,7 @@
                 <span
                   v-if="!relatedDirectories.length"
                   class="info-value"
-                  >未设置</span
+                  >{{ t('workflows.task.detail.notSet') }}</span
                 >
               </div>
             </div>
@@ -627,19 +642,22 @@
         v-else
         class="modal-empty"
       >
-        暂无任务信息
+        {{ t('workflows.task.detail.noTaskInfo') }}
       </div>
     </div>
   </a-modal>
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { message } from 'ant-design-vue'
-import { DownOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons-vue'
+import { DownOutlined, EditOutlined, FullscreenExitOutlined, FullscreenOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import apiClient from '@/api/client'
+import { useContentFullscreen } from '@/composables/useContentFullscreen'
 import MarkdownPreview from '@/components/MarkdownPreview.vue'
+import MarkdownEditor from '@/components/MarkdownEditor.vue'
+import { useTaskImageAttachments } from '@/composables/useTaskImageAttachments'
 import closeIcon from '@/assets/icons/task-detail-close.svg'
 import dateIcon from '@/assets/icons/task-detail-date.svg'
 import pipelineIcon from '@/assets/icons/task-detail-pipeline.svg'
@@ -654,6 +672,9 @@ import { usePipelineStore } from '@/stores/pipeline'
 import type { LocalProject } from '@/types/project'
 import type { TaskWithDetails } from '@/types/task-detail'
 import { isPipelineCloud } from '@/utils/pipeline'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 const props = defineProps<{
   open: boolean
@@ -671,7 +692,12 @@ const emit = defineEmits<{
 const pipelineStore = usePipelineStore()
 const { pipelines } = storeToRefs(pipelineStore)
 const editing = ref(false)
+const { fullscreen } = useContentFullscreen()
+watch(() => props.open, (open) => { if (!open) fullscreen.value = false })
 const saving = ref(false)
+let saveVersion = 0
+const descriptionEditor = ref<{ getValue: () => string }>()
+const { addImages, clear: clearImageAttachments, isSaving: isSavingPastedImages, resolveAttachmentMarkdown, uploadAttachmentsToTask } = useTaskImageAttachments()
 const projects = ref<LocalProject[]>([])
 const form = reactive({
   title: '',
@@ -687,13 +713,19 @@ const form = reactive({
 })
 
 const canEditContext = computed(() => props.status === 'pending')
-const canEditPipeline = computed(() => canEditContext.value && !props.task?.pipeline_snapshot_uuid)
+const canEditPipeline = computed(
+  () => canEditContext.value && !props.task?.pipeline_snapshot_uuid &&
+    (!props.task?.execution_mode || props.task.execution_mode === 'pipeline'),
+)
+const executionLabel = computed(() => props.task?.execution_mode && props.task.execution_mode !== 'pipeline'
+	? t('workflows.task.assign.executionMode')
+	: t('workflows.task.detail.pipeline'))
 const descriptionUsesHtml = computed(() => /<[a-z][\s\S]*>/i.test(props.task?.description || ''))
 const statusLabel = computed(() => {
-  if (props.status === 'pending') return '待开始'
-  if (props.status === 'in_progress') return '进行中'
-  if (props.status === 'blocked') return '已阻塞'
-  return '已完成'
+  if (props.status === 'pending') return t('workflows.task.status.pending')
+  if (props.status === 'in_progress') return t('workflows.task.status.inProgress')
+  if (props.status === 'blocked') return t('workflows.task.status.blocked')
+  return t('workflows.task.status.done')
 })
 const statusClass = computed(() => `status-${props.status || 'done'}`)
 const priorityLabel = computed(() => normalizePriority(props.task?.priority))
@@ -709,11 +741,11 @@ const plannedEndDateLabel = computed(() => formatDate(props.task?.planned_end_da
 const plannedDateRange = computed(
   () => `${plannedStartDateLabel.value} ～ ${plannedEndDateLabel.value}`,
 )
-const descriptionContent = computed(() => props.renderedDescription || '暂无描述')
+const descriptionContent = computed(() => props.renderedDescription || t('workflows.task.detail.emptyDescription'))
 const primaryWorkDir = computed(() =>
   editing.value
-    ? form.work_dir || '未设置'
-    : props.task?.work_dir || props.task?.task_dir || '未设置',
+    ? form.work_dir || t('workflows.task.detail.notSet')
+    : props.task?.work_dir || props.task?.task_dir || t('workflows.task.detail.notSet'),
 )
 const relatedProjects = computed(() =>
   (props.task?.projects || []).filter((project) => project.uuid !== props.task?.project_uuid),
@@ -744,16 +776,18 @@ const childProjectOptions = computed(() =>
     .map((item) => ({ label: item.name, value: item.uuid })),
 )
 const pipelineDisplayName = computed(() => {
+  if (props.task?.execution_mode === 'vibe_coding') return 'Vibe Coding / Codex'
+	if (props.task?.execution_mode === 'expert_group') return props.task.expert_group_name_snapshot || t('agents.expertTeam')
   if (form.pipeline_uuid && editing.value) {
-    return pipelines.value.find((item) => item.uuid === form.pipeline_uuid)?.name || '未分配'
+    return pipelines.value.find((item) => item.uuid === form.pipeline_uuid)?.name || t('workflows.task.detail.unassigned')
   }
-  return props.task?.pipeline_name_snapshot || '未分配'
+  return props.task?.pipeline_name_snapshot || t('workflows.task.detail.unassigned')
 })
 const projectChipLabel = computed(
-  () => selectedProject.value?.name || props.task?.project_name || '所属项目',
+  () => selectedProject.value?.name || props.task?.project_name || t('workflows.task.detail.project'),
 )
 const pipelineChipLabel = computed(
-  () => selectedPipeline.value?.name || props.task?.pipeline_name_snapshot || '流水线',
+  () => selectedPipeline.value?.name || props.task?.pipeline_name_snapshot || t('workflows.task.detail.pipeline'),
 )
 const allWorkDirs = computed(() => {
   const dirs = [
@@ -770,8 +804,10 @@ watch(
   () => props.open,
   (open) => {
     if (!open) {
+      saveVersion += 1
       editing.value = false
       saving.value = false
+      clearImageAttachments()
       return
     }
     syncFormFromTask()
@@ -781,14 +817,23 @@ watch(
 watch(
   () => props.task?.uuid,
   () => {
-    if (props.open && !editing.value) syncFormFromTask()
+    saveVersion += 1
+    editing.value = false
+    saving.value = false
+    clearImageAttachments()
+    if (props.open) syncFormFromTask()
   },
 )
 
+onBeforeUnmount(() => {
+  saveVersion += 1
+  clearImageAttachments()
+})
+
 function normalizePriority(value?: string) {
-  if (value === 'high' || value === '高') return '高'
-  if (value === 'medium' || value === '中') return '中'
-  if (value === 'low' || value === '低') return '低'
+  if (value === 'high' || value === '高') return t('workflows.task.priority.high')
+  if (value === 'medium' || value === '中') return t('workflows.task.priority.medium')
+  if (value === 'low' || value === '低') return t('workflows.task.priority.low')
   return ''
 }
 
@@ -813,10 +858,11 @@ function projectIconSymbol(type?: string) {
 }
 
 function formatDate(value?: string | number) {
-  return formatDateValue(value) || '未设置'
+  return formatDateValue(value) || t('workflows.task.detail.notSet')
 }
 
 function handleOpenChange(open: boolean) {
+  if (!open && saving.value) return
   emit('update:open', open)
 }
 
@@ -851,6 +897,7 @@ function syncFormFromTask() {
 }
 
 async function enterEdit() {
+  clearImageAttachments()
   syncFormFromTask()
   editing.value = true
   try {
@@ -859,10 +906,10 @@ async function enterEdit() {
       apiClient.get<{ items: LocalProject[] }>('/projects'),
     ])
     projects.value = projectResult.status === 'fulfilled' ? projectResult.value.items || [] : []
-    if (pipelineResult.status === 'rejected') message.warning('流水线加载失败，可稍后重试')
-    if (projectResult.status === 'rejected') message.warning('项目加载失败，仍可直接选择工作目录')
+    if (pipelineResult.status === 'rejected') message.warning(t('workflows.task.detail.pipelineLoadRetry'))
+    if (projectResult.status === 'rejected') message.warning(t('workflows.task.create.projectLoadFailed'))
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '加载编辑选项失败')
+    message.error(error instanceof Error ? error.message : t('workflows.task.detail.optionsLoadFailed'))
   }
 }
 
@@ -891,7 +938,7 @@ async function chooseMainDirectory() {
       form.project_uuid = ''
     }
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '无法打开目录选择器')
+    message.error(error instanceof Error ? error.message : t('workflows.task.create.directoryPickerFailed'))
   }
 }
 
@@ -901,46 +948,61 @@ async function addDirectory() {
     const selected = await selectDirectory(form.work_dir)
     if (!selected) return
     if (allWorkDirs.value.some((dir) => dir.toLowerCase() === selected.toLowerCase())) {
-      message.warning('该目录已在工作目录中')
+      message.warning(t('workflows.task.create.duplicateDirectory'))
       return
     }
     form.additional_dirs.push(selected)
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '无法打开目录选择器')
+    message.error(error instanceof Error ? error.message : t('workflows.task.create.directoryPickerFailed'))
   }
 }
 
 async function save() {
-  if (!props.task) return
-  if (!form.title.trim()) return message.warning('请输入任务标题')
+  if (!props.task || saving.value) return
+  if (!form.title.trim()) return message.warning(t('workflows.task.create.titleRequired'))
   if (canEditContext.value && !form.work_dir.trim())
-    return message.warning('请选择所属项目或主工作目录')
+    return message.warning(t('workflows.task.create.directoryRequired'))
+  // 附件上传期间任务或弹窗可能被父页面切换，固定写入目标并丢弃过期的界面回调。
+  const taskUuid = props.task.uuid
+  const requestVersion = ++saveVersion
+  const isCurrentSave = () => requestVersion === saveVersion && props.open && props.task?.uuid === taskUuid
+  const description = descriptionEditor.value?.getValue() ?? form.description
+  const payload: Record<string, unknown> = {
+    title: form.title.trim(),
+    priority: form.priority || undefined,
+    planned_start_date: form.planned_start_date || undefined,
+    planned_end_date: form.planned_end_date || undefined,
+  }
+  if (canEditContext.value) {
+    payload.project_uuid = form.project_uuid || undefined
+    payload.child_project_uuids = [...form.child_project_uuids]
+    payload.work_dir = form.work_dir
+    payload.work_dirs = [...allWorkDirs.value]
+    if (canEditPipeline.value) payload.pipeline_uuid = form.pipeline_uuid || undefined
+  }
   saving.value = true
   try {
-    const payload: Record<string, unknown> = {
-      title: form.title.trim(),
-      content: form.description,
-      description: form.description,
-      priority: form.priority || undefined,
-      planned_start_date: form.planned_start_date || undefined,
-      planned_end_date: form.planned_end_date || undefined,
-    }
-    if (canEditContext.value) {
-      payload.project_uuid = form.project_uuid || undefined
-      payload.child_project_uuids = form.child_project_uuids
-      payload.work_dir = form.work_dir
-      payload.work_dirs = allWorkDirs.value
-      if (canEditPipeline.value) payload.pipeline_uuid = form.pipeline_uuid || undefined
-    }
-    await apiClient.put(`/tasks/${encodeURIComponent(props.task.uuid)}`, payload)
-    message.success('任务已更新')
+    await uploadAttachmentsToTask(taskUuid)
+    if (!isCurrentSave()) return
+    const content = resolveAttachmentMarkdown(description).content
+    payload.content = content
+    payload.description = content
+    await apiClient.put(`/tasks/${encodeURIComponent(taskUuid)}`, payload)
+    if (!isCurrentSave()) return
+    form.description = content
+    message.success(t('workflows.task.detail.updated'))
     editing.value = false
     emit('saved')
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '任务更新失败')
+    if (isCurrentSave()) message.error(error instanceof Error ? error.message : t('workflows.task.detail.updateFailed'))
   } finally {
-    saving.value = false
+    if (isCurrentSave()) saving.value = false
   }
+}
+
+async function handleDescriptionImages(files: File[]) {
+  if (isSavingPastedImages.value) throw new Error(t('workflows.task.create.savingImages'))
+  return addImages(files).map((attachment) => attachment.marker)
 }
 </script>
 
@@ -1779,6 +1841,23 @@ async function save() {
   cursor: pointer;
 }
 
+.task-info-fullscreen {
+  position: absolute;
+  top: 8px;
+  right: 40px;
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  color: #8c8c8c;
+  background: transparent;
+  cursor: pointer;
+}
+.task-info-fullscreen:hover { color: #262626; background: #f2f4f7; }
+
 .task-info-close img {
   width: 100%;
   height: 100%;
@@ -2183,6 +2262,39 @@ async function save() {
   overflow: hidden;
 }
 
+
+.task-detail-modal.is-fullscreen {
+  container: task-detail / inline-size;
+}
+
+@container task-detail (max-width: 760px) {
+  .modal-body {
+    display: block;
+    overflow-y: auto;
+  }
+
+  .requirement-pane,
+  .task-info-pane {
+    overflow: visible;
+  }
+
+  .requirement-pane {
+    border-right: 0;
+  }
+
+  .task-info-pane {
+    border-top: 1px solid #f0f0f0;
+  }
+
+  .edit-requirement-pane {
+    min-height: 320px;
+  }
+
+  .expanded-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (min-width: 761px) and (max-width: 954px) {
   .modal-body {
     grid-template-columns: minmax(0, 1fr) 322px;
@@ -2230,5 +2342,76 @@ async function save() {
   .expanded-fields {
     grid-template-columns: 1fr;
   }
+}
+</style>
+
+<style>
+body.goteams-task-fullscreen .task-detail-info-modal.ant-modal-wrap,
+.task-detail-info-modal.is-fullscreen.ant-modal-wrap {
+  position: fixed !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  overflow: hidden !important;
+  text-align: start !important;
+}
+body.goteams-task-fullscreen .task-detail-info-modal::before,
+.task-detail-info-modal.is-fullscreen::before {
+  display: none !important;
+  content: none !important;
+}
+body.goteams-task-fullscreen .task-detail-info-modal .ant-modal,
+.task-detail-info-modal.is-fullscreen .ant-modal,
+.ant-modal.task-detail-dialog-fullscreen {
+  position: relative !important;
+  top: 0 !important;
+  display: flex !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* .ant-modal 与 .ant-modal-content 之间还存在一层无类名的内容包裹层（其后是 antd 的
+   焦点哨兵 div）。全屏时只给 .ant-modal-content 设 flex，这层包裹层仍会按 width:0
+   收缩，导致整块弹窗内容被压成 0 宽、画面只剩遮罩。这里让包裹层撑满并把高度继续向内传递。 */
+.task-detail-info-modal.is-fullscreen .ant-modal > div:first-child {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+.task-detail-info-modal.is-fullscreen .ant-modal-content,
+.task-detail-info-modal.is-fullscreen .ant-modal-body,
+.task-detail-info-modal.is-fullscreen .task-detail-modal {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  border-radius: 0;
+}
+.task-detail-info-modal.is-fullscreen .modal-body {
+  height: auto !important;
+  min-height: 0;
+  max-height: none !important;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) 322px;
+}
+.task-detail-info-modal.is-fullscreen .description-box,
+.task-detail-info-modal.is-fullscreen .markdown-editor,
+.task-detail-info-modal.is-fullscreen .vditor,
+.task-detail-info-modal.is-fullscreen .vditor-content,
+.task-detail-info-modal.is-fullscreen .vditor-ir {
+  height: 100% !important;
+  min-height: 0;
 }
 </style>

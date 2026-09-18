@@ -1,0 +1,988 @@
+{
+  "api_affected_rows_failed": {
+    "other": "Failed to read affected rows"
+  },
+  "api_auth_read_failed": {
+    "other": "Failed to read request authentication information"
+  },
+  "api_collection_delete_failed": {
+    "other": "Failed to delete collection"
+  },
+  "api_collection_environment_delete_failed": {
+    "other": "Failed to delete collection environments"
+  },
+  "api_collection_environment_query_failed": {
+    "other": "Failed to query collection environments"
+  },
+  "api_collection_folder_delete_failed": {
+    "other": "Failed to delete collection folders"
+  },
+  "api_collection_folders_required": {
+    "other": "folder_ids must include all root folders in the collection"
+  },
+  "api_collection_history_delete_failed": {
+    "other": "Failed to delete collection execution history"
+  },
+  "api_collection_id_invalid": {
+    "other": "Invalid collection_id parameter"
+  },
+  "api_collection_id_required": {
+    "other": "collection_id is required"
+  },
+  "api_collection_name_required": {
+    "other": "Collection name is required"
+  },
+  "api_collection_not_found": {
+    "other": "Collection not found"
+  },
+  "api_collection_query_failed": {
+    "other": "Failed to query collections"
+  },
+  "api_collection_request_delete_failed": {
+    "other": "Failed to delete collection requests"
+  },
+  "api_collection_request_query_failed": {
+    "other": "Failed to query collection requests"
+  },
+  "api_collection_scan_failed": {
+    "other": "Failed to scan collection data"
+  },
+  "api_collection_self_parent": {
+    "other": "A collection cannot be moved under itself"
+  },
+  "api_curl_parse_failed": {
+    "other": "Failed to parse curl"
+  },
+  "api_curl_required": {
+    "other": "curl is required"
+  },
+  "api_directory_delete_failed": {
+    "other": "Failed to delete folder"
+  },
+  "api_directory_move_failed": {
+    "other": "Failed to move interfaces out of folder"
+  },
+  "api_directory_sort_read_failed": {
+    "other": "Failed to read new folder ordering"
+  },
+  "api_environment_create_failed": {
+    "other": "Failed to create environment"
+  },
+  "api_environment_delete_failed": {
+    "other": "Failed to delete environment"
+  },
+  "api_environment_id_failed": {
+    "other": "Failed to get new environment ID"
+  },
+  "api_environment_not_found": {
+    "other": "Environment not found"
+  },
+  "api_environment_query_failed": {
+    "other": "Failed to query environment"
+  },
+  "api_environment_save_failed": {
+    "other": "Failed to save environment variables"
+  },
+  "api_environment_scan_failed": {
+    "other": "Failed to scan environment data"
+  },
+  "api_environment_secret_read_failed": {
+    "other": "Failed to read environment secret"
+  },
+  "api_environment_secret_save_failed": {
+    "other": "Failed to securely save environment variables"
+  },
+  "api_environment_update_failed": {
+    "other": "Failed to update environment"
+  },
+  "api_environment_variables_serialize_failed": {
+    "other": "Failed to serialize variables"
+  },
+  "api_folder_collection_name_required": {
+    "other": "collection_id and name are required"
+  },
+  "api_folder_duplicate": {
+    "other": "folder_ids cannot contain duplicate folders"
+  },
+  "api_folder_id_invalid": {
+    "other": "Invalid folder_id parameter"
+  },
+  "api_folder_ids_invalid": {
+    "other": "Invalid collection_id or folder_ids parameter"
+  },
+  "api_folder_not_found": {
+    "other": "Folder not found"
+  },
+  "api_folder_outside_collection": {
+    "other": "folder_ids contains a folder outside the current collection"
+  },
+  "api_history_affected_rows_failed": {
+    "other": "Failed to get affected rows while cleaning history"
+  },
+  "api_history_cleanup_failed": {
+    "other": "Failed to clean execution history"
+  },
+  "api_history_not_found": {
+    "other": "Execution record not found"
+  },
+  "api_history_query_failed": {
+    "other": "Failed to query execution history"
+  },
+  "api_history_scan_failed": {
+    "other": "Failed to scan execution history"
+  },
+  "api_name_required": {
+    "other": "name is required"
+  },
+  "api_no_fields": {
+    "other": "No fields to update"
+  },
+  "api_parent_id_invalid": {
+    "other": "Invalid parent_id parameter"
+  },
+  "api_request_auth_query_failed": {
+    "other": "Failed to query request authentication information"
+  },
+  "api_request_body_invalid": {
+    "other": "Invalid request body"
+  },
+  "api_request_create_failed": {
+    "other": "Failed to create request"
+  },
+  "api_request_delete_failed": {
+    "other": "Failed to delete request"
+  },
+  "api_request_failed": {
+    "other": "Request failed"
+  },
+  "api_request_id_failed": {
+    "other": "Failed to get new request ID"
+  },
+  "api_request_not_found": {
+    "other": "Request not found"
+  },
+  "api_request_query_failed": {
+    "other": "Failed to query request"
+  },
+  "api_request_scan_failed": {
+    "other": "Failed to scan request data"
+  },
+  "api_request_update_failed": {
+    "other": "Failed to update request"
+  },
+  "api_request_url_invalid": {
+    "other": "Invalid request URL"
+  },
+  "api_secret_save_failed": {
+    "other": "Failed to securely save authentication information"
+  },
+  "api_sql_auth_serialize_failed": {
+    "other": "Failed to serialize auth"
+  },
+  "api_sql_body_form_serialize_failed": {
+    "other": "Failed to serialize body form"
+  },
+  "api_sql_headers_serialize_failed": {
+    "other": "Failed to serialize headers"
+  },
+  "api_sql_query_serialize_failed": {
+    "other": "Failed to serialize query"
+  },
+  "api_transaction_begin_failed": {
+    "other": "Failed to begin transaction"
+  },
+  "api_transaction_commit_failed": {
+    "other": "Failed to commit transaction"
+  },
+  "api_transaction_failed": {
+    "other": "Transaction failed"
+  },
+  "auth_account_manager_missing": {
+    "other": "Account manager is not initialized"
+  },
+  "auth_cloud_url_invalid": {
+    "other": "Invalid cloud address"
+  },
+  "auth_credentials_required": {
+    "other": "Username and password are required"
+  },
+  "auth_custom_url_required": {
+    "other": "Please enter a custom cloud address"
+  },
+  "auth_desktop_loopback_required": {
+    "other": "Desktop shutdown accepts loopback requests only"
+  },
+  "auth_desktop_token_invalid": {
+    "other": "Invalid desktop token"
+  },
+  "auth_login_failed": {
+    "other": "Login failed"
+  },
+  "auth_official_url_invalid": {
+    "other": "The official cloud API address is invalid. Check api_base_url"
+  },
+  "auth_official_url_missing": {
+    "other": "The official cloud API address is not configured. Set api_base_url or use a custom address"
+  },
+  "auth_profile_switch_failed": {
+    "other": "Failed to switch local data directory"
+  },
+  "auth_session_create_failed": {
+    "other": "Failed to create account session"
+  },
+  "auth_ticket_invalid": {
+    "other": "Invalid ticket"
+  },
+  "auth_ticket_required": {
+    "other": "ticket parameter is required"
+  },
+  "command_docker_command_not_allowed": {
+    "other": "Docker subcommand is not allowed"
+  },
+  "command_docker_projects_query_failed": {
+    "other": "Failed to query Docker projects"
+  },
+  "command_docker_projects_scan_failed": {
+    "other": "Failed to scan Docker project rows"
+  },
+  "command_git_command_not_allowed": {
+    "other": "Git subcommand is not allowed"
+  },
+  "command_git_project_or_ssh_not_found": {
+    "other": "Git project or related SSH configuration not found"
+  },
+  "command_git_project_query_failed": {
+    "other": "Failed to query Git project"
+  },
+  "command_git_projects_query_failed": {
+    "other": "Failed to query Git projects"
+  },
+  "command_git_projects_scan_failed": {
+    "other": "Failed to scan Git project rows"
+  },
+  "command_history_detail_query_failed": {
+    "other": "Failed to query command record"
+  },
+  "command_history_id_invalid": {
+    "other": "Invalid id parameter"
+  },
+  "command_history_query_failed": {
+    "other": "Failed to query command history"
+  },
+  "command_history_record_not_found": {
+    "other": "Command record not found"
+  },
+  "command_history_scan_failed": {
+    "other": "Failed to scan command history rows"
+  },
+  "command_request_invalid": {
+    "other": "Invalid request"
+  },
+  "command_run_id_failed": {
+    "other": "Failed to get command run ID"
+  },
+  "command_run_record_failed": {
+    "other": "Failed to record command execution"
+  },
+  "command_ssh_credential_read_failed": {
+    "other": "Failed to read SSH credentials"
+  },
+  "command_ssh_store_uninitialized": {
+    "other": "SSH secret store is not initialized"
+  },
+  "common_access_token_invalid": {
+    "other": "Invalid access token"
+  },
+  "common_command_not_allowed": {
+    "other": "Command is not allowed"
+  },
+  "common_invalid_id": {
+    "other": "Invalid ID"
+  },
+  "common_language_not_supported": {
+    "other": "This language is not supported yet. Falling back to Chinese."
+  },
+  "common_not_authenticated": {
+    "other": "You are not signed in"
+  },
+  "common_record_not_found": {
+    "other": "Record not found"
+  },
+  "common_request_invalid": {
+    "other": "Invalid request"
+  },
+  "common_runtime_unavailable": {
+    "other": "Local task runtime is not initialized"
+  },
+  "common_server_error": {
+    "other": "Service is temporarily unavailable. Please try again."
+  },
+  "common_session_expired": {
+    "other": "Session expired"
+  },
+  "configcenter_api_base_url_required": {
+    "other": "api_base_url is required"
+  },
+  "configcenter_api_key_save_failed": {
+    "other": "Failed to save API key"
+  },
+  "configcenter_config_dir_create_failed": {
+    "other": "Failed to create configuration directory"
+  },
+  "configcenter_config_init_failed": {
+    "other": "Failed to initialize configuration file"
+  },
+  "configcenter_config_path_uninitialized": {
+    "other": "Configuration path is not initialized"
+  },
+  "configcenter_config_read_failed": {
+    "other": "Failed to read configuration file"
+  },
+  "configcenter_config_write_failed": {
+    "other": "Failed to save configuration file"
+  },
+  "configcenter_connection_ok": {
+    "other": "Connection successful"
+  },
+  "configcenter_database_lookup_failed": {
+    "other": "Failed to read database configuration"
+  },
+  "configcenter_database_not_found": {
+    "other": "Database configuration not found"
+  },
+  "configcenter_database_required": {
+    "other": "name is required"
+  },
+  "configcenter_database_secret_save_failed": {
+    "other": "Failed to save database password"
+  },
+  "configcenter_database_test_failed": {
+    "other": "Database connection test failed"
+  },
+  "configcenter_database_update_failed": {
+    "other": "Failed to update database configuration"
+  },
+  "configcenter_docker_required": {
+    "other": "name and compose_file_path are required"
+  },
+  "configcenter_docker_update_failed": {
+    "other": "Failed to update Docker project"
+  },
+  "configcenter_git_required": {
+    "other": "name, ssh_profile_id, and remote_work_dir are required"
+  },
+  "configcenter_invalid_id": {
+    "other": "Invalid ID"
+  },
+  "configcenter_model_profile_required": {
+    "other": "name and provider_id are required"
+  },
+  "configcenter_model_provider_required": {
+    "other": "name and provider_id are required"
+  },
+  "configcenter_model_update_failed": {
+    "other": "Failed to update model configuration"
+  },
+  "configcenter_name_required": {
+    "other": "name is required"
+  },
+  "configcenter_no_fields": {
+    "other": "No fields to update"
+  },
+  "configcenter_provider_update_failed": {
+    "other": "Failed to update model provider"
+  },
+  "configcenter_remote_work_dir_required": {
+    "other": "remote_work_dir is required"
+  },
+  "configcenter_request_invalid": {
+    "other": "Invalid request"
+  },
+  "configcenter_secret_ref_write_failed": {
+    "other": "The configuration was created, but the secret reference could not be saved. Please edit it and enter the secret again"
+  },
+  "configcenter_secret_save_failed": {
+    "other": "Failed to save sensitive configuration"
+  },
+  "configcenter_ssh_lookup_failed": {
+    "other": "Failed to read SSH configuration"
+  },
+  "configcenter_ssh_not_found": {
+    "other": "SSH configuration not found"
+  },
+  "configcenter_ssh_profile_required": {
+    "other": "ssh_profile_id is required"
+  },
+  "configcenter_ssh_required": {
+    "other": "name and host are required"
+  },
+  "configcenter_ssh_resolve_failed": {
+    "other": "Failed to resolve SSH configuration"
+  },
+  "configcenter_ssh_secret_save_failed": {
+    "other": "Failed to save SSH password"
+  },
+  "configcenter_ssh_test_failed": {
+    "other": "SSH connection test failed"
+  },
+  "configcenter_ssh_update_failed": {
+    "other": "Failed to update SSH configuration"
+  },
+  "knowledge_delete_transaction_failed": {
+    "other": "Failed to commit document deletion"
+  },
+  "knowledge_document_conflict": {
+    "other": "The document was modified by another process or page. Reload it or save it as a new document"
+  },
+  "knowledge_document_content_read_failed": {
+    "other": "Failed to read document content"
+  },
+  "knowledge_document_create_failed": {
+    "other": "Failed to create document"
+  },
+  "knowledge_document_delete_failed": {
+    "other": "Failed to delete document"
+  },
+  "knowledge_document_list_scan_failed": {
+    "other": "Failed to scan document data"
+  },
+  "knowledge_document_not_found": {
+    "other": "Document not found"
+  },
+  "knowledge_document_query_failed": {
+    "other": "Failed to query documents"
+  },
+  "knowledge_document_record_delete_failed": {
+    "other": "Failed to delete document record"
+  },
+  "knowledge_document_restore_failed": {
+    "other": "Failed to restore document"
+  },
+  "knowledge_document_scan_failed": {
+    "other": "Failed to scan document data"
+  },
+  "knowledge_document_update_failed": {
+    "other": "Failed to update document"
+  },
+  "knowledge_file_write_failed": {
+    "other": "Failed to write file"
+  },
+  "knowledge_folder_create_failed": {
+    "other": "Failed to create folder"
+  },
+  "knowledge_folder_delete_failed": {
+    "other": "Failed to delete folder"
+  },
+  "knowledge_folder_descendant": {
+    "other": "A folder cannot be moved under its descendant"
+  },
+  "knowledge_folder_id_failed": {
+    "other": "Failed to get new folder ID"
+  },
+  "knowledge_folder_id_invalid": {
+    "other": "Invalid folder_id parameter"
+  },
+  "knowledge_folder_level_check_failed": {
+    "other": "Failed to validate folder hierarchy"
+  },
+  "knowledge_folder_move_children_failed": {
+    "other": "Failed to move child folders"
+  },
+  "knowledge_folder_move_docs_failed": {
+    "other": "Failed to move documents"
+  },
+  "knowledge_folder_not_found": {
+    "other": "Folder not found"
+  },
+  "knowledge_folder_query_failed": {
+    "other": "Failed to query folders"
+  },
+  "knowledge_folder_scan_failed": {
+    "other": "Failed to scan folder data"
+  },
+  "knowledge_folder_self_parent": {
+    "other": "A folder cannot be moved under itself"
+  },
+  "knowledge_folder_update_failed": {
+    "other": "Failed to update folder"
+  },
+  "knowledge_history_content_read_failed": {
+    "other": "Failed to read history content"
+  },
+  "knowledge_history_delete_failed": {
+    "other": "Failed to delete history"
+  },
+  "knowledge_history_file_write_failed": {
+    "other": "Failed to write history file"
+  },
+  "knowledge_history_id_failed": {
+    "other": "Failed to get history ID"
+  },
+  "knowledge_history_id_invalid": {
+    "other": "Invalid historyId parameter"
+  },
+  "knowledge_history_not_found": {
+    "other": "History version not found"
+  },
+  "knowledge_history_query_failed": {
+    "other": "Failed to query history"
+  },
+  "knowledge_history_save_failed": {
+    "other": "Failed to save document history"
+  },
+  "knowledge_history_scan_failed": {
+    "other": "Failed to scan history data"
+  },
+  "knowledge_name_required": {
+    "other": "name is required"
+  },
+  "knowledge_old_content_read_failed": {
+    "other": "Failed to read previous document content"
+  },
+  "knowledge_parameter_required": {
+    "other": "Parameter is required"
+  },
+  "knowledge_storage_failed": {
+    "other": "Failed to access knowledge storage"
+  },
+  "knowledge_storage_unavailable": {
+    "other": "Knowledge storage is unavailable"
+  },
+  "knowledge_title_required": {
+    "other": "title is required"
+  },
+  "knowledge_trash_document_not_found": {
+    "other": "Document not found in trash"
+  },
+  "knowledge_trash_document_query_failed": {
+    "other": "Failed to query trashed document"
+  },
+  "knowledge_trash_query_failed": {
+    "other": "Failed to query trash"
+  },
+  "knowledge_trash_scan_failed": {
+    "other": "Failed to scan trash data"
+  },
+  "knowledge_uuid_required": {
+    "other": "uuid is required"
+  },
+  "localserver_active_sessions": {
+    "other": "The task still has running CLI sessions. Stop them before deleting it."
+  },
+  "localserver_agent_upload_local_only": {
+    "other": "Only local agents support avatar uploads"
+  },
+  "localserver_api_not_found": {
+    "other": "API endpoint not found"
+  },
+  "localserver_attachment_count_exceeded": {
+    "description": "Maximum number of uploaded files; Count is the limit.",
+    "one": "No more than {{.Count}} file can be uploaded",
+    "other": "No more than {{.Count}} files can be uploaded"
+  },
+  "localserver_attachment_current_task_only": {
+    "other": "Only attachments belonging to the current task can be read"
+  },
+  "localserver_attachment_marker_duplicate": {
+    "other": "Duplicate attachment position marker"
+  },
+  "localserver_attachment_marker_invalid": {
+    "other": "Invalid attachment position marker"
+  },
+  "localserver_attachment_marker_missing": {
+    "other": "The attachment position marker was not found in the task description"
+  },
+  "localserver_attachment_marker_required": {
+    "other": "Every attachment must contain a position marker"
+  },
+  "localserver_attachment_not_found": {
+    "other": "Attachment not found"
+  },
+  "localserver_attachment_path_invalid": {
+    "other": "Invalid attachment path"
+  },
+  "localserver_attachment_size_exceeded": {
+    "other": "Each file must not exceed 10 MB"
+  },
+  "localserver_attachment_total_too_large": {
+    "other": "The total upload size must not exceed 30 MB"
+  },
+  "localserver_avatar_store_not_ready": {
+    "other": "The local avatar store is not initialized"
+  },
+  "localserver_bad_request": {
+    "other": "Invalid request"
+  },
+  "localserver_cli_type_required": {
+    "other": "cli_type is required"
+  },
+  "localserver_cloud_client_not_ready": {
+    "other": "The cloud client is not initialized"
+  },
+  "localserver_cloud_import_login_required": {
+    "other": "Sign in before importing a cloud work item"
+  },
+  "localserver_cloud_pipeline_cache_failed": {
+    "other": "Failed to cache the cloud pipeline locally"
+  },
+  "localserver_cloud_session_expired": {
+    "other": "Cloud login has expired. Please sign in again."
+  },
+  "localserver_cloud_work_item_not_found": {
+    "other": "Cloud work item not found"
+  },
+  "localserver_codex_skill_install_failed": {
+    "other": "The built-in teamsboard Skill could not be installed. Codex features are unavailable; restart the app or check the logs."
+  },
+  "localserver_codex_skill_not_managed": {
+    "other": "A teamsboard Skill with the same name is not managed by TeamsBoard. Codex features are disabled to avoid overwriting it."
+  },
+  "localserver_codex_task_prompt": {
+    "description": "SkillPath and TaskUUID identify the managed TeamsBoard task.",
+    "other": "[$teamsboard]({{.SkillPath}})\n\nUse the teamsboard Skill to handle the following local TeamsBoard task.\nTask UUID: {{.TaskUUID}}\nKeep this conversation bound to the task and follow the Skill's per-turn sync rules until the conversation ends."
+  },
+  "localserver_current_session_unavailable": {
+    "other": "The current agent has no CLI session to continue"
+  },
+  "localserver_database_not_ready": {
+    "other": "The local task database is not ready"
+  },
+  "localserver_execution_mode_conflict": {
+    "other": "The task is already assigned to another execution mode"
+  },
+  "localserver_execution_mode_invalid": {
+    "other": "Invalid task execution mode"
+  },
+  "localserver_execution_mode_required": {
+    "other": "Select an execution mode before starting the task"
+  },
+  "localserver_execution_mode_target_invalid": {
+    "other": "Select a CLI and a model"
+  },
+  "localserver_execution_mode_unchanged": {
+    "other": "Select an execution mode or configuration different from the current one"
+  },
+  "localserver_execution_mode_unsupported": {
+    "other": "This execution mode is not supported yet"
+  },
+  "localserver_execution_switch_stop_failed": {
+    "other": "The current execution could not be stopped, so the execution mode was not changed"
+  },
+  "localserver_execution_switch_start_failed": {
+    "other": "The execution mode was switched, but automatic startup failed. Retry the task."
+  },
+  "localserver_execution_switch_unavailable": {
+    "other": "The task execution service is not ready, so the execution mode cannot be switched"
+  },
+  "localserver_expert_group_invalid": {
+    "other": "The expert team or member configuration is invalid"
+  },
+  "localserver_expert_group_mode_required": {
+    "other": "The task is not assigned to an expert team"
+  },
+  "localserver_expert_group_not_found": {
+    "other": "Expert team not found"
+  },
+  "localserver_expert_group_not_ready": {
+    "other": "Complete the lead, at least one member, and all CLI/model settings"
+  },
+  "localserver_expert_group_required": {
+    "other": "Select an expert team before starting the task"
+  },
+  "localserver_expert_member_not_found": {
+    "other": "The selected Agent is not part of this expert team"
+  },
+  "localserver_expert_routing_pending": {
+    "other": "The expert team is routing automatically. Please try again shortly."
+  },
+  "localserver_file_data_decode_failed": {
+    "other": "Failed to decode file data"
+  },
+  "localserver_file_data_invalid": {
+    "other": "Invalid file data"
+  },
+  "localserver_file_empty": {
+    "other": "File content is empty"
+  },
+  "localserver_file_not_found": {
+    "other": "File not found"
+  },
+  "localserver_file_path_empty": {
+    "other": "The task directory is empty"
+  },
+  "localserver_file_path_invalid": {
+    "other": "Invalid file path"
+  },
+  "localserver_file_path_outside": {
+    "other": "The file path is outside the task directory"
+  },
+  "localserver_file_path_symlink": {
+    "other": "The file path cannot contain a symbolic link"
+  },
+  "localserver_icon_not_found": {
+    "other": "Icon not found"
+  },
+  "localserver_icon_store_not_ready": {
+    "other": "The local icon store is not initialized"
+  },
+  "localserver_icon_too_large": {
+    "other": "Image size must not exceed 2 MB"
+  },
+  "localserver_icon_type_invalid": {
+    "other": "Only PNG, JPEG, and WebP images are supported"
+  },
+  "localserver_id_invalid": {
+    "other": "Invalid ID"
+  },
+  "localserver_ids_required": {
+    "other": "ids is required"
+  },
+  "localserver_image_content_mismatch": {
+    "other": "The image content does not match its file type"
+  },
+  "localserver_import_sync_warning": {
+    "other": "The task was imported, but cloud projection sync failed"
+  },
+  "localserver_internal_error": {
+    "other": "Service is temporarily unavailable. Please try again."
+  },
+  "localserver_invalid_task_status": {
+    "other": "Invalid task status"
+  },
+  "localserver_json_content_type_required": {
+    "other": "Content-Type must be application/json"
+  },
+  "localserver_json_invalid": {
+    "other": "Invalid request JSON"
+  },
+  "localserver_json_single_object_required": {
+    "other": "The request JSON must contain exactly one object"
+  },
+  "localserver_lane_tasks_exist": {
+    "description": "Cannot delete a task status while Count tasks use it.",
+    "one": "{{.Count}} task still uses this status, so it cannot be deleted",
+    "other": "{{.Count}} tasks still use this status, so it cannot be deleted"
+  },
+  "localserver_no_update_fields": {
+    "other": "No fields to update"
+  },
+  "localserver_not_authenticated": {
+    "other": "You are not signed in"
+  },
+  "localserver_not_found": {
+    "other": "Record not found"
+  },
+  "localserver_notification_not_found": {
+    "other": "Notification not found"
+  },
+  "localserver_notification_pipeline_required": {
+    "other": "Select a pipeline before creating a task notification"
+  },
+  "localserver_path_required": {
+    "other": "path is required"
+  },
+  "localserver_pipeline_id_invalid": {
+    "other": "Invalid cloud pipeline ID"
+  },
+  "localserver_pipeline_not_found": {
+    "other": "Pipeline not found"
+  },
+  "localserver_pipeline_required": {
+    "other": "Please select a pipeline"
+  },
+  "localserver_pipeline_upload_local_only": {
+    "other": "Only local pipelines support icon uploads"
+  },
+  "localserver_pipeline_uuid_required": {
+    "other": "pipeline_uuid is required"
+  },
+  "localserver_project_in_use": {
+    "other": "Project is used by a task"
+  },
+  "localserver_project_not_found": {
+    "other": "Project not found"
+  },
+  "localserver_prompt_required": {
+    "other": "prompt_snapshot is required"
+  },
+  "localserver_question_required": {
+    "other": "Question content is required"
+  },
+  "localserver_readable_file_type": {
+    "description": "Unsupported file extension; FileType is the extension.",
+    "other": "Files of type {{.FileType}} cannot be read; only text and image files are supported"
+  },
+  "localserver_request_invalid": {
+    "other": "Invalid request"
+  },
+  "localserver_skill_activity_content_invalid": {
+    "other": "Activity content must contain 1 to 65,536 characters"
+  },
+  "localserver_skill_activity_type_invalid": {
+    "other": "Activity type must be question or result"
+  },
+  "localserver_skill_caller_forbidden": {
+    "other": "Only the local TeamsBoard Skill may call this endpoint"
+  },
+  "localserver_skill_loopback_required": {
+    "other": "The TeamsBoard Skill must connect through loopback"
+  },
+  "localserver_skill_status_invalid": {
+    "other": "Status must be pending, in_progress, blocked, or done"
+  },
+  "localserver_skill_thread_id_invalid": {
+    "other": "thread_id must not exceed 256 characters"
+  },
+  "localserver_skill_tool_invalid": {
+    "other": "Only Codex may report activity for this task"
+  },
+  "localserver_status_not_found": {
+    "other": "Status not found"
+  },
+  "localserver_step_not_found": {
+    "other": "Step not found"
+  },
+  "localserver_task_content_too_large": {
+    "other": "Task content or pasted image is too large"
+  },
+  "localserver_task_created_started": {
+    "other": "Task created and started"
+  },
+  "localserver_task_created_warning": {
+    "other": "The task was created, but its details could not be loaded"
+  },
+  "localserver_task_not_codex": {
+    "other": "The task is not assigned to Vibe Coding / Codex"
+  },
+  "localserver_task_not_found": {
+    "other": "Task not found"
+  },
+  "localserver_task_not_vibe_coding": {
+    "other": "The task is not assigned to Vibe Coding"
+  },
+  "localserver_task_uuid_invalid": {
+    "other": "Invalid task UUID"
+  },
+  "localserver_task_work_dir_required": {
+    "other": "The task does not have a primary working directory"
+  },
+  "localserver_vibe_coding_assigned_activity": {
+    "other": "Assigned to Vibe Coding"
+  },
+  "localserver_vibe_session_thread_id_invalid": {
+    "other": "The Codex thread_id must be a valid UUID"
+  },
+  "localserver_vibe_session_type_invalid": {
+    "other": "Only Codex session binding is currently supported"
+  },
+  "localserver_vibe_session_type_mismatch": {
+    "other": "The session type does not match the task's Vibe Coding tool"
+  },
+  "localserver_title_required": {
+    "other": "title is required"
+  },
+  "localserver_upload_file_missing": {
+    "other": "File is required"
+  },
+  "localserver_web_dist_missing": {
+    "other": "web/dist was not found. Run npm run build or start the frontend first."
+  },
+  "localserver_work_item_id_invalid": {
+    "other": "Invalid work item ID"
+  },
+  "localserver_workspace_invalid": {
+    "other": "Invalid workspace directory"
+  },
+  "localserver_workspace_required": {
+    "other": "At least one workspace directory is required"
+  },
+  "localserver_workspace_unavailable": {
+    "other": "The task workspace directory is unavailable"
+  },
+  "taskgit_branch_invalid": {
+    "other": "The Git branch is invalid or does not exist"
+  },
+  "taskgit_directory_unavailable": {
+    "other": "The task working directory is unavailable"
+  },
+  "taskgit_not_repository": {
+    "other": "The task working directory is not a Git repository"
+  },
+  "taskgit_read_failed": {
+    "other": "Failed to read Git branches"
+  },
+  "taskgit_switch_checked_out": {
+    "description": "Target branch is already checked out in another Git worktree.",
+    "other": "This branch is already checked out in another worktree"
+  },
+  "taskgit_switch_dirty": {
+    "description": "Git refused to switch because the working tree has local changes.",
+    "other": "The working tree has uncommitted changes, so the branch cannot be switched"
+  },
+  "taskgit_switch_failed": {
+    "other": "Failed to switch Git branch"
+  },
+  "taskgit_switch_merging": {
+    "description": "Git refused to switch because a merge is in progress.",
+    "other": "Cannot switch branch while a merge is in progress"
+  },
+  "taskgit_switch_rebasing": {
+    "description": "Git refused to switch because a rebase is in progress.",
+    "other": "Cannot switch branch while a rebase is in progress"
+  },
+  "taskgit_task_running": {
+    "other": "Cannot switch Git branch while a task is running in this working directory"
+  },
+  "tool_database_not_found": {
+    "other": "Database configuration not found"
+  },
+  "tool_database_profile_required": {
+    "other": "database_profile_id is required"
+  },
+  "tool_menu_items_required": {
+    "other": "items is required"
+  },
+  "tool_menu_key_duplicate": {
+    "description": "Duplicate menu identifier; Key is the menu identifier.",
+    "other": "Duplicate menu key: {{.Key}}"
+  },
+  "tool_menu_key_unknown": {
+    "description": "Unknown menu identifier; Key is the menu identifier.",
+    "other": "Unknown menu key: {{.Key}}"
+  },
+  "tool_menu_order_duplicate": {
+    "other": "Duplicate menu sort order"
+  },
+  "tool_menu_order_invalid": {
+    "description": "Menu sort order is invalid; Key is the menu identifier.",
+    "other": "Menu sort order is out of range: {{.Key}}"
+  },
+  "tool_menu_request_invalid": {
+    "other": "Invalid request body"
+  },
+  "tool_read_only": {
+    "other": "The database tool is read-only; write and change operations are forbidden"
+  },
+  "tool_result_columns_failed": {
+    "other": "Failed to read result columns"
+  },
+  "tool_result_iteration_failed": {
+    "other": "Failed to iterate query result"
+  },
+  "tool_result_scan_failed": {
+    "other": "Failed to read query result"
+  },
+  "tool_sql_empty": {
+    "other": "SQL is required"
+  },
+  "tool_sql_forbidden": {
+    "description": "Disallowed SQL operation; Operation is the SQL verb.",
+    "other": "Operation {{.Operation}} is forbidden"
+  },
+  "tool_sql_read_only": {
+    "other": "Read-only operation"
+  },
+  "tool_sql_unsupported": {
+    "other": "Unsupported SQL operation: the database tool allows only read-only queries (SELECT/EXPLAIN/SHOW/DESC)"
+  }
+}

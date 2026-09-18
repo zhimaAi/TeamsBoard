@@ -1,0 +1,20 @@
+{
+  "title": "Tools",
+  "subtitle": "Manage sidebar menu visibility, order, and feature descriptions",
+  "visible": "Visible: {count}",
+  "hidden": "Hidden: {count}",
+  "drag": "Drag to reorder",
+  "details": "Feature details",
+  "saveVisibilityFailed": "Failed to save menu configuration",
+  "saveOrderFailed": "Failed to save menu order",
+  "items": {
+    "workflows": { "label": "Boards", "description": "Local task boards and team work imports", "detail": "Manage local tasks without signing in, or import cloud tasks from Team Work after signing in." },
+    "tasks": { "label": "Tasks", "description": "CLI notifications and task progress", "detail": "Review completed CLI runs, locate agent steps, inspect final results, and continue to the next step." },
+    "agents": { "label": "Agent pipelines", "description": "Local pipelines and agent orchestration", "detail": "Manage local pipelines, execution order, prompts, and CLI and model settings for each step." },
+    "projects": { "label": "Projects", "description": "Local projects and directory bindings", "detail": "Manage local projects available to tasks, including their names, icons, and local directories." },
+    "commands": { "label": "Commands", "description": "Run common commands and shortcuts", "detail": "Use command history, Docker management, Git actions, process management, terminal output, and custom web links with completion and keyboard shortcuts." },
+    "knowledge": { "label": "Knowledge base", "description": "Documentation and intelligent search", "detail": "Organize and search team documents so knowledge remains easy to find and reference." },
+    "apis": { "label": "API management", "description": "API collection management and debugging", "detail": "Manage collections, environments, and requests, send requests online, and maintain API documentation." },
+    "settings": { "label": "Settings", "description": "Centralized client configuration", "detail": "Manage Git, SSH, Docker, database, and model settings used by commands, the knowledge base, and other local features." }
+  }
+}

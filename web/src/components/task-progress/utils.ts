@@ -1,5 +1,6 @@
 import type { TaskProgress } from '@/types/pipeline'
 import { normalizeClipboardText } from '@/utils/clipboard'
+import { t } from '@/i18n'
 
 const TASK_IMAGE_MARKER_RE = /\[\[TASK_IMAGE_[^\]]+\]\]/g
 // 历史消息在引入 display_content 前会持久化执行用的绝对路径。仅识别
@@ -16,17 +17,43 @@ export function initials(name?: string) {
 }
 
 export function resultText(item: TaskProgress) {
-  return item.final_result || item.result || (item.status === 'running' || item.status === 'created' ? '正在执行，请稍候…' : '本次执行未返回结果')
+  return item.final_result || item.result || (item.status === 'running' || item.status === 'created'
+    ? t('components.taskProgress.running')
+    : t('components.taskProgress.noResult'))
 }
 
 export function sanitizeUserMessageText(value: string) {
   return normalizeClipboardText(
     value
       .replace(TASK_IMAGE_MARKER_RE, '')
-      .replace(TASK_IMAGE_ATTACHMENT_PATH_RE, '已粘贴图片'),
+      .replace(TASK_IMAGE_ATTACHMENT_PATH_RE, t('components.taskProgress.pastedImage')),
   )
 }
 
 export function userMessageText(item: TaskProgress) {
   return sanitizeUserMessageText(item.user_prompt || item.question || '')
+}
+
+// CLI 类型 → 展示名。执行过程汇总行与执行控制台共用同一份映射，避免两处漂移。
+const CLI_DISPLAY_NAMES: Record<string, string> = {
+  claude: 'Claude Code',
+  codebuddy: 'CodeBuddy Code',
+  codex: 'Codex CLI',
+  cursor: 'Cursor Agent',
+  opencode: 'OpenCode',
+  copilot: 'GitHub Copilot CLI',
+  grok: 'Grok CLI',
+  hermes: 'Hermes',
+  kimi: 'Kimi Code',
+  qoder: 'Qoder CLI',
+  'qoder-cn': 'Qoder CLI (CN)',
+  qwen: 'Qwen Code',
+  openclaw: 'OpenClaw',
+  pi: 'Pi Agent',
+}
+
+export function cliDisplayName(cliType?: string) {
+  const key = (cliType || '').trim()
+  if (!key) return 'CLI'
+  return CLI_DISPLAY_NAMES[key] || key.toUpperCase() || 'CLI'
 }

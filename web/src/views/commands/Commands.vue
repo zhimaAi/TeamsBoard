@@ -2,6 +2,9 @@
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import apiClient from '@/api/client'
+import { useAppI18n } from '@/i18n'
+
+const { t, locale } = useAppI18n()
 
 type CommandKind = 'git' | 'docker'
 type Project = {
@@ -45,41 +48,41 @@ type ResultMessage = {
   exitCode?: number
 }
 
-const gitActions = [
-  ['status', '查看工作区状态'],
-  ['log', '查看提交历史'],
-  ['branch', '查看或管理分支'],
-  ['diff', '查看代码差异'],
-  ['fetch', '拉取远程引用'],
-  ['pull', '拉取并合并'],
-  ['push', '推送当前分支'],
-  ['add', '添加文件到暂存区'],
-  ['commit', '提交暂存区内容'],
-  ['checkout', '切换分支或文件'],
-  ['stash', '管理暂存修改'],
-  ['merge', '合并分支'],
-  ['rebase', '变基分支'],
-] as const
+const gitActions = computed(() => [
+  ['status', t('commands.actions.status')] as const,
+  ['log', t('commands.actions.log')] as const,
+  ['branch', t('commands.actions.branch')] as const,
+  ['diff', t('commands.actions.diff')] as const,
+  ['fetch', t('commands.actions.fetch')] as const,
+  ['pull', t('commands.actions.pull')] as const,
+  ['push', t('commands.actions.push')] as const,
+  ['add', t('commands.actions.add')] as const,
+  ['commit', t('commands.actions.commit')] as const,
+  ['checkout', t('commands.actions.checkout')] as const,
+  ['stash', t('commands.actions.stash')] as const,
+  ['merge', t('commands.actions.merge')] as const,
+  ['rebase', t('commands.actions.rebase')] as const,
+])
 
-const dockerActions = [
-  ['ps', '查看容器状态'],
-  ['up', '创建并启动服务'],
-  ['down', '停止并移除服务'],
-  ['logs', '查看服务日志'],
-  ['build', '构建服务镜像'],
-  ['restart', '重启服务'],
-  ['stop', '停止服务'],
-  ['start', '启动已有服务'],
-  ['config', '查看解析后的 Compose 配置'],
-  ['images', '查看服务镜像'],
-] as const
+const dockerActions = computed(() => [
+  ['ps', t('commands.actions.ps')] as const,
+  ['up', t('commands.actions.up')] as const,
+  ['down', t('commands.actions.down')] as const,
+  ['logs', t('commands.actions.logs')] as const,
+  ['build', t('commands.actions.build')] as const,
+  ['restart', t('commands.actions.restart')] as const,
+  ['stop', t('commands.actions.stop')] as const,
+  ['start', t('commands.actions.start')] as const,
+  ['config', t('commands.actions.config')] as const,
+  ['images', t('commands.actions.images')] as const,
+])
 
-const topCommands: Suggestion[] = [
-  { token: 'git', label: '/git', description: 'Git 项目常用操作', icon: '⑂' },
-  { token: 'docker', label: '/docker', description: 'Docker Compose 服务操作', icon: '◇' },
-  { token: 'history', label: '/history', description: '查看最近命令执行记录', icon: '◷' },
-  { token: 'help', label: '/help', description: '显示命令使用说明', icon: '?' },
-]
+const topCommands = computed<Suggestion[]>(() => [
+  { token: 'git', label: '/git', description: t('commands.git'), icon: '⑂' },
+  { token: 'docker', label: '/docker', description: t('commands.docker'), icon: '◇' },
+  { token: 'history', label: '/history', description: t('commands.history'), icon: '◷' },
+  { token: 'help', label: '/help', description: t('commands.help'), icon: '?' },
+])
 
 const inputRef = ref<HTMLInputElement>()
 const resultListRef = ref<HTMLElement>()
@@ -91,6 +94,13 @@ const gitProjects = ref<Project[]>([])
 const dockerProjects = ref<Project[]>([])
 const history = ref<HistoryRun[]>([])
 const results = ref<ResultMessage[]>([])
+
+// status 是后端与本地共用的机器枚举，展示时必须映射为当前语言的标签。
+function statusLabel(status: string) {
+  if (status === 'success') return t('commands.status.success')
+  if (status === 'running') return t('commands.status.running')
+  return t('commands.status.failed')
+}
 
 // Results are ordered ascending by execution sequence; new results are appended to the end and auto-scrolled to the latest.
 function appendResult(item: ResultMessage) {
@@ -114,7 +124,7 @@ function quoteToken(value: string): string {
 }
 
 function actionsFor(kind: string) {
-  return kind === 'git' ? gitActions : kind === 'docker' ? dockerActions : []
+  return kind === 'git' ? gitActions.value : kind === 'docker' ? dockerActions.value : []
 }
 
 function projectsFor(kind: string) {
@@ -128,19 +138,19 @@ function tokenMatches(value: string, query: string) {
 const suggestions = computed<Suggestion[]>(() => {
   const tokens = parseTokens(inputText.value)
   const trailingSpace = /\s$/.test(inputText.value)
-  if (tokens.length === 0) return topCommands
+  if (tokens.length === 0) return topCommands.value
 
   const top = tokens[0].toLowerCase()
   if (!['git', 'docker', 'history', 'help'].includes(top)) {
-    return topCommands.filter((item) =>
+    return topCommands.value.filter((item) =>
       tokenMatches(item.token, top) || tokenMatches(item.description, top))
   }
   if (top === 'help') return []
   if (top === 'history') {
     const query = tokens.length > 1 && !trailingSpace ? tokens[1] : ''
     return [
-      { token: 'git', label: 'git', description: '只看 Git 历史', icon: '⑂' },
-      { token: 'docker', label: 'docker', description: '只看 Docker 历史', icon: '◇' },
+      { token: 'git', label: 'git', description: t('commands.gitHistory'), icon: '⑂' },
+      { token: 'docker', label: 'docker', description: t('commands.dockerHistory'), icon: '◇' },
     ].filter((item) => !query || tokenMatches(item.token, query))
   }
 
@@ -163,8 +173,8 @@ const suggestions = computed<Suggestion[]>(() => {
         token: quoteToken(project.name),
         label: project.name,
         description: top === 'git'
-          ? `${project.ssh_name || 'SSH'} · ${project.remote_work_dir || '远程目录'}`
-          : project.compose_file_path || 'Compose 项目',
+          ? `${project.ssh_name || 'SSH'} · ${project.remote_work_dir || t('commands.remoteDirectory')}`
+          : project.compose_file_path || t('commands.composeProject'),
         icon: top === 'git' ? '⑂' : '◇',
       }))
   }
@@ -184,20 +194,20 @@ const commandReady = computed(() => {
 
 const breadcrumb = computed(() => {
   const tokens = parseTokens(inputText.value)
-  if (!tokens.length) return '选择一级命令'
-  if (tokens[0] === 'history') return 'history › 可选类型'
+  if (!tokens.length) return t('commands.selectCommand')
+  if (tokens[0] === 'history') return `history › ${t('commands.optionalType')}`
   if (tokens[0] === 'help') return 'help'
-  if (tokens.length === 1) return `${tokens[0]} › 选择操作`
-  if (tokens.length === 2) return `${tokens[0]} › ${tokens[1]} › 选择项目`
-  return `${tokens[0]} › ${tokens[1]} › ${tokens[2]} › 可继续输入参数`
+  if (tokens.length === 1) return `${tokens[0]} › ${t('commands.selectAction')}`
+  if (tokens.length === 2) return `${tokens[0]} › ${tokens[1]} › ${t('commands.selectProject')}`
+  return `${tokens[0]} › ${tokens[1]} › ${tokens[2]} › ${t('commands.continueArgs')}`
 })
 
 const nextHint = computed(() => {
   const tokens = parseTokens(inputText.value)
-  if (!tokens.length) return '输入 / 唤起命令，↑↓ 选择，Tab 或 Enter 补全'
-  if (suggestions.value.length) return `下一步：${breadcrumb.value}`
-  if (commandReady.value) return '命令已完整，按 Enter 执行；项目名后的内容会作为命令参数'
-  return '未识别的命令；输入 /help 查看帮助'
+  if (!tokens.length) return t('commands.inputHint')
+  if (suggestions.value.length) return t('commands.next', { step: breadcrumb.value })
+  if (commandReady.value) return t('commands.ready')
+  return t('commands.unknown')
 })
 
 function replaceCurrentToken(token: string) {
@@ -292,9 +302,9 @@ async function showHistory(type?: string) {
     status: 'success',
     output: history.value.length
       ? history.value.map((item) =>
-          `${new Date(item.started_at).toLocaleString()}  ${item.command_type} ${item.command} ${(item.args || []).join(' ')}  [${item.status}]`,
+          `${new Date(item.started_at).toLocaleString(locale.value)}  ${item.command_type} ${item.command} ${(item.args || []).join(' ')}  [${item.status}]`,
         ).join('\n')
-      : '暂无命令历史',
+      : t('commands.emptyHistory'),
   })
 }
 
@@ -308,11 +318,11 @@ async function executeCommand() {
       command: rawCommand,
       status: 'success',
       output: [
-        '/git <操作> <项目> [参数...]',
-        '/docker <操作> <项目> [参数...]',
+        `/git <${t('commands.selectAction')}> <${t('commands.selectProject')}> [${t('commands.continueArgs')}]`,
+        `/docker <${t('commands.selectAction')}> <${t('commands.selectProject')}> [${t('commands.continueArgs')}]`,
         '/history [git|docker]',
         '',
-        '输入一级命令后使用 ↑↓ 选择，Tab/Enter 补全；命令完整后按 Enter 执行。',
+        t('commands.completionHelp'),
       ].join('\n'),
     })
     inputText.value = ''
@@ -326,7 +336,7 @@ async function executeCommand() {
     return
   }
   if (!commandReady.value) {
-    message.warning('命令还不完整')
+    message.warning(t('commands.incomplete'))
     return
   }
 
@@ -334,13 +344,13 @@ async function executeCommand() {
   const project = projectsFor(kind).find((item) =>
     item.name.toLowerCase() === tokens[2].toLowerCase() || String(item.id) === tokens[2])
   if (!project) {
-    message.error('未找到项目配置')
+    message.error(t('commands.projectMissing'))
     return
   }
   const resultItem: ResultMessage = {
     command: rawCommand,
     status: 'running',
-    output: '正在执行...',
+    output: t('commands.running'),
   }
   appendResult(resultItem)
   executing.value = true
@@ -352,13 +362,13 @@ async function executeCommand() {
       args: tokens.slice(3),
     })
     resultItem.status = response.status === 'success' ? 'success' : 'failed'
-    resultItem.output = response.output || '（无输出）'
+    resultItem.output = response.output || t('commands.emptyOutput')
     resultItem.durationMs = response.duration_ms
     resultItem.exitCode = response.exit_code
     await loadData()
   } catch (error) {
     resultItem.status = 'failed'
-    resultItem.output = error instanceof Error ? error.message : '执行失败'
+    resultItem.output = error instanceof Error ? error.message : t('commands.failed')
   } finally {
     executing.value = false
     inputText.value = ''
@@ -377,8 +387,8 @@ onMounted(async () => {
     <div class="command-main">
       <section v-if="results.length === 0" class="welcome">
         <div class="eyebrow">COMMAND PALETTE</div>
-        <h1>命令快捷操作</h1>
-        <p>像 dtool 一样，从一个斜杠命令开始，逐级选择操作和目标。</p>
+        <h1>{{ t('commands.title') }}</h1>
+        <p>{{ t('commands.subtitle') }}</p>
         <div class="top-command-grid">
           <button
             v-for="command in topCommands"
@@ -401,7 +411,7 @@ onMounted(async () => {
           <header>
             <code>{{ item.command }}</code>
             <a-tag :color="item.status === 'success' ? 'success' : item.status === 'running' ? 'processing' : 'error'">
-              {{ item.status }}
+              {{ statusLabel(item.status) }}
             </a-tag>
             <span v-if="item.durationMs !== undefined">{{ item.durationMs }} ms</span>
             <span v-if="item.exitCode !== undefined">exit {{ item.exitCode }}</span>
@@ -434,7 +444,7 @@ onMounted(async () => {
           ref="inputRef"
           v-model="inputText"
           type="text"
-          placeholder="输入 /git、/docker 或 /history"
+          :placeholder="t('commands.input')"
           autocomplete="off"
           spellcheck="false"
           @input="handleInput"
@@ -442,7 +452,7 @@ onMounted(async () => {
           @keydown="handleKeydown"
         />
         <button type="button" :disabled="executing || !commandReady" @click="executeCommand">
-          {{ executing ? '执行中' : '执行' }}
+          {{ executing ? t('commands.executing') : t('commands.execute') }}
         </button>
       </div>
       <div class="next-hint">{{ nextHint }}</div>

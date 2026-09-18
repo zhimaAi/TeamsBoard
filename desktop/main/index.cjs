@@ -5,8 +5,11 @@ const { app, dialog, Menu, session, Tray } = require('electron')
 const { APP_ICON_PATH, configureAppIdentity } = require('./app-identity.cjs')
 const { BackendSupervisor } = require('./backend-supervisor.cjs')
 const { DesktopPreferences } = require('./desktop-preferences.cjs')
+const { setLocale, t } = require('./desktop-i18n.cjs')
 const { registerDialogIPC } = require('./ipc/dialog.cjs')
 const { registerApiTokenIPC } = require('./ipc/api-token.cjs')
+const { registerCodexIPC } = require('./ipc/codex.cjs')
+const { registerTaskNotificationIPC } = require('./ipc/notification.cjs')
 const { registerTrayIPC } = require('./ipc/tray.cjs')
 const { installApplicationMenu } = require('./application-menu.cjs')
 const { TrayManager } = require('./tray-manager.cjs')
@@ -26,6 +29,8 @@ let backend = null
 let backendConnection = null
 let removeIPC = null
 let removeApiTokenIPC = null
+let removeCodexIPC = null
+let removeTaskNotificationIPC = null
 let removeTrayIPC = null
 let desktopPreferences = null
 let trayManager = null
@@ -100,20 +105,20 @@ async function requestQuit() {
   if (!taskStatus?.known) {
     dialogOptions = {
       type: 'warning',
-      title: '退出 TeamsBoard',
-      message: '无法确认是否有任务正在执行',
-      detail: '退出 TeamsBoard 将停止本地后台服务。建议继续在后台运行。',
-      buttons: ['继续后台运行', '仍然退出'],
+      title: t('dialog.quit.title'),
+      message: t('dialog.quit.statusUnknown.message'),
+      detail: t('dialog.quit.statusUnknown.detail'),
+      buttons: [t('dialog.quit.keepRunning'), t('dialog.quit.quitAnyway')],
       defaultId: 0,
       cancelId: 0,
     }
   } else if (taskStatus.count > 0) {
     dialogOptions = {
       type: 'warning',
-      title: '退出 TeamsBoard',
-      message: `当前有 ${taskStatus.count} 个任务正在执行`,
-      detail: '退出 TeamsBoard 将中断这些任务。',
-      buttons: ['继续后台运行', '仍然退出'],
+      title: t('dialog.quit.title'),
+      message: t('dialog.quit.runningTasks.message', { count: taskStatus.count }),
+      detail: t('dialog.quit.runningTasks.detail'),
+      buttons: [t('dialog.quit.keepRunning'), t('dialog.quit.quitAnyway')],
       defaultId: 0,
       cancelId: 0,
     }
@@ -150,10 +155,10 @@ async function handleMainWindowClose(win) {
   try {
     const result = await showNativeDialog({
       type: 'question',
-      title: '关闭 TeamsBoard',
-      message: '关闭窗口后，TeamsBoard 可以继续在后台运行',
-      detail: '正在执行的任务不会中断，你可以通过系统托盘重新打开或退出应用。',
-      buttons: ['最小化到托盘', '退出 TeamsBoard', '取消'],
+      title: t('dialog.close.title'),
+      message: t('dialog.close.message'),
+      detail: t('dialog.close.detail'),
+      buttons: [t('dialog.close.minimizeToTray'), t('dialog.close.quit'), t('dialog.close.cancel')],
       defaultId: 0,
       cancelId: 2,
     })
@@ -179,6 +184,9 @@ async function handleMainWindowClose(win) {
 
 function createTray() {
   desktopPreferences = new DesktopPreferences(app.getPath('userData'))
+  // 托盘在渲染层加载之前就要创建，先用上次持久化的语言渲染；
+  // 渲染层就绪后会通过 desktop:set-locale 把当前语言同步回来。
+  setLocale(desktopPreferences.get().locale)
   trayManager = new TrayManager({
     Tray,
     Menu,
@@ -210,11 +218,11 @@ async function startApplication() {
 
   backend.on('exit', ({ expected }) => {
     if (!expected && !quitting) {
-      failAndQuit('TeamsBoard 服务已停止', '本地服务意外退出，客户端即将关闭。')
+      failAndQuit(t('error.backendStopped.title'), t('error.backendStopped.detail'))
     }
   })
   backend.on('error', error => {
-    failAndQuit('TeamsBoard 服务启动失败', error)
+    failAndQuit(t('error.backendStartFailed.title'), error)
   })
 
   backendConnection = await backend.start()
@@ -223,6 +231,11 @@ async function startApplication() {
   trackMainWindow(created.win)
   removeIPC = registerDialogIPC(created.allowedOrigins)
   removeApiTokenIPC = registerApiTokenIPC(created.allowedOrigins, backendConnection.apiToken)
+  removeCodexIPC = registerCodexIPC(created.allowedOrigins)
+  removeTaskNotificationIPC = registerTaskNotificationIPC(created.allowedOrigins, {
+    getMainWindow: () => mainWindow,
+    showOrCreateMainWindow,
+  })
   removeTrayIPC = registerTrayIPC(created.allowedOrigins, desktopPreferences, trayManager)
   trayManager.setReady()
 }
@@ -236,7 +249,7 @@ if (!singleInstance) {
     createTray()
     return startApplication()
   }).catch(error => {
-    failAndQuit('TeamsBoard 启动失败', error)
+    failAndQuit(t('error.appStartFailed.title'), error)
   })
 
   app.on('second-instance', () => {
@@ -253,6 +266,8 @@ if (!singleInstance) {
     quitting = true
     removeIPC?.()
     removeApiTokenIPC?.()
+    removeCodexIPC?.()
+    removeTaskNotificationIPC?.()
     removeTrayIPC?.()
     trayManager?.destroy()
     void Promise.resolve(backend?.stop()).finally(() => app.exit(exitCode))

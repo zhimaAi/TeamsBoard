@@ -42,6 +42,53 @@ function writeProxyError(res: http.ServerResponse, target: string | null) {
   res.end(JSON.stringify({ error: message }))
 }
 
+const VDITOR_ASSET_PATHS = [
+  'js/lute',
+  'js/i18n/zh_CN.js',
+  'js/i18n/en_US.js',
+  'js/icons/ant.js',
+  'css/content-theme',
+  'images',
+]
+
+function copyVditorPath(from: string, to: string) {
+  const stat = fs.statSync(from)
+  if (stat.isDirectory()) {
+    fs.mkdirSync(to, { recursive: true })
+    for (const entry of fs.readdirSync(from)) {
+      copyVditorPath(path.join(from, entry), path.join(to, entry))
+    }
+    return
+  }
+  fs.mkdirSync(path.dirname(to), { recursive: true })
+  fs.copyFileSync(from, to)
+}
+
+function copyVditorAssetsPlugin(): Plugin {
+  const sourceRoot = path.resolve(__dirname, 'node_modules/vditor/dist')
+  const targetRoot = path.resolve(__dirname, 'public/vditor/dist')
+
+  function copyAssets() {
+    for (const relativePath of VDITOR_ASSET_PATHS) {
+      const from = path.join(sourceRoot, relativePath)
+      if (!fs.existsSync(from)) {
+        throw new Error(`缺少 Vditor 资源：${from}`)
+      }
+      copyVditorPath(from, path.join(targetRoot, relativePath))
+    }
+  }
+
+  return {
+    name: 'copy-vditor-assets',
+    buildStart() {
+      copyAssets()
+    },
+    configureServer() {
+      copyAssets()
+    },
+  }
+}
+
 function localBackendProxyPlugin(resolveTarget: () => string | null): Plugin {
   return {
     name: 'goteams-local-backend-proxy',
@@ -128,6 +175,7 @@ export default defineConfig(({ mode }) => {
           }),
         ],
       }),
+      copyVditorAssetsPlugin(),
       localBackendProxyPlugin(resolveBackendTarget),
     ],
     resolve: {

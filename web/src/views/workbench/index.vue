@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useLastLogin } from '@/composables/useLastLogin'
 import LoginForm from './components/LoginForm.vue'
 import MyWorkView from './components/MyWorkView.vue'
+import { useAppI18n } from '@/i18n'
 
 type CloudConfigState = 'loading' | 'configured' | 'unconfigured'
 
@@ -30,6 +31,7 @@ const appStore = useAppStore()
 const configState = ref<CloudConfigState>('loading')
 const loginLoading = ref(false)
 const officialUrl = ref('')
+const { t } = useAppI18n()
 
 async function loadCloudStatus() {
   try {
@@ -70,7 +72,7 @@ async function handleLogin(form: {
     authStore.setCloudAuth('local-session', userInfo)
     authStore.setLocalSession(true)
     appStore.setCloudStatus('online')
-    message.success('登录成功')
+    message.success(t('workbench.loginSuccess'))
 
     // Remember this login method and auto-select it and refill the custom domain next time.
     useLastLogin().saveLastLogin({
@@ -78,7 +80,7 @@ async function handleLogin(form: {
       serverUrl: serverType === 'custom' ? form.serverUrl : officialUrl.value,
     })
   } catch (error) {
-    const errorMessage = error instanceof ApiError ? error.message : '登录失败，请重试'
+    const errorMessage = error instanceof ApiError ? error.message : t('workbench.loginFailed')
     message.error(errorMessage)
   } finally {
     loginLoading.value = false
@@ -105,8 +107,8 @@ watch(() => authStore.cloudLoggedIn, (loggedIn) => {
       </div>
 
       <template v-else>
-        <h1>欢迎回来</h1>
-        <p class="login-subtitle">请登录以继续使用 TeamsBoard</p>
+        <h1>{{ t('workbench.welcome') }}</h1>
+        <p class="login-subtitle">{{ t('workbench.loginSubtitle') }}</p>
 
         <LoginForm
           :loading="loginLoading"

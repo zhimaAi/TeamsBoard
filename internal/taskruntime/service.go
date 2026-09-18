@@ -77,7 +77,11 @@ type CreateInput struct {
 	WorkDirs                   []string
 	Status                     string
 	SelectedPipelineUUID       string
+	SelectedExpertGroupUUID    string
 	SelectedPipelineConfigJSON string
+	ExecutionMode              string
+	ExecutionTool              string
+	ExecutionModel             string
 	Snapshot                   Snapshot
 }
 
@@ -108,6 +112,19 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (taskUUID string, 
 	}
 	if in.SourceType != "local" && in.SourceType != "cloud" {
 		return "", fmt.Errorf("无效任务来源: %s", in.SourceType)
+	}
+	in.ExecutionMode = NormalizeExecutionMode(in.ExecutionMode)
+	in.ExecutionTool = strings.ToLower(strings.TrimSpace(in.ExecutionTool))
+	if in.ExecutionMode == "" && strings.TrimSpace(in.SelectedPipelineUUID) != "" {
+		in.ExecutionMode = ExecutionModePipeline
+	}
+	if err := ValidateExecutionTarget(in.ExecutionMode, in.ExecutionTool, in.SelectedPipelineUUID, in.SelectedExpertGroupUUID); err != nil {
+		return "", err
+	}
+	if in.ExecutionMode == ExecutionModeCLI {
+		if err := ValidateCLITarget(in.ExecutionTool, in.ExecutionModel); err != nil {
+			return "", err
+		}
 	}
 	hasSnapshot := strings.TrimSpace(in.Snapshot.SourcePipelineID) != "" || len(in.Snapshot.Steps) > 0
 	if hasSnapshot {
@@ -172,8 +189,11 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (taskUUID string, 
 	if status != "pending" && status != "active" && status != "done" && status != "blocked" {
 		return "", fmt.Errorf("无效任务状态: %s", status)
 	}
-	if status == "active" && !hasSnapshot {
+	if status == "active" && in.ExecutionMode == ExecutionModePipeline && !hasSnapshot {
 		return "", fmt.Errorf("任务启动前必须选择流水线")
+	}
+	if status == "active" && in.ExecutionMode == "" {
+		return "", fmt.Errorf("任务启动前必须选择执行方式")
 	}
 	snapshotUUID := ""
 	hash := ""
@@ -192,12 +212,13 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (taskUUID string, 
 	_, err = tx.ExecContext(ctx, `INSERT INTO gt_tasks
 		(uuid, source_type, cloud_source_key, cloud_user_id, work_item_type, work_item_id, workspace_id, project_uuid,
 		 title, content_snapshot, priority, planned_start_date, planned_end_date, task_dir_id, task_dir, task_md_path,
-		 selected_pipeline_uuid, selected_pipeline_config_json, pipeline_snapshot_uuid,
+		 selected_pipeline_uuid, selected_pipeline_config_json, pipeline_snapshot_uuid, selected_expert_group_uuid, execution_mode, execution_tool,
 		 status, execution_status, current_step_uuid, current_step_completed, work_dir, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', '', 0, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', '', 0, ?, ?, ?)`,
 		taskUUID, in.SourceType, in.CloudSourceKey, in.CloudUserID, in.WorkItemType, in.WorkItemID, in.WorkspaceID,
 		strings.TrimSpace(in.ProjectUUID), in.Title, in.Content, strings.TrimSpace(in.Priority), strings.TrimSpace(in.PlannedStartDate), strings.TrimSpace(in.PlannedEndDate), taskDirID, taskDir, taskMDPath,
-		strings.TrimSpace(in.SelectedPipelineUUID), strings.TrimSpace(in.SelectedPipelineConfigJSON), snapshotUUID, status, workDirs[0], now, now)
+		strings.TrimSpace(in.SelectedPipelineUUID), strings.TrimSpace(in.SelectedPipelineConfigJSON), snapshotUUID,
+		strings.TrimSpace(in.SelectedExpertGroupUUID), in.ExecutionMode, in.ExecutionTool, status, workDirs[0], now, now)
 	if err != nil {
 		return "", fmt.Errorf("创建任务失败: %w", err)
 	}
@@ -245,6 +266,21 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (taskUUID string, 
 			return "", fmt.Errorf("保存临时 Agent 编排失败: %w", err)
 		}
 	}
+	// CLI 直接执行没有 Agent 编排，但依然需要一条隐式步骤承载用户选定的
+	// CLI 与模型，使会话、动态、停止和断线恢复复用同一条执行链路。
+	// 该步骤不参与流水线进度，状态恒为 active，作为接收第一条指令的门槛。
+	if in.ExecutionMode == ExecutionModeCLI {
+		stepUUID := uuid.New().String()
+		if _, err = tx.ExecContext(ctx, `INSERT INTO gt_task_steps
+			(uuid, task_uuid, task_pipeline_snapshot_uuid, source_type, step_key, step_order, name, description, avatar,
+			 prompt_snapshot, cli_type, model_name, step_dir, status, execution_status, execution_mode, created_at, updated_at)
+			VALUES (?, ?, '', ?, ?, 0, ?, '', '', '', ?, ?, '', 'active', 'idle', ?, ?, ?)`,
+			stepUUID, taskUUID, in.SourceType, CLIDirectStepKey, CLIDirectStepName, in.ExecutionTool,
+			in.ExecutionModel, ExecutionModeCLI, now, now); err != nil {
+			return "", fmt.Errorf("保存 CLI 直接执行步骤失败: %w", err)
+		}
+		currentStepUUID = stepUUID
+	}
 	if currentStepUUID != "" {
 		if _, err = tx.ExecContext(ctx, `UPDATE gt_tasks SET current_step_uuid = ? WHERE uuid = ?`, currentStepUUID, taskUUID); err != nil {
 			return "", fmt.Errorf("设置当前 Agent 编排失败: %w", err)
@@ -266,10 +302,10 @@ func (s *Service) Update(ctx context.Context, taskUUID string, in UpdateInput) e
 		return fmt.Errorf("任务标题不能为空")
 	}
 
-	var status, taskMDPath, currentStep, snapshotUUID, selectedPipelineUUID, projectUUID, previousContent string
+	var status, taskMDPath, currentStep, snapshotUUID, selectedPipelineUUID, projectUUID, previousContent, executionMode, executionTool string
 	err := s.db.QueryRowContext(ctx, `SELECT status, task_md_path, current_step_uuid, pipeline_snapshot_uuid,
-		selected_pipeline_uuid, project_uuid, content_snapshot FROM gt_tasks WHERE uuid = ?`, taskUUID).
-		Scan(&status, &taskMDPath, &currentStep, &snapshotUUID, &selectedPipelineUUID, &projectUUID, &previousContent)
+		selected_pipeline_uuid, project_uuid, content_snapshot, execution_mode, execution_tool FROM gt_tasks WHERE uuid = ?`, taskUUID).
+		Scan(&status, &taskMDPath, &currentStep, &snapshotUUID, &selectedPipelineUUID, &projectUUID, &previousContent, &executionMode, &executionTool)
 	if err == sql.ErrNoRows {
 		return ErrNotFound
 	}
@@ -280,6 +316,9 @@ func (s *Service) Update(ctx context.Context, taskUUID string, in UpdateInput) e
 	pending := status == "pending" && currentStep == ""
 	nextProjectUUID := strings.TrimSpace(in.ProjectUUID)
 	nextPipelineUUID := strings.TrimSpace(in.SelectedPipelineUUID)
+	if nextPipelineUUID != "" && executionMode != "" && executionMode != ExecutionModePipeline {
+		return ErrExecutionModeConflict
+	}
 	nextWorkDirs := in.WorkDirs
 	nextSubprojects := in.SubprojectUUIDs
 	if !pending {
@@ -326,12 +365,18 @@ func (s *Service) Update(ctx context.Context, taskUUID string, in UpdateInput) e
 
 	now := time.Now().UnixMilli()
 	if pending {
+		nextExecutionMode := executionMode
+		nextExecutionTool := executionTool
+		if nextPipelineUUID != "" {
+			nextExecutionMode = ExecutionModePipeline
+			nextExecutionTool = ""
+		}
 		if _, err = tx.ExecContext(ctx, `UPDATE gt_tasks
 			SET title=?, content_snapshot=?, priority=?, planned_start_date=?, planned_end_date=?,
-			    project_uuid=?, selected_pipeline_uuid=?, work_dir=?, updated_at=?
+			    project_uuid=?, selected_pipeline_uuid=?, execution_mode=?, execution_tool=?, work_dir=?, updated_at=?
 			WHERE uuid=?`,
 			in.Title, in.Content, strings.TrimSpace(in.Priority), strings.TrimSpace(in.PlannedStartDate),
-			strings.TrimSpace(in.PlannedEndDate), nextProjectUUID, nextPipelineUUID, workDirs[0], now, taskUUID); err != nil {
+			strings.TrimSpace(in.PlannedEndDate), nextProjectUUID, nextPipelineUUID, nextExecutionMode, nextExecutionTool, workDirs[0], now, taskUUID); err != nil {
 			return fmt.Errorf("更新任务失败: %w", err)
 		}
 		if _, err = tx.ExecContext(ctx, `DELETE FROM gt_task_project_links WHERE task_uuid=?`, taskUUID); err != nil {
@@ -431,17 +476,29 @@ func extractPastedImagesSection(content string) string {
 // AssignPipeline creates the task's immutable, permanent execution snapshot.
 // A task can be assigned exactly once and only before it has started.
 func (s *Service) AssignPipeline(ctx context.Context, taskUUID string, snapshot Snapshot) (err error) {
+	return s.AssignPipelineSelection(ctx, taskUUID, "", "", snapshot)
+}
+
+// AssignPipelineSelection atomically persists the selected pipeline, its
+// execution configuration and the immutable task snapshot. Empty selection
+// fields preserve values already stored during task creation.
+func (s *Service) AssignPipelineSelection(ctx context.Context, taskUUID, selectedPipelineUUID, selectedConfigJSON string, snapshot Snapshot) (err error) {
 	if err := ValidateSnapshot(&snapshot); err != nil {
 		return err
 	}
-	var taskDir, status, existingSnapshot, currentStep string
-	err = s.db.QueryRowContext(ctx, `SELECT task_dir, status, pipeline_snapshot_uuid, current_step_uuid FROM gt_tasks WHERE uuid = ?`, taskUUID).
-		Scan(&taskDir, &status, &existingSnapshot, &currentStep)
+	selectedPipelineUUID = strings.TrimSpace(selectedPipelineUUID)
+	selectedConfigJSON = strings.TrimSpace(selectedConfigJSON)
+	var taskDir, status, existingSnapshot, currentStep, executionMode string
+	err = s.db.QueryRowContext(ctx, `SELECT task_dir, status, pipeline_snapshot_uuid, current_step_uuid, execution_mode FROM gt_tasks WHERE uuid = ?`, taskUUID).
+		Scan(&taskDir, &status, &existingSnapshot, &currentStep, &executionMode)
 	if err == sql.ErrNoRows {
 		return ErrNotFound
 	}
 	if err != nil {
 		return err
+	}
+	if executionMode != "" && executionMode != ExecutionModePipeline {
+		return ErrExecutionModeConflict
 	}
 	if status == "done" || currentStep != "" {
 		return fmt.Errorf("任务已经开始，不能重新分配流水线")
@@ -478,7 +535,7 @@ func (s *Service) AssignPipeline(ctx context.Context, taskUUID string, snapshot 
 	}
 	defer tx.Rollback()
 	var unchanged int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM gt_tasks WHERE uuid=? AND pipeline_snapshot_uuid='' AND current_step_uuid='' AND status<>'done'`, taskUUID).Scan(&unchanged); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM gt_tasks WHERE uuid=? AND pipeline_snapshot_uuid='' AND current_step_uuid='' AND status<>'done' AND execution_mode IN ('', 'pipeline')`, taskUUID).Scan(&unchanged); err != nil {
 		return err
 	}
 	if unchanged != 1 {
@@ -504,8 +561,153 @@ func (s *Service) AssignPipeline(ctx context.Context, taskUUID string, snapshot 
 			return err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE gt_tasks SET pipeline_snapshot_uuid=?, updated_at=? WHERE uuid=? AND pipeline_snapshot_uuid=''`, snapshotUUID, now, taskUUID); err != nil {
+	result, err := tx.ExecContext(ctx, `UPDATE gt_tasks SET
+		pipeline_snapshot_uuid=?,
+		selected_pipeline_uuid=CASE WHEN ?<>'' THEN ? ELSE selected_pipeline_uuid END,
+		selected_pipeline_config_json=CASE WHEN ?<>'' THEN ? ELSE selected_pipeline_config_json END,
+		execution_mode='pipeline', execution_tool='', updated_at=?
+		WHERE uuid=? AND pipeline_snapshot_uuid='' AND current_step_uuid='' AND status<>'done' AND execution_mode IN ('', 'pipeline')`,
+		snapshotUUID, selectedPipelineUUID, selectedPipelineUUID, selectedConfigJSON, selectedConfigJSON, now, taskUUID)
+	if err != nil {
 		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return fmt.Errorf("任务状态已变化，不能分配流水线")
+	}
+	return tx.Commit()
+}
+
+// AssignVibeCoding assigns the task to an external editor without starting the
+// internal workflow. start only moves the board status to active.
+func (s *Service) AssignVibeCoding(ctx context.Context, taskUUID, tool string, start bool) error {
+	tool = strings.ToLower(strings.TrimSpace(tool))
+	if err := ValidateExecutionAssignment(ExecutionModeVibeCoding, tool, ""); err != nil {
+		return err
+	}
+	var mode, existingTool, status, pipelineUUID, snapshotUUID, currentStep string
+	err := s.db.QueryRowContext(ctx, `SELECT execution_mode, execution_tool, status, selected_pipeline_uuid, pipeline_snapshot_uuid, current_step_uuid
+		FROM gt_tasks WHERE uuid=?`, taskUUID).Scan(&mode, &existingTool, &status, &pipelineUUID, &snapshotUUID, &currentStep)
+	if err == sql.ErrNoRows {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if mode != "" && (mode != ExecutionModeVibeCoding || existingTool != tool) {
+		return ErrExecutionModeConflict
+	}
+	if pipelineUUID != "" || snapshotUUID != "" || currentStep != "" {
+		return ErrExecutionModeConflict
+	}
+	if start && status == "done" {
+		return fmt.Errorf("已完成任务不能重新启动")
+	}
+	nextStatus := status
+	if start {
+		nextStatus = "active"
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE gt_tasks SET execution_mode=?, execution_tool=?, status=?, updated_at=?
+		WHERE uuid=? AND execution_mode IN ('', 'vibe_coding') AND selected_pipeline_uuid='' AND pipeline_snapshot_uuid='' AND current_step_uuid=''`,
+		ExecutionModeVibeCoding, tool, nextStatus, time.Now().UnixMilli(), taskUUID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrExecutionModeConflict
+	}
+	return nil
+}
+
+// AssignCLI assigns the task to a direct CLI and model execution. The mode skips
+// both the pipeline and the Agent orchestration: it records the chosen runtime on
+// the implicit step, moves the board status to active, and waits for the user's
+// first instruction instead of starting a session.
+func (s *Service) AssignCLI(ctx context.Context, taskUUID, cliType, modelName string, start bool) error {
+	cliType = strings.ToLower(strings.TrimSpace(cliType))
+	modelName = strings.TrimSpace(modelName)
+	if err := ValidateExecutionTarget(ExecutionModeCLI, cliType, "", ""); err != nil {
+		return err
+	}
+	if err := ValidateCLITarget(cliType, modelName); err != nil {
+		return err
+	}
+	var mode, status, pipelineUUID, snapshotUUID, currentStep, expertSnapshotUUID string
+	err := s.db.QueryRowContext(ctx, `SELECT execution_mode, status, selected_pipeline_uuid,
+		pipeline_snapshot_uuid, current_step_uuid, expert_group_snapshot_uuid FROM gt_tasks WHERE uuid=?`,
+		taskUUID).Scan(&mode, &status, &pipelineUUID, &snapshotUUID, &currentStep, &expertSnapshotUUID)
+	if err == sql.ErrNoRows {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if mode != "" && mode != ExecutionModeCLI {
+		return ErrExecutionModeConflict
+	}
+	if pipelineUUID != "" || snapshotUUID != "" || expertSnapshotUUID != "" {
+		return ErrExecutionModeConflict
+	}
+	if start && status == "done" {
+		return fmt.Errorf("已完成任务不能重新启动")
+	}
+	nextStatus := status
+	if start {
+		nextStatus = "active"
+	}
+	now := time.Now().UnixMilli()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("开启 CLI 指派事务失败: %w", err)
+	}
+	defer tx.Rollback()
+
+	stepUUID := currentStep
+	if stepUUID != "" {
+		// 已指派过 CLI 的任务允许仅更新该隐式步骤的 CLI 与模型，其他来源的
+		// 当前步骤说明任务已被别的执行方式占用。
+		var stepKey string
+		if err = tx.QueryRowContext(ctx, `SELECT step_key FROM gt_task_steps WHERE task_uuid=? AND uuid=?`,
+			taskUUID, stepUUID).Scan(&stepKey); err != nil {
+			return ErrExecutionModeConflict
+		}
+		if stepKey != CLIDirectStepKey {
+			return ErrExecutionModeConflict
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE gt_task_steps SET cli_type=?, model_name=?, execution_mode=?, status='active', updated_at=?
+			WHERE task_uuid=? AND uuid=?`, cliType, modelName, ExecutionModeCLI, now, taskUUID, stepUUID); err != nil {
+			return fmt.Errorf("更新 CLI 直接执行步骤失败: %w", err)
+		}
+	} else {
+		stepUUID = uuid.New().String()
+		if _, err = tx.ExecContext(ctx, `INSERT INTO gt_task_steps
+			(uuid, task_uuid, task_pipeline_snapshot_uuid, source_type, step_key, step_order, name, description, avatar,
+			 prompt_snapshot, cli_type, model_name, step_dir, status, execution_status, execution_mode, created_at, updated_at)
+			VALUES (?, ?, '', 'local', ?, 0, ?, '', '', '', ?, ?, '', 'active', 'idle', ?, ?, ?)`,
+			stepUUID, taskUUID, CLIDirectStepKey, CLIDirectStepName, cliType, modelName,
+			ExecutionModeCLI, now, now); err != nil {
+			return fmt.Errorf("保存 CLI 直接执行步骤失败: %w", err)
+		}
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE gt_tasks SET execution_mode=?, execution_tool=?, status=?, current_step_uuid=?, updated_at=?
+		WHERE uuid=? AND execution_mode IN ('', 'cli') AND selected_pipeline_uuid='' AND pipeline_snapshot_uuid='' AND expert_group_snapshot_uuid=''`,
+		ExecutionModeCLI, cliType, nextStatus, stepUUID, now, taskUUID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrExecutionModeConflict
 	}
 	return tx.Commit()
 }
@@ -535,6 +737,7 @@ func (s *Service) Delete(ctx context.Context, taskUUID string) error {
 		`DELETE FROM gt_task_steps WHERE task_uuid = ?`,
 		`DELETE FROM gt_task_work_dirs WHERE task_uuid = ?`,
 		`DELETE FROM gt_task_pipeline_snapshots WHERE task_uuid = ?`,
+		`DELETE FROM gt_task_expert_group_snapshots WHERE task_uuid = ?`,
 		`DELETE FROM gt_tasks WHERE uuid = ?`,
 	} {
 		if _, err = tx.ExecContext(ctx, statement, taskUUID); err != nil {
@@ -563,8 +766,8 @@ func (s *Service) Start(ctx context.Context, taskUUID string) (string, error) {
 		return "", err
 	}
 	defer tx.Rollback()
-	var status, currentStepUUID, pipelineSnapshotUUID string
-	if err = tx.QueryRowContext(ctx, `SELECT status, current_step_uuid, pipeline_snapshot_uuid FROM gt_tasks WHERE uuid = ?`, taskUUID).Scan(&status, &currentStepUUID, &pipelineSnapshotUUID); err == sql.ErrNoRows {
+	var status, currentStepUUID, pipelineSnapshotUUID, expertSnapshotUUID, executionMode string
+	if err = tx.QueryRowContext(ctx, `SELECT status, current_step_uuid, pipeline_snapshot_uuid, expert_group_snapshot_uuid, execution_mode FROM gt_tasks WHERE uuid = ?`, taskUUID).Scan(&status, &currentStepUUID, &pipelineSnapshotUUID, &expertSnapshotUUID, &executionMode); err == sql.ErrNoRows {
 		return "", ErrNotFound
 	} else if err != nil {
 		return "", err
@@ -575,10 +778,14 @@ func (s *Service) Start(ctx context.Context, taskUUID string) (string, error) {
 	if currentStepUUID != "" {
 		return "", fmt.Errorf("任务已经开始")
 	}
-	if pipelineSnapshotUUID == "" {
+	if executionMode == ExecutionModePipeline && pipelineSnapshotUUID == "" {
 		return "", fmt.Errorf("任务启动前必须选择流水线")
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT uuid, COALESCE(cli_type,''), COALESCE(model_name,'') FROM gt_task_steps WHERE task_uuid = ? ORDER BY step_order, rowid`, taskUUID)
+	if executionMode == ExecutionModeExpertGroup && expertSnapshotUUID == "" {
+		return "", fmt.Errorf("任务启动前必须选择专家团")
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT uuid, COALESCE(cli_type,''), COALESCE(model_name,''), COALESCE(member_role,'')
+		FROM gt_task_steps WHERE task_uuid = ? ORDER BY step_order, rowid`, taskUUID)
 	if err != nil {
 		return "", err
 	}
@@ -587,12 +794,12 @@ func (s *Service) Start(ctx context.Context, taskUUID string) (string, error) {
 	for rows.Next() {
 		stepIndex++
 		var stepUUID string
-		var cliType, modelName string
-		if scanErr := rows.Scan(&stepUUID, &cliType, &modelName); scanErr != nil {
+		var cliType, modelName, memberRole string
+		if scanErr := rows.Scan(&stepUUID, &cliType, &modelName, &memberRole); scanErr != nil {
 			rows.Close()
 			return "", scanErr
 		}
-		if stepIndex == 1 {
+		if stepIndex == 1 || memberRole == "leader" {
 			currentStepUUID = stepUUID
 		}
 		if strings.TrimSpace(cliType) == "" || strings.TrimSpace(modelName) == "" {

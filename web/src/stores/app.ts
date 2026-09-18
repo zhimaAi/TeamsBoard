@@ -6,8 +6,8 @@ export type CloudStatus = 'online' | 'offline' | 'auth-expired'
 
 /** Manageable left navigation menu key (consistent with backend tools.MenuKeys) */
 export const MANAGEABLE_MENU_KEYS = [
-  'workflows',
   'tasks',
+  'workflows',
   'agents',
   'projects',
   'commands',
@@ -111,4 +111,3 @@ export const useAppStore = defineStore('app', () => {
     isMenuVisible,
   }
 })
-

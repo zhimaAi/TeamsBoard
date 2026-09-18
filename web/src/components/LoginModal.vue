@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 export interface LoginForm {
   serverType: 'official' | 'private'
@@ -47,15 +50,15 @@ async function handleLogin() {
   errorText.value = ''
 
   if (serverType.value === 'private' && !serverUrl.value.trim()) {
-    errorText.value = '请输入私有化部署地址'
+    errorText.value = t('components.login.privateAddressRequired')
     return
   }
   if (!account.value.trim()) {
-    errorText.value = '请输入账号'
+    errorText.value = t('components.login.accountRequired')
     return
   }
   if (!password.value) {
-    errorText.value = '请输入密码'
+    errorText.value = t('components.login.passwordRequired')
     return
   }
 
@@ -83,15 +86,15 @@ watch(() => props.open, (open) => {
   <Teleport to="body">
     <Transition name="login-fade">
       <div v-if="props.open" class="login-mask" @click.self="close">
-        <div class="login-card" role="dialog" aria-modal="true" aria-label="登录">
+        <div class="login-card" role="dialog" aria-modal="true" :aria-label="t('components.login.dialog')">
           <!-- Logo -->
           <div class="login-logo">
             <span class="login-logo-text">GT</span>
           </div>
 
           <!-- Title -->
-          <h2 class="login-title">欢迎回来</h2>
-          <p class="login-subtitle">请登录以继续使用 Teams AI desk</p>
+          <h2 class="login-title">{{ t('components.login.welcome') }}</h2>
+          <p class="login-subtitle">{{ t('components.login.subtitle') }}</p>
 
           <!-- Error hint -->
           <div v-if="errorText" class="login-error">
@@ -102,17 +105,17 @@ watch(() => props.open, (open) => {
           <form class="login-form" @submit.prevent="handleLogin">
             <!-- Server address -->
             <div class="login-field">
-              <label class="login-label">服务器地址</label>
+              <label class="login-label">{{ t('components.login.serverAddress') }}</label>
               <div class="login-radio-group">
                 <label class="login-radio" :class="{ active: serverType === 'official' }">
                   <input v-model="serverType" type="radio" value="official">
                   <span class="login-radio-dot" />
-                  <span class="login-radio-text">官方</span>
+                  <span class="login-radio-text">{{ t('components.login.official') }}</span>
                 </label>
                 <label class="login-radio" :class="{ active: serverType === 'private' }">
                   <input v-model="serverType" type="radio" value="private">
                   <span class="login-radio-dot" />
-                  <span class="login-radio-text">私有化部署</span>
+                  <span class="login-radio-text">{{ t('components.login.privateDeployment') }}</span>
                 </label>
               </div>
 
@@ -132,36 +135,36 @@ watch(() => props.open, (open) => {
                   v-else
                   v-model="serverUrl"
                   type="text"
-                  placeholder="请输入私有化部署地址，例如：https://t..."
+                  :placeholder="t('components.login.privateAddressPlaceholder')"
                 >
               </div>
             </div>
 
             <!-- Account -->
             <div class="login-field">
-              <label class="login-label required">账号</label>
+              <label class="login-label required">{{ t('components.login.account') }}</label>
               <div class="login-input-wrap">
                 <svg class="login-input-icon" viewBox="0 0 20 20" width="18" height="18" fill="none" aria-hidden="true">
                   <circle cx="10" cy="6" r="3.5" stroke="currentColor" stroke-width="1.5" />
                   <path d="M3 17c0-4.5 3.5-7 7-7s7 2.5 7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
                 </svg>
-                <input v-model="account" type="text" placeholder="请输入账号">
+                <input v-model="account" type="text" :placeholder="t('components.login.accountPlaceholder')">
               </div>
             </div>
 
             <!-- Password -->
             <div class="login-field">
-              <label class="login-label required">密码</label>
+              <label class="login-label required">{{ t('components.login.password') }}</label>
               <div class="login-input-wrap">
                 <svg class="login-input-icon" viewBox="0 0 20 20" width="18" height="18" fill="none" aria-hidden="true">
                   <rect x="3.5" y="7.5" width="13" height="10" rx="2" stroke="currentColor" stroke-width="1.5" />
                   <path d="M6 7.5V5a4 4 0 018 0v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
                 </svg>
-                <input v-model="password" :type="passwordVisible ? 'text' : 'password'" placeholder="请输入密码">
+                <input v-model="password" :type="passwordVisible ? 'text' : 'password'" :placeholder="t('components.login.passwordPlaceholder')">
                 <button
                   type="button"
                   class="login-eye"
-                  :aria-label="passwordVisible ? '隐藏密码' : '显示密码'"
+                  :aria-label="passwordVisible ? t('components.login.hidePassword') : t('components.login.showPassword')"
                   @click="togglePasswordVisible"
                 >
                   <svg v-if="passwordVisible" viewBox="0 0 20 20" width="18" height="18" fill="none" aria-hidden="true">
@@ -179,7 +182,7 @@ watch(() => props.open, (open) => {
 
             <!-- Login button -->
             <button type="submit" class="login-submit" :disabled="loading">
-              {{ loading ? '登录中…' : '登录' }}
+              {{ loading ? t('components.login.loggingIn') : t('components.login.dialog') }}
             </button>
           </form>
         </div>

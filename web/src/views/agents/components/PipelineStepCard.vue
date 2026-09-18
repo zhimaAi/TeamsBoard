@@ -10,7 +10,7 @@
       v-if="batchMode"
       class="step-checkbox"
       :checked="selected"
-      :aria-label="`选择 Agent ${step.name}`"
+      :aria-label="t('agents.selectAgent', { name: step.name })"
       @change="emit('toggle')"
     />
     <div
@@ -34,19 +34,13 @@
           <strong>{{ step.name }}</strong>
         </div>
         <p class="step-description">
-          {{ step.description || step.prompt || step.prompt_snapshot || '暂无描述' }}
+          {{ step.description || step.prompt || step.prompt_snapshot || t('agents.missingDescription') }}
         </p>
         <div
           v-if="!step.cli_type || !stepModel(step)"
           class="missing"
         >
-          <ExclamationOutlined />未设置{{
-            !step.cli_type && !stepModel(step)
-              ? ' CLI 与模型'
-              : !step.cli_type
-                ? ' CLI'
-                : '模型'
-          }}，请点击“{{ isCloudPipeline ? '配置' : '编辑' }}”完成配置
+          <ExclamationOutlined />{{ missingConfigText() }}
         </div>
       </div>
       <footer>
@@ -79,7 +73,7 @@
             v-if="!isCloudPipeline"
             type="button"
             class="action-btn"
-            aria-label="上移 Agent"
+            :aria-label="t('agents.moveUp')"
             :disabled="index === 0"
             @click="emit('move', -1)"
           >
@@ -89,7 +83,7 @@
             v-if="!isCloudPipeline"
             type="button"
             class="action-btn"
-            aria-label="下移 Agent"
+            :aria-label="t('agents.moveDown')"
             :disabled="index === total - 1"
             @click="emit('move', 1)"
           >
@@ -98,7 +92,7 @@
           <button
             type="button"
             class="action-btn action-btn-edit"
-            :aria-label="isCloudPipeline ? '配置 Agent' : '编辑 Agent'"
+            :aria-label="isCloudPipeline ? t('agents.configureAgent') : t('agents.editAgent')"
             @click="emit('edit')"
           >
             <EditOutlined />
@@ -107,7 +101,7 @@
             v-if="!isCloudPipeline"
             type="button"
             class="action-btn action-btn-danger"
-            aria-label="移除 Agent"
+            :aria-label="t('agents.removeAgent')"
             @click="emit('remove')"
           >
             <DeleteOutlined />
@@ -131,8 +125,9 @@ import pipelineAgentCliIcon from '@/assets/icons/pipeline-agent-cli.svg'
 import pipelineAgentModelIcon from '@/assets/icons/pipeline-agent-model.svg'
 import pipelineStepLine from '@/assets/icons/pipeline-step-line.svg'
 import { resolveAgentAvatar, stepModel } from './agentPipeline'
+import { useAppI18n } from '@/i18n'
 
-defineProps<{
+const props = defineProps<{
   step: PipelineStep
   index: number
   total: number
@@ -140,6 +135,15 @@ defineProps<{
   batchMode?: boolean
   selected?: boolean
 }>()
+
+const { t } = useAppI18n()
+
+function missingConfigText() {
+  const action = props.isCloudPipeline ? t('agents.configure') : t('agents.edit')
+  if (!props.step.cli_type && !stepModel(props.step)) return t('agents.missingBoth', { action })
+  if (!props.step.cli_type) return t('agents.missingCli', { action })
+  return t('agents.missingModel', { action })
+}
 
 const emit = defineEmits<{
   edit: []

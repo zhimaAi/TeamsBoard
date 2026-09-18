@@ -13,7 +13,7 @@
         <button
           type="button"
           class="assign-modal__close"
-          aria-label="关闭"
+          :aria-label="t('common.actions.close')"
           @click="close"
         >
           <img
@@ -25,20 +25,20 @@
         <h2>
           {{
             mode === 'create'
-              ? '完善流水线配置'
+              ? t('workflows.task.assign.completeConfig')
               : mode === 'board'
-                ? '指定流水线'
-                : '分配流水线'
+                ? t('workflows.task.assign.choosePipeline')
+                : t('workflows.task.assign.assignPipeline')
           }}
         </h2>
         <p class="assign-hint">
           <template v-if="mode === 'create'">
-            当前流水线配置不完整，请选择一个已完成 CLI 和模型配置的流水线，或前往配置：
+            {{ t('workflows.task.assign.incompleteDescription') }}
           </template>
           <template v-else>
-            任务「{{ taskTitle }}」尚未指定流水线，{{
-              mode === 'board' ? '设为进行中前请先选择流水线' : '分配后任务将自动变为进行中'
-            }}：
+            {{ mode === 'board'
+              ? t('workflows.task.assign.taskDescriptionBoard', { title: taskTitle })
+              : t('workflows.task.assign.taskDescriptionDefault', { title: taskTitle }) }}
           </template>
         </p>
 
@@ -46,7 +46,7 @@
           v-if="pipelines.length"
           class="pipeline-options"
           role="radiogroup"
-          aria-label="可分配的流水线"
+          :aria-label="t('workflows.task.assign.availablePipelines')"
         >
           <div
             v-for="pipeline in pipelines"
@@ -88,11 +88,11 @@
             <template v-if="!isPipelineConfigured(pipeline)">
               <a-tooltip>
                 <template #title>
-                  <b>{{ pipelineConfigWarningTitle(pipeline) }}</b><br />请先完成配置
+                  <b>{{ pipelineConfigWarningTitle(pipeline) }}</b><br />{{ t('workflows.task.assign.completeFirst') }}
                 </template>
                 <span
                   class="pipeline-option__warning"
-                  aria-label="流水线尚未配置完整"
+                  :aria-label="t('workflows.task.assign.pipelineIncomplete')"
                   tabindex="0"
                 >
                   <ExclamationCircleFilled aria-hidden="true" />
@@ -102,7 +102,7 @@
                 class="pipeline-option__config"
                 @click="goToPipelineConfig(pipeline.uuid)"
               >
-                去配置
+                {{ t('workflows.task.assign.configure') }}
                 <RightOutlined />
               </a-button>
             </template>
@@ -112,18 +112,18 @@
           v-else-if="!pipelinesLoading"
           class="pipeline-empty"
         >
-          暂无流水线，请先前往 Agent 流水线管理页创建并配置。
+          {{ t('workflows.task.assign.empty') }}
         </div>
 
         <footer class="assign-footer">
-          <a-button @click="close">取消</a-button>
+          <a-button @click="close">{{ t('common.actions.cancel') }}</a-button>
           <a-button
             type="primary"
             :disabled="!canConfirm"
             :loading="starting"
             @click="confirm"
           >
-            {{ mode === 'create' ? '继续创建' : '确定' }}
+            {{ mode === 'create' ? t('workflows.task.assign.continueCreate') : t('common.actions.confirm') }}
           </a-button>
         </footer>
       </div>
@@ -145,6 +145,9 @@ import apiClient from '@/api/client'
 import closeIcon from '@/assets/icons/task-detail-close.svg'
 import { usePipelineStore } from '@/stores/pipeline'
 import type { Pipeline } from '@/types/pipeline'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 const props = withDefaults(
   defineProps<{
@@ -198,7 +201,7 @@ async function load() {
     )
     selectedPipelineUuid.value = preferred?.uuid || configuredPipelines[0]?.uuid || ''
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '流水线加载失败')
+    message.error(error instanceof Error ? error.message : t('workflows.task.assign.loadFailed'))
   }
 }
 
@@ -209,7 +212,7 @@ function goToPipelineConfig(pipelineUuid: string) {
 
 function pipelineConfigWarningTitle(pipeline: Pipeline) {
   const steps = pipeline.steps || []
-  return steps.length ? '有 Agent 未配置 CLI 或模型' : '流水线尚未添加 Agent'
+  return steps.length ? t('workflows.task.assign.agentsIncomplete') : t('workflows.task.assign.noAgents')
 }
 
 async function confirm() {
@@ -221,17 +224,17 @@ async function confirm() {
     close()
     return
   }
-  if (!props.taskUuid) return message.error('任务信息缺失，无法分配流水线')
+  if (!props.taskUuid) return message.error(t('workflows.task.assign.taskMissing'))
   starting.value = true
   try {
     await apiClient.post('/tasks/' + props.taskUuid + '/assign-pipeline', {
       pipeline_uuid: selectedPipelineUuid.value,
     })
-    message.success('流水线已分配，任务已设为进行中并启动')
+    message.success(t('workflows.task.assign.success'))
     emit('assigned')
     close()
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '流水线分配失败')
+    message.error(error instanceof Error ? error.message : t('workflows.task.assign.failed'))
   } finally {
     starting.value = false
   }

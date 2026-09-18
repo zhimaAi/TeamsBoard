@@ -4,9 +4,11 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const CLOSE_BEHAVIORS = Object.freeze(['hide', 'quit'])
+const { SUPPORTED_LOCALES, DEFAULT_LOCALE } = require('./desktop-i18n.cjs')
 const DEFAULT_PREFERENCES = Object.freeze({
   closeBehavior: 'hide',
   closeTipShown: false,
+  locale: DEFAULT_LOCALE,
 })
 
 function normalizePreferences(value) {
@@ -14,6 +16,8 @@ function normalizePreferences(value) {
   return {
     closeBehavior: CLOSE_BEHAVIORS.includes(source.closeBehavior) ? source.closeBehavior : 'hide',
     closeTipShown: source.closeTipShown === true,
+    // 主进程在窗口创建前就要用这个语言渲染托盘，因此语言必须落盘而不是只存在渲染层。
+    locale: SUPPORTED_LOCALES.includes(source.locale) ? source.locale : DEFAULT_LOCALE,
   }
 }
 
@@ -42,6 +46,18 @@ class DesktopPreferences {
       ...this.get(),
       closeBehavior,
       closeTipShown: true,
+    }
+    this.write()
+    return this.get()
+  }
+
+  setLocale(locale) {
+    if (!SUPPORTED_LOCALES.includes(locale)) {
+      throw new Error('Invalid desktop locale')
+    }
+    this.value = {
+      ...this.get(),
+      locale,
     }
     this.write()
     return this.get()

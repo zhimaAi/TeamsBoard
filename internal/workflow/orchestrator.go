@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -22,6 +23,27 @@ type EventBroadcaster func(sessionUUID string, sequence int, event executor.Exec
 // latest CLI activity to gt_cli_sessions during event processing.
 const latestEventPersistIntervalMs int64 = 1000
 
+// 执行过程事件（gt_session_events）的内容截断上限：
+// thinking 是完整思考文本可较长；工具调用/结果、中间输出与权限请求只保留摘要即可支撑动态区展示。
+const (
+	sessionEventThinkingLimit = 8192
+	sessionEventToolLimit     = 4096
+)
+
+// sessionEventContentLimit 判定事件是否留存到执行过程回放表，并给出内容截断上限。
+// 只留存过程类事件：思考、中间输出、工具调用、工具结果、权限请求；
+// start / usage / complete 等生命周期事件由会话状态与 token 字段承载，不重复落库。
+func sessionEventContentLimit(eventType string) (int, bool) {
+	switch eventType {
+	case executor.EventThinking:
+		return sessionEventThinkingLimit, true
+	case executor.EventMessage, executor.EventToolCall, executor.EventToolResult, executor.EventPermission:
+		return sessionEventToolLimit, true
+	default:
+		return 0, false
+	}
+}
+
 // StateBroadcaster is the state-change broadcast callback type
 type StateBroadcaster func(taskUUID, stepKey, sessionUUID, status string)
 
@@ -31,15 +53,23 @@ type ActivityBroadcaster func(taskUUID, sessionUUID, eventType, content string, 
 
 // RunStepOptions are the run-step options
 type RunStepOptions struct {
-	TaskUUID   string
-	StepUUID   string
-	StepKey    string // compatibility lookup; new callers should use StepUUID
-	WorkDir    string
-	RequestID  string
-	CLIType    string // optional compatibility override
-	Model      string // optional compatibility override
+	TaskUUID  string
+	StepUUID  string
+	StepKey   string // compatibility lookup; new callers should use StepUUID
+	WorkDir   string
+	RequestID string
+	CLIType   string // optional compatibility override
+	Model     string // optional compatibility override
+	// UserPrompt is the complete prompt passed into the task prompt builder.
 	UserPrompt string
-	RecordType string // initial_run | user_question
+	// DisplayPrompt is persisted for the user-message record. When omitted,
+	// UserPrompt remains the backwards-compatible display value.
+	DisplayPrompt      string
+	RecordType         string // initial_run | user_question
+	ExecutionMode      string
+	ExpertChainUUID    string
+	ExpertChainRound   int
+	TriggerSessionUUID string
 }
 
 // ContinueConversationOptions are the options for continuing a historical CLI conversation.
@@ -51,10 +81,14 @@ type ContinueConversationOptions struct {
 	Prompt string
 	// DisplayPrompt is persisted for the user-message record. When omitted by
 	// an older caller, Prompt remains the backwards-compatible fallback.
-	DisplayPrompt string
-	RequestID     string
-	CLIType       string
-	Model         string
+	DisplayPrompt      string
+	RequestID          string
+	CLIType            string
+	Model              string
+	InternalHandoff    bool
+	ExpertChainUUID    string
+	ExpertChainRound   int
+	TriggerSessionUUID string
 }
 
 type activeSession struct {
@@ -71,6 +105,7 @@ type Orchestrator struct {
 
 	mu             sync.RWMutex
 	activeSessions map[string]*activeSession
+	executionGates *taskExecutionGateRegistry
 
 	eventBroadcaster    EventBroadcaster
 	stateBroadcaster    StateBroadcaster
@@ -85,6 +120,7 @@ func NewOrchestrator(db *sql.DB, logDB *sql.DB, eventStore *log.EventStore) *Orc
 		logDB:          logDB,
 		eventStore:     eventStore,
 		activeSessions: make(map[string]*activeSession),
+		executionGates: newTaskExecutionGateRegistry(),
 	}
 }
 
@@ -114,14 +150,21 @@ func (o *Orchestrator) AddStateListener(cb StateBroadcaster) {
 
 // RunStep executes a step
 func (o *Orchestrator) RunStep(ctx context.Context, opts RunStepOptions) (string, error) {
+	release := o.executionGates.acquire(opts.TaskUUID, false)
+	defer release()
+	return o.runStep(ctx, opts)
+}
+
+func (o *Orchestrator) runStep(ctx context.Context, opts RunStepOptions) (string, error) {
 	// 1. Resolve the immutable task-step snapshot.
-	var stepUUID, stepKey, stepCLIType, modelName, workDir, snapshotUUID string
+	var stepUUID, stepKey, stepCLIType, modelName, workDir, snapshotUUID, expertSnapshotUUID, executionMode string
 	err := o.db.QueryRowContext(ctx,
-		`SELECT s.uuid, s.step_key, s.cli_type, s.model_name, t.work_dir, s.task_pipeline_snapshot_uuid
+		`SELECT s.uuid, s.step_key, s.cli_type, s.model_name, t.work_dir, s.task_pipeline_snapshot_uuid,
+		        s.task_expert_group_snapshot_uuid, COALESCE(NULLIF(s.execution_mode,''), t.execution_mode)
 		 FROM gt_task_steps s JOIN gt_tasks t ON t.uuid = s.task_uuid
 		 WHERE s.task_uuid = ? AND ((? <> '' AND s.uuid = ?) OR (? = '' AND s.step_key = ?))`,
 		opts.TaskUUID, opts.StepUUID, opts.StepUUID, opts.StepUUID, opts.StepKey).Scan(
-		&stepUUID, &stepKey, &stepCLIType, &modelName, &workDir, &snapshotUUID)
+		&stepUUID, &stepKey, &stepCLIType, &modelName, &workDir, &snapshotUUID, &expertSnapshotUUID, &executionMode)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("Agent 编排不存在")
 	}
@@ -145,7 +188,12 @@ func (o *Orchestrator) RunStep(ctx context.Context, opts RunStepOptions) (string
 	if err := o.validateRun(ctx, opts); err != nil {
 		return "", err
 	}
-	promptSnapshot, err := BuildTaskPrompt(ctx, o.db, opts.TaskUUID, stepUUID, opts.UserPrompt)
+	displayPrompt := strings.TrimSpace(opts.DisplayPrompt)
+	if displayPrompt == "" {
+		displayPrompt = strings.TrimSpace(opts.UserPrompt)
+	}
+	var promptSnapshot string
+	promptSnapshot, err = BuildRoundPrompt(ctx, o.db, executionMode, opts.TaskUUID, stepUUID, opts.UserPrompt)
 	if err != nil {
 		return "", err
 	}
@@ -156,6 +204,14 @@ func (o *Orchestrator) RunStep(ctx context.Context, opts RunStepOptions) (string
 	// it is still the next round of the step, so run_no must not be reset to 1 for a new conversation.
 	conversationUUID := uuid.New().String()
 	sessionUUID := uuid.New().String()
+	if executionMode == "expert_group" {
+		if strings.TrimSpace(opts.ExpertChainUUID) == "" {
+			opts.ExpertChainUUID = uuid.NewString()
+		}
+		if opts.ExpertChainRound < 1 {
+			opts.ExpertChainRound = 1
+		}
+	}
 	now := nowMillis()
 	var runNo int
 	if err := o.db.QueryRow(
@@ -173,26 +229,43 @@ func (o *Orchestrator) RunStep(ctx context.Context, opts RunStepOptions) (string
 		return "", fmt.Errorf("无效进度类型")
 	}
 	progressUUID := uuid.New().String()
+	aiProgressUUID := progressUUID
+	if recordType == "user_question" {
+		aiProgressUUID = uuid.New().String()
+	}
 	tx, err := o.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", fmt.Errorf("开启执行事务失败: %w", err)
 	}
 	defer tx.Rollback()
+	if recordType == "user_question" {
+		_, err = tx.ExecContext(ctx, `INSERT INTO gt_task_progress
+		(uuid, task_uuid, task_pipeline_snapshot_uuid, task_step_uuid, local_step_uuid, cloud_step_id,
+		 session_uuid, record_type, user_prompt, cli_type, model_name, status, execution_mode, task_expert_group_snapshot_uuid, created_at, started_at)
+		SELECT ?, ?, ?, s.uuid, s.local_step_uuid, s.cloud_step_id, ?, 'user_question', ?, ?, ?, 'created', ?, ?, ?, ?
+		FROM gt_task_steps s WHERE s.uuid = ?`, progressUUID, opts.TaskUUID, snapshotUUID, sessionUUID,
+			displayPrompt, cliType, modelName, executionMode, expertSnapshotUUID, now, now, stepUUID)
+		if err != nil {
+			return "", fmt.Errorf("创建用户提问进度失败: %w", err)
+		}
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO gt_task_progress
 		(uuid, task_uuid, task_pipeline_snapshot_uuid, task_step_uuid, local_step_uuid, cloud_step_id,
-		 session_uuid, record_type, user_prompt, cli_type, model_name, status, created_at, started_at)
-		SELECT ?, ?, ?, s.uuid, s.local_step_uuid, s.cloud_step_id, ?, ?, ?, ?, ?, 'created', ?, ?
-		FROM gt_task_steps s WHERE s.uuid = ?`, progressUUID, opts.TaskUUID, snapshotUUID, sessionUUID,
-		recordType, strings.TrimSpace(opts.UserPrompt), cliType, modelName, now, now, stepUUID)
+		 session_uuid, record_type, user_prompt, cli_type, model_name, status, execution_mode, task_expert_group_snapshot_uuid, created_at, started_at)
+		SELECT ?, ?, ?, s.uuid, s.local_step_uuid, s.cloud_step_id, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?
+		FROM gt_task_steps s WHERE s.uuid = ?`, aiProgressUUID, opts.TaskUUID, snapshotUUID, sessionUUID,
+		"initial_run", "", cliType, modelName, executionMode, expertSnapshotUUID, now, now, stepUUID)
 	if err != nil {
 		return "", fmt.Errorf("创建任务进度失败: %w", err)
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO gt_cli_sessions
 		(uuid, task_uuid, step_uuid, task_step_uuid, task_progress_uuid, conversation_uuid, run_no, status,
-		 cli_type, model_name, work_dir, prompt_snapshot, started_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sessionUUID, opts.TaskUUID, stepUUID, stepUUID, progressUUID, conversationUUID, runNo,
-		SessionStatusCreated, cliType, modelName, opts.WorkDir, promptSnapshot, now, now, now)
+		 cli_type, model_name, work_dir, prompt_snapshot, execution_mode, expert_chain_uuid, expert_chain_round,
+		 trigger_session_uuid, started_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionUUID, opts.TaskUUID, stepUUID, stepUUID, aiProgressUUID, conversationUUID, runNo,
+		SessionStatusCreated, cliType, modelName, opts.WorkDir, promptSnapshot, executionMode, opts.ExpertChainUUID,
+		opts.ExpertChainRound, opts.TriggerSessionUUID, now, now, now)
 	if err != nil {
 		return "", fmt.Errorf("创建 Session 失败: %w", err)
 	}
@@ -226,6 +299,18 @@ func (o *Orchestrator) RunStep(ctx context.Context, opts RunStepOptions) (string
 // exists; otherwise it starts a fresh native conversation while preserving the
 // product-level conversation UUID and round sequence.
 func (o *Orchestrator) ContinueConversation(ctx context.Context, opts ContinueConversationOptions) (string, error) {
+	var taskUUID string
+	if err := o.db.QueryRowContext(ctx, `SELECT task_uuid FROM gt_cli_sessions WHERE uuid=?`, opts.ParentSessionUUID).Scan(&taskUUID); err == sql.ErrNoRows {
+		return "", fmt.Errorf("历史会话不存在")
+	} else if err != nil {
+		return "", fmt.Errorf("读取历史会话失败: %w", err)
+	}
+	release := o.executionGates.acquire(taskUUID, false)
+	defer release()
+	return o.continueConversation(ctx, opts)
+}
+
+func (o *Orchestrator) continueConversation(ctx context.Context, opts ContinueConversationOptions) (string, error) {
 	prompt := strings.TrimSpace(opts.Prompt)
 	if prompt == "" {
 		return "", fmt.Errorf("问题内容不能为空")
@@ -234,16 +319,18 @@ func (o *Orchestrator) ContinueConversation(ctx context.Context, opts ContinueCo
 	if displayPrompt == "" {
 		displayPrompt = prompt
 	}
-	var taskUUID, stepUUID, stepKey, workDir, parentStatus, conversationUUID, externalSessionID, parentCLIType, parentModelName, snapshotUUID string
+	var taskUUID, stepUUID, stepKey, workDir, parentStatus, conversationUUID, externalSessionID, parentCLIType, parentModelName, snapshotUUID, expertSnapshotUUID, executionMode string
 	err := o.db.QueryRowContext(ctx,
 		`SELECT s.task_uuid, s.step_uuid, ts.step_key, s.work_dir, s.status, s.conversation_uuid,
-		        s.external_session_id, s.cli_type, s.model_name, ts.task_pipeline_snapshot_uuid
+		        s.external_session_id, s.cli_type, s.model_name, ts.task_pipeline_snapshot_uuid,
+		        ts.task_expert_group_snapshot_uuid, COALESCE(NULLIF(ts.execution_mode,''), t.execution_mode)
 		 FROM gt_cli_sessions s
 		 JOIN gt_task_steps ts ON ts.uuid = s.step_uuid
+		 JOIN gt_tasks t ON t.uuid=s.task_uuid
 		 WHERE s.uuid = ?`,
 		opts.ParentSessionUUID,
 	).Scan(&taskUUID, &stepUUID, &stepKey, &workDir, &parentStatus, &conversationUUID,
-		&externalSessionID, &parentCLIType, &parentModelName, &snapshotUUID)
+		&externalSessionID, &parentCLIType, &parentModelName, &snapshotUUID, &expertSnapshotUUID, &executionMode)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("历史会话不存在")
 	}
@@ -265,7 +352,8 @@ func (o *Orchestrator) ContinueConversation(ctx context.Context, opts ContinueCo
 	}
 	runOpts := RunStepOptions{TaskUUID: taskUUID, StepUUID: stepUUID, StepKey: stepKey,
 		WorkDir: workDir, RequestID: opts.RequestID, CLIType: cliType, Model: modelName,
-		UserPrompt: displayPrompt, RecordType: "user_question"}
+		UserPrompt: displayPrompt, RecordType: "user_question", ExecutionMode: executionMode,
+		ExpertChainUUID: opts.ExpertChainUUID, ExpertChainRound: opts.ExpertChainRound, TriggerSessionUUID: opts.TriggerSessionUUID}
 	if err = o.validateRun(ctx, runOpts); err != nil {
 		return "", err
 	}
@@ -277,11 +365,11 @@ func (o *Orchestrator) ContinueConversation(ctx context.Context, opts ContinueCo
 	storedPromptSnapshot := displayPrompt
 	executionPromptSnapshot := prompt
 	if !resumeNative {
-		storedPromptSnapshot, err = BuildTaskPrompt(ctx, o.db, taskUUID, stepUUID, displayPrompt)
+		storedPromptSnapshot, err = BuildRoundPrompt(ctx, o.db, executionMode, taskUUID, stepUUID, displayPrompt)
 		if err != nil {
 			return "", err
 		}
-		executionPromptSnapshot, err = BuildTaskPrompt(ctx, o.db, taskUUID, stepUUID, prompt)
+		executionPromptSnapshot, err = BuildRoundPrompt(ctx, o.db, executionMode, taskUUID, stepUUID, prompt)
 		if err != nil {
 			return "", err
 		}
@@ -289,6 +377,14 @@ func (o *Orchestrator) ContinueConversation(ctx context.Context, opts ContinueCo
 	execPath, execErr := resolveCLIExecutable(cliType)
 	now := nowMillis()
 	sessionUUID := uuid.NewString()
+	if executionMode == "expert_group" {
+		if opts.ExpertChainUUID == "" {
+			opts.ExpertChainUUID = uuid.NewString()
+		}
+		if opts.ExpertChainRound < 1 {
+			opts.ExpertChainRound = 1
+		}
+	}
 	progressUUID := uuid.NewString()   // 用户提问 progress
 	aiProgressUUID := uuid.NewString() // AI 执行 progress
 
@@ -317,22 +413,24 @@ func (o *Orchestrator) ContinueConversation(ctx context.Context, opts ContinueCo
 		return "", fmt.Errorf("任务已有活动 Session")
 	}
 	// 1. 用户提问 progress（record_type = user_question, user_prompt = 用户输入，显示为用户消息气泡）
-	_, err = tx.ExecContext(ctx, `INSERT INTO gt_task_progress
+	if !opts.InternalHandoff {
+		_, err = tx.ExecContext(ctx, `INSERT INTO gt_task_progress
 		(uuid, task_uuid, task_pipeline_snapshot_uuid, task_step_uuid, local_step_uuid, cloud_step_id,
-		 session_uuid, record_type, user_prompt, cli_type, model_name, status, created_at, started_at)
-		SELECT ?, ?, ?, s.uuid, s.local_step_uuid, s.cloud_step_id, ?, 'user_question', ?, ?, ?, 'created', ?, ?
+		 session_uuid, record_type, user_prompt, cli_type, model_name, status, execution_mode, external_session_id, task_expert_group_snapshot_uuid, created_at, started_at)
+		SELECT ?, ?, ?, s.uuid, s.local_step_uuid, s.cloud_step_id, ?, 'user_question', ?, ?, ?, 'created', ?, ?, ?, ?, ?
 		FROM gt_task_steps s WHERE s.uuid = ?`, progressUUID, taskUUID, snapshotUUID, sessionUUID,
-		displayPrompt, cliType, modelName, now, now, stepUUID)
-	if err != nil {
-		return "", fmt.Errorf("创建用户提问进度失败: %w", err)
+			displayPrompt, cliType, modelName, executionMode, nativeSessionID, expertSnapshotUUID, now, now, stepUUID)
+		if err != nil {
+			return "", fmt.Errorf("创建用户提问进度失败: %w", err)
+		}
 	}
 	// 2. AI 执行 progress（record_type = initial_run, user_prompt = '', 显示为 AI 执行气泡）
 	_, err = tx.ExecContext(ctx, `INSERT INTO gt_task_progress
 		(uuid, task_uuid, task_pipeline_snapshot_uuid, task_step_uuid, local_step_uuid, cloud_step_id,
-		 session_uuid, record_type, user_prompt, cli_type, model_name, status, created_at, started_at)
-		SELECT ?, ?, ?, s.uuid, s.local_step_uuid, s.cloud_step_id, ?, 'initial_run', '', ?, ?, 'created', ?, ?
+		 session_uuid, record_type, user_prompt, cli_type, model_name, status, execution_mode, external_session_id, task_expert_group_snapshot_uuid, created_at, started_at)
+		SELECT ?, ?, ?, s.uuid, s.local_step_uuid, s.cloud_step_id, ?, 'initial_run', '', ?, ?, 'created', ?, ?, ?, ?, ?
 		FROM gt_task_steps s WHERE s.uuid = ?`, aiProgressUUID, taskUUID, snapshotUUID, sessionUUID,
-		cliType, modelName, now, now, stepUUID)
+		cliType, modelName, executionMode, nativeSessionID, expertSnapshotUUID, now, now, stepUUID)
 	if err != nil {
 		return "", fmt.Errorf("创建 AI 执行进度失败: %w", err)
 	}
@@ -340,11 +438,11 @@ func (o *Orchestrator) ContinueConversation(ctx context.Context, opts ContinueCo
 	_, err = tx.ExecContext(ctx, `INSERT INTO gt_cli_sessions
 		(uuid, task_uuid, step_uuid, task_step_uuid, task_progress_uuid, conversation_uuid, parent_session_uuid,
 		 run_no, status, cli_type, model_name, external_session_id, work_dir, prompt_snapshot,
-		 started_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 execution_mode, expert_chain_uuid, expert_chain_round, trigger_session_uuid, started_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionUUID, taskUUID, stepUUID, stepUUID, aiProgressUUID, conversationUUID, opts.ParentSessionUUID,
 		runNo, SessionStatusCreated, cliType, modelName, nativeSessionID, workDir, storedPromptSnapshot,
-		now, now, now)
+		executionMode, opts.ExpertChainUUID, opts.ExpertChainRound, opts.TriggerSessionUUID, now, now, now)
 	if err != nil {
 		return "", fmt.Errorf("创建继续会话 Session 失败: %w", err)
 	}
@@ -423,38 +521,9 @@ func (o *Orchestrator) runCLIProcess(
 		return
 	}
 
-	// Create the adapter
-	var adapter executor.Adapter
-	switch cliType {
-	case executor.CLITypeCodex:
-		adapter = codexNewAdapter()
-	case executor.CLITypeClaude:
-		adapter = claudeNewAdapter()
-	case executor.CLITypeCodeBuddy:
-		adapter = codeBuddyNewAdapter()
-	case executor.CLITypeOpenCode:
-		adapter = openCodeNewAdapter()
-	case executor.CLITypeCursor:
-		adapter = cursorNewAdapter()
-	case executor.CLITypeCopilot:
-		adapter = copilotNewAdapter()
-	case executor.CLITypeGrok:
-		adapter = grokNewAdapter()
-	case executor.CLITypeHermes:
-		adapter = hermesNewAdapter()
-	case executor.CLITypeKimi:
-		adapter = kimiNewAdapter()
-	case executor.CLITypeQoder:
-		adapter = qoderNewAdapter()
-	case executor.CLITypeQoderCN:
-		adapter = qoderNewAdapter()
-	case executor.CLITypeQwen:
-		adapter = qwenNewAdapter()
-	case executor.CLITypeOpenClaw:
-		adapter = openClawNewAdapter()
-	case executor.CLITypePi:
-		adapter = piNewAdapter()
-	default:
+	// Create the adapter：按 CLI 类型查注册表，新增 CLI 无需改动编排层
+	adapter, ok := newAdapter(cliType)
+	if !ok {
 		o.failSessionWithError(sessionUUID, opts.TaskUUID, opts.StepKey, "", "不支持的 CLI 类型: "+cliType)
 		return
 	}
@@ -567,6 +636,9 @@ func (o *Orchestrator) runCLIProcess(
 		}
 	}
 
+	// 执行过程回放表：思考/工具调用事件按序写入，供动态区展开回看与 WS 补发
+	eventStore := log.NewEventStore(o.db)
+
 	for event := range eventCh {
 		// After termination, the adapter may still return the native session ID in the final complete/error event.
 		// Even when stopping persistence and broadcast of other events, keep that ID first so the user can continue from a terminated round.
@@ -598,12 +670,27 @@ func (o *Orchestrator) runCLIProcess(
 			continue
 		}
 
-		// Tool/message events are transient UI data only. The product database
-		// stores the final result (or failure reason), never tool calls or thought
-		// process history.
+		// 过程事件（思考 / 中间输出 / 工具调用 / 工具结果 / 权限请求）留存到
+		// gt_session_events（sequence 与广播一致），供动态区“执行过程”历史回放与
+		// WS 断线补发。最终输出仍以 final_result 为准：前端在回放时会排除该轮
+		// 最后一条 message，避免同一条回答在过程与结论里出现两次。
 		eventSequence++
 		if o.eventBroadcaster != nil {
 			o.eventBroadcaster(sessionUUID, eventSequence, event)
+		}
+		if limit, persist := sessionEventContentLimit(event.Type); persist {
+			stored := event
+			stored.Content = truncate(event.Content, limit)
+			if payload, err := json.Marshal(stored); err == nil {
+				if err := eventStore.Append(log.EventLogEntry{
+					SessionUUID: sessionUUID,
+					Sequence:    eventSequence,
+					EventType:   event.Type,
+					Payload:     string(payload),
+				}); err != nil {
+					applog.Warn("[Orchestrator] 执行过程事件写入失败", "session", sessionUUID, "error", err)
+				}
+			}
 		}
 
 		// Log CLI output
@@ -614,12 +701,19 @@ func (o *Orchestrator) runCLIProcess(
 				applog.Debug("[Orchestrator] CLI 消息输出", "session", sessionUUID, "content", truncate(content, 2048))
 				trackLatestEvent(executor.EventMessage, content)
 			}
+		case executor.EventThinking:
+			applog.Debug("[Orchestrator] CLI 思考过程", "session", sessionUUID, "content", truncate(content, 1024))
+			trackLatestEvent(executor.EventThinking, content)
 		case executor.EventToolCall:
 			applog.Debug("[Orchestrator] CLI 工具调用", "session", sessionUUID, "content", truncate(content, 1024))
 			trackLatestEvent(executor.EventToolCall, content)
 		case executor.EventToolResult:
 			applog.Debug("[Orchestrator] CLI 工具结果", "session", sessionUUID, "content", truncate(content, 1024))
 			trackLatestEvent(executor.EventToolResult, content)
+		case executor.EventPermission:
+			// 非交互模式下 CLI 会停下来等待授权；不上报活动行时，界面表现为「一直在跑」。
+			applog.Info("[Orchestrator] CLI 请求工具权限", "session", sessionUUID, "content", truncate(content, 512))
+			trackLatestEvent(executor.EventPermission, content)
 		case executor.EventUsage:
 			applog.Debug("[Orchestrator] CLI Token 用量", "session", sessionUUID, "inputTokens", event.InputTokens, "outputTokens", event.OutputTokens)
 		}
@@ -672,18 +766,32 @@ func (o *Orchestrator) runCLIProcess(
 		}
 	}
 
-	// When the channel is closed but no complete arrives (process killed, etc.), also fall back to usage accumulation
-	if !completeTokensSeen {
-		inputTokens = usageInputTokens
-		outputTokens = usageOutputTokens
-	}
-
 	// Flush the last activity so the progress panel keeps the latest event
 	persistLatestEvent()
 
-	status := SessionStatusSuccess
 	var stopRequestedAt int64
 	_ = o.db.QueryRow(`SELECT stop_requested_at FROM gt_cli_sessions WHERE uuid = ?`, sessionUUID).Scan(&stopRequestedAt)
+	if !completeTokensSeen {
+		status := SessionStatusFailed
+		if stopRequestedAt > 0 {
+			status = SessionStatusStopped
+		} else {
+			const incompleteReplyMessage = "CLI 未返回完整完成事件"
+			applog.Error("[Orchestrator] CLI 回复不完整",
+				"session", sessionUUID,
+				"taskUUID", opts.TaskUUID,
+				"stepKey", opts.StepKey,
+			)
+			o.db.Exec(
+				`UPDATE gt_cli_sessions SET error_message = ?, updated_at = ? WHERE uuid = ?`,
+				incompleteReplyMessage, nowMillis(), sessionUUID,
+			)
+		}
+		o.finishSession(sessionUUID, opts.TaskUUID, opts.StepKey, status, sessionID, usageInputTokens, usageOutputTokens, responseContent)
+		return
+	}
+
+	status := SessionStatusSuccess
 	if stopRequestedAt > 0 {
 		status = SessionStatusStopped
 	}
@@ -859,9 +967,18 @@ func (o *Orchestrator) finishSession(sessionUUID, taskUUID, stepKey, status, ext
 	}
 
 	if _, err = tx.Exec(`UPDATE gt_task_progress SET status = ?, finished_at = ?,
-		final_result = CASE WHEN record_type = 'user_question' THEN final_result ELSE ? END
-		WHERE session_uuid = ?`, status, now, truncate(finalResult, 64*1024), sessionUUID); err != nil {
+		final_result = CASE WHEN record_type = 'user_question' THEN final_result ELSE ? END,
+		external_session_id = CASE WHEN ? <> '' THEN ? ELSE external_session_id END
+		WHERE session_uuid = ?`, status, now, truncate(finalResult, 64*1024), externalSessionID, externalSessionID, sessionUUID); err != nil {
 		applog.Warn("[Orchestrator] 更新任务进度失败", "error", err)
+		return
+	}
+	if _, err = tx.Exec(`UPDATE gt_task_progress
+		SET dispatch_status='routing_pending', dispatch_message=?
+		WHERE session_uuid=? AND record_type<>'user_question'
+		  AND EXISTS (SELECT 1 FROM gt_cli_sessions s WHERE s.uuid=? AND s.execution_mode='expert_group')`,
+		expertDispatchCodeRoutingPending, sessionUUID, sessionUUID); err != nil {
+		applog.Warn("[Orchestrator] 标记专家团自动路由失败", "error", err)
 		return
 	}
 	if err = RecomputeStepStatus(tx, taskUUID, stepKey); err != nil {
@@ -918,6 +1035,7 @@ func (o *Orchestrator) finishSession(sessionUUID, taskUUID, stepKey, status, ext
 	for _, listener := range o.stateListeners {
 		listener(taskUUID, stepKey, sessionUUID, status)
 	}
+	go o.routeExpertCompletion(sessionUUID, taskUUID, status, finalResult)
 }
 
 func truncate(value string, max int) string {
@@ -1006,10 +1124,11 @@ func (o *Orchestrator) StopSession(ctx context.Context, sessionUUID string) erro
 // validateRun pre-flight validation
 func (o *Orchestrator) validateRun(ctx context.Context, opts RunStepOptions) error {
 	// Check task exists
-	var stepStatus string
-	err := o.db.QueryRowContext(ctx, `SELECT s.status
+	var stepStatus, executionMode string
+	err := o.db.QueryRowContext(ctx, `SELECT s.status, COALESCE(NULLIF(s.execution_mode,''), t.execution_mode)
 		FROM gt_task_steps s
-		WHERE s.task_uuid = ? AND s.uuid = ?`, opts.TaskUUID, opts.StepUUID).Scan(&stepStatus)
+		JOIN gt_tasks t ON t.uuid=s.task_uuid
+		WHERE s.task_uuid = ? AND s.uuid = ?`, opts.TaskUUID, opts.StepUUID).Scan(&stepStatus, &executionMode)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("任务不存在: %s", opts.TaskUUID)
 	}
@@ -1017,7 +1136,7 @@ func (o *Orchestrator) validateRun(ctx context.Context, opts RunStepOptions) err
 		return fmt.Errorf("查询任务失败: %w", err)
 	}
 	// 已完成的编排允许再次执行/继续对话，不改变流水线进度；仅拦截尚未开始的后续步骤
-	if stepStatus != "active" && stepStatus != "completed" {
+	if executionMode != "expert_group" && stepStatus != "active" && stepStatus != "completed" {
 		return fmt.Errorf("只能执行任务进行中或已完成的 Agent 编排")
 	}
 
@@ -1050,6 +1169,12 @@ func (o *Orchestrator) validateRun(ctx context.Context, opts RunStepOptions) err
 
 // StopTaskSessions stops all active CLI sessions for a given task.
 func (o *Orchestrator) StopTaskSessions(ctx context.Context, taskUUID string) error {
+	release := o.executionGates.acquire(taskUUID, false)
+	defer release()
+	return o.stopTaskSessions(ctx, taskUUID)
+}
+
+func (o *Orchestrator) stopTaskSessions(ctx context.Context, taskUUID string) error {
 	rows, err := o.db.QueryContext(ctx,
 		`SELECT uuid FROM gt_cli_sessions WHERE task_uuid = ? AND status IN ('created', 'running', 'waiting_input', 'stop_requested')`,
 		taskUUID)
@@ -1109,149 +1234,4 @@ func (o *Orchestrator) GlobalRunningSessionCount() (int, error) {
 // so CLIs installed without being added to PATH still work.
 func resolveCLIExecutable(cliType string) (string, error) {
 	return executor.ResolveCLIExecutable(cliType)
-}
-
-// codexNewAdapter creates the Codex adapter
-func codexNewAdapter() executor.Adapter {
-	return codexAdapterFactory()
-}
-
-// claudeNewAdapter creates the Claude adapter
-func claudeNewAdapter() executor.Adapter {
-	return claudeAdapterFactory()
-}
-
-// codeBuddyNewAdapter creates the CodeBuddy adapter
-func codeBuddyNewAdapter() executor.Adapter {
-	return codeBuddyAdapterFactory()
-}
-
-// openCodeNewAdapter creates the OpenCode adapter
-func openCodeNewAdapter() executor.Adapter {
-	return openCodeAdapterFactory()
-}
-
-// cursorNewAdapter creates the Cursor Agent adapter
-func cursorNewAdapter() executor.Adapter {
-	return cursorAdapterFactory()
-}
-
-// copilotNewAdapter creates the GitHub Copilot CLI adapter
-func copilotNewAdapter() executor.Adapter {
-	return copilotAdapterFactory()
-}
-
-// grokNewAdapter creates the Grok CLI adapter
-func grokNewAdapter() executor.Adapter {
-	return grokAdapterFactory()
-}
-
-// hermesNewAdapter creates the Hermes CLI adapter
-func hermesNewAdapter() executor.Adapter {
-	return hermesAdapterFactory()
-}
-
-// kimiNewAdapter creates the Kimi Code CLI adapter
-func kimiNewAdapter() executor.Adapter {
-	return kimiAdapterFactory()
-}
-
-// qoderNewAdapter creates the Qoder CLI adapter
-func qoderNewAdapter() executor.Adapter {
-	return qoderAdapterFactory()
-}
-
-// qwenNewAdapter creates the Qwen Code CLI adapter
-func qwenNewAdapter() executor.Adapter {
-	return qwenAdapterFactory()
-}
-
-// openClawNewAdapter creates the OpenClaw CLI adapter
-func openClawNewAdapter() executor.Adapter {
-	return openClawAdapterFactory()
-}
-
-// piNewAdapter creates the Pi Agent CLI adapter
-func piNewAdapter() executor.Adapter {
-	return piAdapterFactory()
-}
-
-// Adapter factories (injected from concrete subpackages in separate files to avoid import cycles)
-var codexAdapterFactory = func() executor.Adapter { return nil }
-var claudeAdapterFactory = func() executor.Adapter { return nil }
-var codeBuddyAdapterFactory = func() executor.Adapter { return nil }
-var openCodeAdapterFactory = func() executor.Adapter { return nil }
-var cursorAdapterFactory = func() executor.Adapter { return nil }
-var copilotAdapterFactory = func() executor.Adapter { return nil }
-var grokAdapterFactory = func() executor.Adapter { return nil }
-var hermesAdapterFactory = func() executor.Adapter { return nil }
-var kimiAdapterFactory = func() executor.Adapter { return nil }
-var qoderAdapterFactory = func() executor.Adapter { return nil }
-var qwenAdapterFactory = func() executor.Adapter { return nil }
-var openClawAdapterFactory = func() executor.Adapter { return nil }
-var piAdapterFactory = func() executor.Adapter { return nil }
-
-// SetCodexAdapterFactory sets the Codex adapter factory
-func SetCodexAdapterFactory(factory func() executor.Adapter) {
-	codexAdapterFactory = factory
-}
-
-// SetClaudeAdapterFactory sets the Claude adapter factory
-func SetClaudeAdapterFactory(factory func() executor.Adapter) {
-	claudeAdapterFactory = factory
-}
-
-// SetCodeBuddyAdapterFactory sets the CodeBuddy adapter factory
-func SetCodeBuddyAdapterFactory(factory func() executor.Adapter) {
-	codeBuddyAdapterFactory = factory
-}
-
-// SetOpenCodeAdapterFactory sets the OpenCode adapter factory
-func SetOpenCodeAdapterFactory(factory func() executor.Adapter) {
-	openCodeAdapterFactory = factory
-}
-
-// SetCursorAdapterFactory sets the Cursor Agent adapter factory
-func SetCursorAdapterFactory(factory func() executor.Adapter) {
-	cursorAdapterFactory = factory
-}
-
-// SetCopilotAdapterFactory sets the GitHub Copilot CLI adapter factory
-func SetCopilotAdapterFactory(factory func() executor.Adapter) {
-	copilotAdapterFactory = factory
-}
-
-// SetGrokAdapterFactory sets the Grok CLI adapter factory
-func SetGrokAdapterFactory(factory func() executor.Adapter) {
-	grokAdapterFactory = factory
-}
-
-// SetHermesAdapterFactory sets the Hermes CLI adapter factory
-func SetHermesAdapterFactory(factory func() executor.Adapter) {
-	hermesAdapterFactory = factory
-}
-
-// SetKimiAdapterFactory sets the Kimi Code CLI adapter factory
-func SetKimiAdapterFactory(factory func() executor.Adapter) {
-	kimiAdapterFactory = factory
-}
-
-// SetQoderAdapterFactory sets the Qoder CLI adapter factory
-func SetQoderAdapterFactory(factory func() executor.Adapter) {
-	qoderAdapterFactory = factory
-}
-
-// SetQwenAdapterFactory sets the Qwen Code CLI adapter factory
-func SetQwenAdapterFactory(factory func() executor.Adapter) {
-	qwenAdapterFactory = factory
-}
-
-// SetOpenClawAdapterFactory sets the OpenClaw CLI adapter factory
-func SetOpenClawAdapterFactory(factory func() executor.Adapter) {
-	openClawAdapterFactory = factory
-}
-
-// SetPiAdapterFactory sets the Pi Agent CLI adapter factory
-func SetPiAdapterFactory(factory func() executor.Adapter) {
-	piAdapterFactory = factory
 }

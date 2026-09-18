@@ -1,7 +1,7 @@
 <template>
   <div class="next-step-control" :style="positionStyle">
     <a-tooltip
-      title="阶段已完成，进入下一步"
+      :title="t('workflows.task.progress.stageCompleted')"
       placement="left"
       :open="tooltipOpen"
       @open-change="handleTooltipOpenChange"
@@ -14,7 +14,7 @@
         :aria-label="accessibleLabel"
         :aria-busy="completing"
         aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
-        :title="tipVisible ? '可拖动；使用方向键调整位置' : undefined"
+        :title="tipVisible ? t('workflows.task.progress.dragHint') : undefined"
         @click="handleClick"
         @keydown="handleKeydown"
         @pointerdown="handlePointerDown"
@@ -27,10 +27,10 @@
     </a-tooltip>
 
     <div v-if="tipVisible" class="next-step-tip" role="status">
-      <button type="button" class="next-step-tip-close" aria-label="关闭提示" @click="dismissTip">
+      <button type="button" class="next-step-tip-close" :aria-label="t('workflows.task.progress.closeHint')" @click="dismissTip">
         <CloseOutlined aria-hidden="true" />
       </button>
-      <span>当前阶段完成后，点此进入下一步</span>
+      <span>{{ t('workflows.task.progress.nextHint') }}</span>
     </div>
   </div>
 </template>
@@ -39,6 +39,9 @@
 import { CloseOutlined } from '@ant-design/icons-vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import nextStepIcon from '@/assets/icons/task-next-step.svg'
+import { useAppI18n } from '@/i18n'
+
+const { t } = useAppI18n()
 
 interface Position {
   left: number
@@ -89,9 +92,11 @@ const positionStyle = computed(() =>
 )
 
 const accessibleLabel = computed(() => {
-  if (props.completing) return '处理中'
-  if (props.isLastStep) return '完成任务'
-  return props.nextStepName ? `进入下一步：${props.nextStepName}` : '进入下一步'
+  if (props.completing) return t('workflows.task.progress.processing')
+  if (props.isLastStep) return t('workflows.task.progress.completeTask')
+  return props.nextStepName
+    ? t('workflows.task.progress.enterNamedNext', { step: props.nextStepName })
+    : t('workflows.task.progress.enterNext')
 })
 
 function clamp(value: number, min: number, max: number) {

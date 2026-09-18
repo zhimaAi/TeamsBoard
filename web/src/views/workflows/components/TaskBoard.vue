@@ -5,7 +5,7 @@
       type="button"
       @click="openSettings"
     >
-      列表设置
+      {{ t('workflows.board.listSettings') }}
     </button>
 
     <ASpin :spinning="loading">
@@ -28,7 +28,7 @@
                   class="lane-dot"
                   :style="{ background: lane.color }"
                 />
-                {{ lane.title }}
+                {{ laneTitle(lane) }}
               </span>
               <span class="lane-count">{{ grouped[lane.lane_key]?.length || 0 }}</span>
             </span>
@@ -43,7 +43,7 @@
             >
               <template #content>
                 <div class="lane-color-panel">
-                  <p>修改背景颜色</p>
+                  <p>{{ t('workflows.board.changeBackground') }}</p>
                   <div class="lane-color-presets">
                     <button
                       v-for="color in laneBackgroundPresets"
@@ -52,28 +52,28 @@
                       class="lane-color-swatch"
                       :class="{ selected: isLaneBackgroundSelected(lane, color) }"
                       :style="{ backgroundColor: color }"
-                      :aria-label="`设置为 ${color} 背景色`"
+                      :aria-label="t('workflows.board.setBackground', { color })"
                       :aria-pressed="isLaneBackgroundSelected(lane, color)"
                       @click="setLaneBackground(lane, color)"
                     />
-                    <button type="button" class="lane-color-swatch reset-color" aria-label="恢复默认白色背景" @click="resetLaneBackground(lane)">
+                    <button type="button" class="lane-color-swatch reset-color" :aria-label="t('workflows.board.resetBackground')" @click="resetLaneBackground(lane)">
                       <img :src="noColorIcon" alt="" />
                     </button>
                   </div>
                   <div class="custom-color-row">
-                    <p>自定义颜色</p>
+                    <p>{{ t('workflows.board.customColor') }}</p>
                     <label class="lane-color-swatch custom-color-swatch" :style="{ backgroundColor: laneBackground(lane) }">
                       <input
                         type="color"
                         :value="laneBackground(lane)"
-                        :aria-label="`为${lane.title}选择自定义背景色`"
+                        :aria-label="t('workflows.board.chooseCustomBackground', { lane: laneTitle(lane) })"
                         @input="setCustomLaneBackground(lane, $event)"
                       />
                     </label>
                   </div>
                 </div>
               </template>
-              <button type="button" class="lane-color-btn" :aria-label="`设置${lane.title}的背景颜色`">
+              <button type="button" class="lane-color-btn" :aria-label="t('workflows.board.setLaneBackground', { lane: laneTitle(lane) })">
                 <span class="lane-more-icon" aria-hidden="true"><img :src="ellipsisDotIcon" alt="" /><img :src="ellipsisDotIcon" alt="" /><img :src="ellipsisDotIcon" alt="" /></span>
               </button>
             </a-popover>
@@ -97,7 +97,7 @@
                 class="empty-icon"
                 aria-hidden="true"
               />
-              <span class="empty-text">暂无数据</span>
+              <span class="empty-text">{{ t('common.states.noData') }}</span>
             </div>
           </div>
         </section>
@@ -114,7 +114,7 @@
 
     <ADrawer
       v-model:open="taskDrawerOpen"
-      title="任务详情"
+      :title="t('workflows.board.taskDetails')"
       placement="right"
       width="min(1100px, 92vw)"
       :body-style="{ padding: 0, overflow: 'hidden' }"
@@ -135,7 +135,7 @@
 
     <AModal
       v-model:open="taskModalOpen"
-      title="任务详情"
+      :title="t('workflows.board.taskDetails')"
       width="min(1200px, calc(100vw - 48px))"
       :body-style="{ height: '85vh', padding: 0, overflow: 'hidden' }"
       :footer="null"
@@ -161,10 +161,15 @@
       @created="onTaskCreated"
     />
 
-    <AssignPipelineModal
+    <AssignExecutionModeModal
       v-model:open="assignModalOpen"
       :task-uuid="pendingAssignTask?.uuid || ''"
       :task-title="pendingAssignTask?.title || ''"
+	  :initial-mode="pendingAssignTask?.execution_mode === 'pipeline' ? 'pipeline' : pendingAssignTask?.execution_mode === 'expert_group' ? 'expert_group' : pendingAssignTask?.execution_mode === 'cli' ? 'cli' : pendingAssignTask?.execution_mode === 'vibe_coding' ? 'vibe_coding' : ''"
+      :preferred-pipeline-uuid="pendingAssignTask?.selected_pipeline_uuid || ''"
+	  :preferred-expert-group-uuid="pendingAssignTask?.selected_expert_group_uuid || ''"
+      :initial-cli-type="pendingAssignTask?.execution_mode === 'cli' ? pendingAssignTask?.execution_tool || '' : ''"
+      :initial-model-name="pendingAssignTask?.execution_mode === 'cli' ? pendingAssignTask?.execution_model || '' : ''"
       mode="board"
       @assigned="load"
     />
@@ -176,7 +181,7 @@ import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRouter } from 'vue-router'
 import apiClient from '@/api/client'
-import AssignPipelineModal from '@/components/AssignPipelineModal.vue'
+import AssignExecutionModeModal from '@/components/AssignExecutionModeModal.vue'
 import CreateLocalTaskModal from '@/components/CreateLocalTaskModal.vue'
 import type { TaskBoardLane, TaskBoardTask, TaskViewMode } from '@/types/task-board'
 import TaskDetail from '@/views/workflows/TaskDetail.vue'
@@ -185,6 +190,10 @@ import noColorIcon from '@/assets/no-color.svg'
 import EmptyIssueIcon from './EmptyIssueIcon.vue'
 import TaskBoardCard from './TaskBoardCard.vue'
 import TaskBoardSettingsModal from './TaskBoardSettingsModal.vue'
+import { useAppI18n } from '@/i18n'
+import { useLocalWS } from '@/composables/useLocalWebSocket'
+
+const { t } = useAppI18n()
 
 const TASK_VIEW_MODE_STORAGE_KEY = 'goteams.workflows.task-view-mode'
 const LANE_BACKGROUND_STORAGE_KEY = 'goteams.workflows.board-lane-backgrounds.v1'
@@ -244,11 +253,38 @@ const grouped = computed(() => Object.fromEntries(
 
 onMounted(load)
 
+let refreshQueued = false
+useLocalWS('task.changed', () => {
+  if (refreshQueued) return
+  refreshQueued = true
+  queueMicrotask(() => {
+    refreshQueued = false
+    void load()
+  })
+})
+
 function laneStatus(status: string) {
   if (status === 'todo') return 'pending'
   if (['in_progress', 'running', 'developing', 'developed'].includes(status)) return 'active'
   if (status === 'completed') return 'done'
   return status
+}
+
+function laneTitle(lane: TaskBoardLane) {
+  const key = lane.lane_key.toLowerCase()
+  if (['pending', 'todo'].includes(key) || ['待开始', '待启动', '待规划'].includes(lane.title)) {
+    return t('workflows.task.status.pending')
+  }
+  if (['active', 'in_progress', 'running', 'developing', 'developed'].includes(key) || lane.title === '进行中') {
+    return t('workflows.task.status.inProgress')
+  }
+  if (['blocked'].includes(key) || lane.title === '已阻塞') {
+    return t('workflows.task.status.blocked')
+  }
+  if (['done', 'completed'].includes(key) || ['已完成', '完成'].includes(lane.title)) {
+    return t('workflows.task.status.done')
+  }
+  return lane.title
 }
 
 async function load() {
@@ -261,7 +297,7 @@ async function load() {
     tasks.value = taskResponse.items || []
     allLanes.value = laneResponse.items || []
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '加载失败')
+    message.error(error instanceof Error ? error.message : t('workflows.board.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -307,13 +343,18 @@ function onDragOver(event: DragEvent) {
 async function changeStatus(task: TaskBoardTask, status: string) {
   if (task.status === status) return
   const shouldStart = ['active', 'in_progress', 'developing'].includes(status)
-  if (shouldStart && !task.pipeline_snapshot_uuid) {
+  if (shouldStart && !task.execution_mode) {
+    pendingAssignTask.value = task
+    assignModalOpen.value = true
+    return
+  }
+  if (shouldStart && task.execution_mode === 'pipeline' && !task.pipeline_snapshot_uuid) {
     pendingAssignTask.value = task
     assignModalOpen.value = true
     return
   }
   // 流水线步骤缺少提示词/CLI/模型时，弹窗补全
-  if (shouldStart && task.pipeline_snapshot_uuid) {
+  if (shouldStart && task.execution_mode === 'pipeline' && task.pipeline_snapshot_uuid) {
     try {
       const detail = await apiClient.get<{ steps: Array<{ prompt_snapshot?: string; cli_type?: string; model_name?: string }> }>(`/tasks/${task.uuid}`)
       if (detail.steps?.some(s => !s.prompt_snapshot || !s.cli_type || !s.model_name)) {
@@ -327,10 +368,10 @@ async function changeStatus(task: TaskBoardTask, status: string) {
   try {
     await apiClient.put(`/tasks/${task.uuid}/status`, { status })
     task.status = status
-    if (shouldStart) message.success('任务已切换为进行中并自动启动')
-    else message.success('任务状态已更新')
+    if (shouldStart) message.success(t('workflows.board.started'))
+    else message.success(t('workflows.board.statusUpdated'))
   } catch (error) {
-    message.error(error instanceof Error ? error.message : '状态更新失败')
+    message.error(error instanceof Error ? error.message : t('workflows.board.statusUpdateFailed'))
   } finally {
     updating.value = undefined
   }
@@ -363,7 +404,8 @@ function setLaneBackground(lane: TaskBoardLane, color: string) {
 }
 
 function resetLaneBackground(lane: TaskBoardLane) {
-  const { [lane.lane_key]: _, ...backgrounds } = laneBackgrounds.value
+  const backgrounds = { ...laneBackgrounds.value }
+  delete backgrounds[lane.lane_key]
   laneBackgrounds.value = backgrounds
   persistLaneBackgrounds()
 }

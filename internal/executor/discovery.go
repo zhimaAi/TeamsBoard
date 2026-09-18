@@ -35,90 +35,108 @@ type cliDefinition struct {
 }
 
 // cliDefinitions returns the CLI definitions to probe on this machine.
+// 候选可执行名统一取自 cliExecutableNames，与执行期 ResolveCLIExecutable 同源，
+// 避免探测名与执行名不一致（例如 cursor 的 agent / cursor-agent）。
 func cliDefinitions() []cliDefinition {
 	return []cliDefinition{
 		{
 			Type:          CLITypeCodex,
 			Name:          "Codex CLI",
-			Executables:   []string{"codex"},
+			Executables:   cliExecutableNames(CLITypeCodex),
 			ModelResolver: codexModelResolver,
 		},
 		{
 			Type:          CLITypeClaude,
 			Name:          "Claude Code",
-			Executables:   []string{"claude"},
+			Executables:   cliExecutableNames(CLITypeClaude),
 			ModelResolver: resolveClaudeModels,
 		},
 		{
 			Type:          CLITypeCodeBuddy,
 			Name:          "CodeBuddy Code",
-			Executables:   []string{"codebuddy", "cbc"},
+			Executables:   cliExecutableNames(CLITypeCodeBuddy),
 			ModelResolver: resolveCodeBuddyModels,
 		},
 		{
 			Type:          CLITypeOpenCode,
 			Name:          "OpenCode",
-			Executables:   []string{"opencode"},
+			Executables:   cliExecutableNames(CLITypeOpenCode),
 			ModelResolver: resolveOpenCodeModels,
 		},
 		{
-			Type:          CLITypeCursor,
-			Name:          "Cursor Agent",
-			Executables:   []string{"agent"},
+			Type:        CLITypeCursor,
+			Name:        "Cursor Agent",
+			Executables: cliExecutableNames(CLITypeCursor),
+			// 注意：不能用 `agent` 探测——xAI 官方 grok 安装器会把
+			// `~/.grok/bin/agent` 软链到 `~/.local/bin/agent`，抢占该命令名，
+			// 导致探测到 grok 的二进制。Cursor 安装脚本同时提供 cursor-agent，
+			// 该名字唯一无歧义。
 			ModelResolver: resolveCursorModels,
 		},
 		{
 			Type:          CLITypeCopilot,
 			Name:          "GitHub Copilot CLI",
-			Executables:   []string{"copilot"},
+			Executables:   cliExecutableNames(CLITypeCopilot),
 			ModelResolver: resolveCopilotModels,
 		},
-		{
-			Type:          CLITypeGrok,
-			Name:          "Grok CLI",
-			Executables:   []string{"grok"},
-			ModelResolver: resolveGrokModels,
-		},
+		// TODO(grok-acp): 暂时关闭 grok 的发现项。
+		//
+		// 现有 grok 适配器（internal/executor/grok）适配的是社区版
+		// `@vibe-kit/grok-cli`（`--format json --no-sandbox -p`），而 xAI 官方
+		// Grok Build（1.0.x，命令同为 `grok`）不接受这套参数——本机若装的是官方版，
+		// 放开探测会让用户选中一个必然报错的 CLI。
+		//
+		// 官方版的程序化集成路径是 `grok agent stdio`（标准 ACP over stdio，
+		// JSON-RPC 2.0 + NDJSON，无需 TTY），需要单独实现双向 ACP 客户端适配器
+		// （initialize → session/new → session/prompt，事件经 session/update 下发，
+		// 权限走 session/request_permission 应答）。ACP 适配落地后恢复本项，
+		// 并在适配器内按 `grok --version` 或参数探测区分社区版/官方版。
+		// {
+		// 	Type:          CLITypeGrok,
+		// 	Name:          "Grok CLI",
+		// 	Executables:   cliExecutableNames(CLITypeGrok),
+		// 	ModelResolver: resolveGrokModels,
+		// },
 		// {
 		// 	Type:          CLITypeHermes,
 		// 	Name:          "Hermes",
-		// 	Executables:   []string{"hermes"},
+		// 	Executables:   cliExecutableNames(CLITypeHermes),
 		// 	ModelResolver: resolveHermesModels,
 		// },
 		{
 			Type:          CLITypeKimi,
 			Name:          "Kimi Code",
-			Executables:   []string{"kimi"},
+			Executables:   cliExecutableNames(CLITypeKimi),
 			ModelResolver: resolveKimiModels,
 		},
 		{
 			Type:          CLITypeQoder,
 			Name:          "Qoder CLI",
-			Executables:   []string{"qodercli"},
+			Executables:   cliExecutableNames(CLITypeQoder),
 			ModelResolver: resolveQoderModels,
 		},
 		{
 			Type:          CLITypeQoderCN,
 			Name:          "Qoder CLI (CN)",
-			Executables:   []string{"qoderclicn"},
+			Executables:   cliExecutableNames(CLITypeQoderCN),
 			ModelResolver: resolveQoderModels,
 		},
 		{
 			Type:          CLITypeQwen,
 			Name:          "Qwen Code",
-			Executables:   []string{"qwen"},
+			Executables:   cliExecutableNames(CLITypeQwen),
 			ModelResolver: resolveQwenModels,
 		},
 		// {
 		// 	Type:          CLITypeOpenClaw,
 		// 	Name:          "OpenClaw",
-		// 	Executables:   []string{"openclaw"},
+		// 	Executables:   cliExecutableNames(CLITypeOpenClaw),
 		// 	ModelResolver: resolveOpenClawModels,
 		// },
 		{
 			Type:          CLITypePi,
 			Name:          "Pi Agent",
-			Executables:   []string{"pi"},
+			Executables:   cliExecutableNames(CLITypePi),
 			ModelResolver: resolvePiModels,
 		},
 	}
@@ -228,8 +246,11 @@ func cliExecutableNames(cliType string) []string {
 	case CLITypeOpenCode:
 		return []string{"opencode"}
 	case CLITypeCursor:
-		// The Cursor CLI binary is `agent`, not `cursor`.
-		return []string{"agent"}
+		// Cursor 安装脚本同时提供 `agent` 与 `cursor-agent` 两个入口，但
+		// xAI 官方 grok 的安装器会把 `~/.grok/bin/agent` 软链到
+		// `~/.local/bin/agent`，抢占 `agent` 这个名字——因此这里必须用
+		// 唯一无歧义的 `cursor-agent`，与 cliDefinitions 的探测名保持一致。
+		return []string{"cursor-agent"}
 	case CLITypeCopilot:
 		return []string{"copilot"}
 	case CLITypeGrok:
@@ -551,11 +572,44 @@ func resolveClaudeModels(_ context.Context, _ string) []string {
 	return dedup(merged)
 }
 
+// codebuddySettingsModelIDs reads user-defined (BYOK) model ids from
+// ~/.codebuddy/models.json. Entries there carry a full request config
+// (url/apiKey) and are directly usable via `codebuddy --model <id>`, but they
+// never appear in the --help official list.
+func codebuddySettingsModelIDs() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".codebuddy", "models.json"))
+	if err != nil {
+		return nil
+	}
+	var models struct {
+		Models []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+	}
+	if json.Unmarshal(raw, &models) != nil {
+		return nil
+	}
+	var ids []string
+	for _, model := range models.Models {
+		if id := strings.TrimSpace(model.ID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // resolveCodeBuddyModels obtains the supported model list by parsing codebuddy --help output, and falls back to the configuration file if it fails.
+// 用户在 ~/.codebuddy/models.json 配置的自定义（BYOK）模型 id 也会被合并进来：
+// 这些模型不出现在 --help 的官方列表里，但 --model <id> 可以直接使用。
 func resolveCodeBuddyModels(ctx context.Context, execPath string) []string {
-	// Prefer parsing the "Currently supported: (...)" model list from the --help output
-	if models := resolveModelsFromHelp(ctx, execPath); len(models) > 0 {
-		return models
+	models := resolveModelsFromHelp(ctx, execPath)
+	merged := dedup(append(models, codebuddySettingsModelIDs()...))
+	if len(merged) > 0 {
+		return merged
 	}
 
 	// Fallback: read from configuration file
@@ -1036,6 +1090,11 @@ type qoderModelsOutput struct {
 // line-oriented text (including the SDK "value<TAB>displayName" form and the
 // "id - description" form). When the command cannot be queried a small
 // built-in catalog is used so the picker never shows an empty list.
+//
+// BYOK（自定义）模型需要额外处理：--list-models 的文本输出把 BYOK 模型显示为
+// "displayName (qoder-custom-<uuid>…)"，括号内的 provider key 被截断且带省略号，
+// 不是可执行的模型 id；完整 id（qoder-custom-<uuid>/<model>）只存在于
+// settings.json 的 providers 映射里，因此这里把两边合并。
 func resolveQoderModels(ctx context.Context, execPath string) []string {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -1043,13 +1102,68 @@ func resolveQoderModels(ctx context.Context, execPath string) []string {
 	cmd := osexec.CommandContext(ctx, execPath, "--list-models")
 	output, err := cmd.Output()
 	if err != nil {
-		return qoderStaticModels()
+		return qoderMergeSettingsModels(nil)
 	}
+	return qoderMergeSettingsModels(parseQoderModelOutput(string(output)))
+}
 
-	if models := parseQoderModelOutput(string(output)); len(models) > 0 {
-		return models
+// qoderMergeSettingsModels 把 --list-models 的解析结果与 settings.json 里
+// BYOK 自定义模型的完整 id 合并：剔除 --list-models 中被截断的 BYOK 显示行
+// （无法作为 -m 参数），再补上 providers 映射还原出的完整 id。
+func qoderMergeSettingsModels(models []string) []string {
+	filtered := make([]string, 0, len(models))
+	for _, model := range models {
+		// BYOK 模型在 --list-models 里的显示形如 "name (qoder-custom-<uuid>…)"，
+		// id 被截断且不可执行；完整 id 由 qoderSettingsModelIDs 提供。
+		if strings.Contains(model, "(qoder-custom-") {
+			continue
+		}
+		filtered = append(filtered, model)
 	}
-	return qoderStaticModels()
+	return dedup(append(filtered, qoderSettingsModelIDs()...))
+}
+
+// qoderSettingsModelIDs reads the BYOK custom model ids from the Qoder CLI
+// settings files (international ~/.qoder and CN ~/.qoder-cn). Each provider
+// entry yields "<providerKey>/<model>" which is exactly the id `qodercli -m`
+// expects for custom models.
+func qoderSettingsModelIDs() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	for _, dir := range []string{".qoder", ".qoder-cn"} {
+		raw, err := os.ReadFile(filepath.Join(home, dir, "settings.json"))
+		if err != nil {
+			continue
+		}
+		var settings struct {
+			Providers map[string]struct {
+				Model  string `json:"model"`
+				Models []struct {
+					Model string `json:"model"`
+				} `json:"models"`
+			} `json:"providers"`
+		}
+		if json.Unmarshal(raw, &settings) != nil {
+			continue
+		}
+		for providerKey, provider := range settings.Providers {
+			seen := map[string]bool{}
+			if provider.Model != "" {
+				ids = append(ids, providerKey+"/"+provider.Model)
+				seen[provider.Model] = true
+			}
+			for _, model := range provider.Models {
+				if model.Model != "" && !seen[model.Model] {
+					ids = append(ids, providerKey+"/"+model.Model)
+					seen[model.Model] = true
+				}
+			}
+		}
+	}
+	return ids
 }
 
 // parseQoderModelOutput extracts model ids from `qodercli --list-models` output,

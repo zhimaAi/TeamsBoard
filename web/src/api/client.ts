@@ -1,6 +1,7 @@
 /** * API request encapsulation * baseURL: /api/local */
 
 import { getApiToken, invalidateApiToken } from './token'
+import { getCurrentLocale, t, type AppLocale } from '@/i18n'
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/local'
 
@@ -14,19 +15,119 @@ export interface RequestOptions {
 export interface ApiResponse<T = unknown> {
   code: number
   message: string
+  warning?: string
   data: T
+}
+
+export interface ApiFeedback {
+  kind: 'warning'
+  message: string
+  requestLocale: AppLocale
+  responseLocale?: AppLocale
+  staleLocale: boolean
+}
+
+type ApiFeedbackHandler = (feedback: ApiFeedback) => void
+
+let apiFeedbackHandler: ApiFeedbackHandler | undefined
+
+export function setApiFeedbackHandler(handler?: ApiFeedbackHandler) {
+  apiFeedbackHandler = handler
 }
 
 export class ApiError extends Error {
   status: number
   code?: number | string
+  requestLocale?: AppLocale
+  responseLocale?: AppLocale
+  staleLocale: boolean
 
-  constructor(message: string, status: number, code?: number | string) {
+  constructor(
+    message: string,
+    status: number,
+    code?: number | string,
+    language?: {
+      requestLocale: AppLocale
+      responseLocale?: AppLocale
+      staleLocale: boolean
+    },
+  ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
+    this.requestLocale = language?.requestLocale
+    this.responseLocale = language?.responseLocale
+    this.staleLocale = language?.staleLocale ?? false
   }
+}
+
+function readResponseLocale(response: Response): AppLocale | undefined {
+  const locale = response.headers.get('Content-Language')
+  return locale === 'zh-CN' || locale === 'en-US' ? locale : undefined
+}
+
+function getLanguageContext(response: Response, requestLocale: AppLocale) {
+  const responseLocale = readResponseLocale(response)
+  return {
+    requestLocale,
+    responseLocale,
+    staleLocale: getCurrentLocale() !== (responseLocale ?? requestLocale),
+  }
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function readMessage(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function readCode(value: unknown): number | string | undefined {
+  return typeof value === 'number' || typeof value === 'string' ? value : undefined
+}
+
+function emitWarning(
+  warning: unknown,
+  language: ReturnType<typeof getLanguageContext>,
+) {
+  const message = readMessage(warning)
+  if (!message || !apiFeedbackHandler) return
+
+  try {
+    apiFeedbackHandler({
+      kind: 'warning',
+      message: language.staleLocale
+        ? t('common.feedback.completedAfterLanguageChange')
+        : message,
+      ...language,
+    })
+  } catch {
+    // warning 属于部分成功提示，展示失败不能把已成功的业务操作改判为失败。
+  }
+}
+
+async function createApiError(response: Response, requestLocale: AppLocale): Promise<ApiError> {
+  const language = getLanguageContext(response, requestLocale)
+  let errorMessage = `HTTP ${response.status}: ${response.statusText}`
+  let errorCode: number | string | undefined
+
+  try {
+    const errorBody = readRecord(await response.json())
+    errorMessage = readMessage(errorBody?.error) || readMessage(errorBody?.message) || errorMessage
+    errorCode = readCode(errorBody?.code)
+  } catch {
+    // 非 JSON 错误响应沿用 HTTP 状态文案。
+  }
+
+  if (language.staleLocale) {
+    errorMessage = t('common.feedback.languageChangedRetry')
+  }
+
+  return new ApiError(errorMessage, response.status, errorCode, language)
 }
 
 function buildUrl(path: string, params?: RequestOptions['params']): string {
@@ -60,6 +161,8 @@ export async function request<T = unknown>(
     const token = await getApiToken()
     if (token) finalHeaders['X-GoTeams-Api-Token'] = token
   }
+  const requestLocale = getCurrentLocale()
+  finalHeaders.lang = requestLocale
 
   const response = await fetchWithTokenRetry(url, {
     method,
@@ -72,16 +175,7 @@ export async function request<T = unknown>(
   })
 
   if (!response.ok) {
-    let errorMessage = `HTTP ${response.status}: ${response.statusText}`
-    let errorCode: number | string | undefined
-    try {
-      const errorBody = await response.json()
-      errorMessage = errorBody.error || errorBody.message || errorMessage
-      errorCode = errorBody.code
-    } catch {
-      // ignore parse error
-    }
-    throw new ApiError(errorMessage, response.status, errorCode)
+    throw await createApiError(response, requestLocale)
   }
 
   const contentType = response.headers.get('content-type') || ''
@@ -90,15 +184,25 @@ export async function request<T = unknown>(
   }
 
   const result: ApiResponse<T> = await response.json()
+  const language = getLanguageContext(response, requestLocale)
 
   // Only unified responses with code are considered envelopes; business objects of native APIs may also legally contain data fields.
   if (result.code !== undefined) {
     if (result.code !== 0 && result.code !== 200) {
-      throw new ApiError(result.message || 'Request failed', response.status, result.code)
+      throw new ApiError(
+        language.staleLocale
+          ? t('common.feedback.languageChangedRetry')
+          : result.message || 'Request failed',
+        response.status,
+        result.code,
+        language,
+      )
     }
+    emitWarning(result.warning, language)
     return result.data !== undefined ? result.data : (result as unknown as T)
   }
 
+  emitWarning(readRecord(result)?.warning, language)
   return result as unknown as T
 }
 
@@ -107,6 +211,8 @@ async function requestBlob(path: string, params?: RequestOptions['params']): Pro
   const headers: Record<string, string> = {}
   const token = await getApiToken()
   if (token) headers['X-GoTeams-Api-Token'] = token
+  const requestLocale = getCurrentLocale()
+  headers.lang = requestLocale
   const response = await fetchWithTokenRetry(url, {
     method: 'GET',
     headers,
@@ -114,14 +220,7 @@ async function requestBlob(path: string, params?: RequestOptions['params']): Pro
     cache: 'no-store',
   })
   if (!response.ok) {
-    let errorMessage = `HTTP ${response.status}: ${response.statusText}`
-    try {
-      const errorBody = await response.json()
-      errorMessage = errorBody.error || errorBody.message || errorMessage
-    } catch {
-      // ignore parse error
-    }
-    throw new ApiError(errorMessage, response.status)
+    throw await createApiError(response, requestLocale)
   }
   return response.blob()
 }
