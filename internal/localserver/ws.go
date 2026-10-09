@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -179,14 +180,20 @@ func (h *WSHub) BroadcastExecutorCompleted(taskUUID, stepKey, sessionUUID, statu
 // BroadcastActivity pushes the throttled latest CLI activity to all clients.
 // Task views filter by task_uuid and patch the running-step subtitle locally,
 // so it stays fresh without polling /progress.
-func (h *WSHub) BroadcastActivity(taskUUID, sessionUUID, eventType, content string, at int64) {
+func (h *WSHub) BroadcastActivity(taskUUID, sessionUUID string, sequence int, eventType, content string, at int64) {
 	if taskUUID == "" || sessionUUID == "" {
 		return
 	}
 	h.BroadcastToAll("executor.activity", map[string]interface{}{
 		"task_uuid":    taskUUID,
 		"session_uuid": sessionUUID,
+		"sequence":     sequence,
+		"activity_id":  fmt.Sprintf("event:%s:%d", sessionUUID, sequence),
+		"status":       activityStatusRunning,
+		"actor":        activityActorTool,
+		"kind":         eventType,
 		"event_type":   eventType,
+		"preview":      content,
 		"content":      content,
 		"at":           at,
 	})

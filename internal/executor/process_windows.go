@@ -55,8 +55,8 @@ func TerminateProcessTree(pid int) error {
 // TerminateProcess without waiting for the targets to exit.
 func terminateTreeImmediately(pid int) error {
 	processIDs, err := collectProcessTreePIDs(pid)
-	if err != nil || len(processIDs) == 0 {
-		processIDs = []int{pid}
+	if err != nil {
+		return err // 无法枚举整棵树时交给 taskkill，不伪称仅停止根进程即已完成。
 	}
 
 	var firstErr error
@@ -67,7 +67,17 @@ func terminateTreeImmediately(pid int) error {
 			firstErr = err
 		}
 	}
-	return firstErr
+	if firstErr != nil {
+		return firstErr
+	}
+	survivors, err := waitForProcessesToExit(processIDs, processExitVerificationTimeout)
+	if err != nil {
+		return err
+	}
+	if len(survivors) > 0 {
+		return syscall.EBUSY
+	}
+	return nil
 }
 
 // terminatePID forcibly terminates one process without waiting for exit.
@@ -75,8 +85,11 @@ func terminateTreeImmediately(pid int) error {
 func terminatePID(processID int) error {
 	handle, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(processID))
 	if err != nil {
-		// The process has already exited (ERROR_INVALID_PARAMETER); treat as terminated.
-		return nil
+		// Access denied 不能被当作进程已经退出，否则会残留仍在写文件的子进程。
+		if err == windows.ERROR_INVALID_PARAMETER {
+			return nil
+		}
+		return err
 	}
 	defer windows.CloseHandle(handle)
 	if err := windows.TerminateProcess(handle, 1); err != nil {
@@ -140,7 +153,11 @@ func collectProcessTreePIDs(rootPID int) ([]int, error) {
 		children[parentID] = append(children[parentID], processID)
 	}
 
+	for parentID := range children {
+		sort.Ints(children[parentID])
+	}
 	seen := map[int]bool{rootPID: true}
+	processIDs := []int{rootPID}
 	queue := []int{rootPID}
 	for len(queue) > 0 {
 		parentID := queue[0]
@@ -150,15 +167,12 @@ func collectProcessTreePIDs(rootPID int) ([]int, error) {
 				continue
 			}
 			seen[childPID] = true
+			processIDs = append(processIDs, childPID)
 			queue = append(queue, childPID)
 		}
 	}
 
-	processIDs := make([]int, 0, len(seen))
-	for processID := range seen {
-		processIDs = append(processIDs, processID)
-	}
-	sort.Ints(processIDs)
+	// 返回 BFS 顺序而不是 PID 大小顺序，逆序终止才能保证先子后父。
 	return processIDs, nil
 }
 

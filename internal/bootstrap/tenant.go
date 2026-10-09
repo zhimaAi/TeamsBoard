@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net"
@@ -44,7 +45,10 @@ func validateConfigName(name string) error {
 // value; the disk configuration only overrides the non-empty fields.
 // The config name must be explicit: GOTEAMS_CONFIG_NAME wins, then the
 // build-time DefaultConfigName; a missing name is a hard startup error.
-func loadCloudConfig() (*config.CloudConfig, error) {
+//
+// configDir 必须来自已解析的数据根（workspace.ResolveDataRoot）：工作空间
+// 被重定位后，磁盘配置文件随数据根一起搬迁，读取和写回都必须指向新位置。
+func loadCloudConfig(configDir string) (*config.CloudConfig, error) {
 	cfgName := strings.TrimSpace(os.Getenv("GOTEAMS_CONFIG_NAME"))
 	if cfgName == "" {
 		cfgName = DefaultConfigName
@@ -65,10 +69,10 @@ func loadCloudConfig() (*config.CloudConfig, error) {
 		return nil, fmt.Errorf("解析嵌入的默认配置文件失败: %w", err)
 	}
 
-	configPath := runtimeConfigPath(cfgName) // Read and write the disk target during runtime (~/.goteams/config/config_<name>.ini)
+	configPath := runtimeConfigPath(configDir, cfgName) // Read and write the disk target during runtime (<data root>/config/config_<name>.ini)
 	sourcePath := embeddedPath
 	var overrideINI *config.INIFile
-	if data, path, ok := loadDiskConfigData(cfgName); ok {
+	if data, path, ok := loadDiskConfigData(configDir, cfgName); ok {
 		parsed, parseErr := config.LoadINIBytes(data)
 		if parseErr != nil {
 			return nil, fmt.Errorf("解析配置文件 %s 失败: %w", path, parseErr)
@@ -87,14 +91,19 @@ func loadCloudConfig() (*config.CloudConfig, error) {
 		return defaultINI.Get(section, key)
 	}
 
-	clientVersion := value("client", "version")
-	if clientVersion == "" {
-		clientVersion = "0.1.0-dev"
+	var desktopPackage struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(assets.DesktopPackageJSON, &desktopPackage); err != nil {
+		return nil, fmt.Errorf("解析内置 desktop/package.json 版本号失败: %w", err)
+	}
+	if desktopPackage.Version == "" {
+		return nil, fmt.Errorf("内置 desktop/package.json 缺少版本号")
 	}
 
 	cfg := config.NewCloudConfig(
 		value("cloud", "api_base_url"),
-		clientVersion,
+		desktopPackage.Version,
 		configPath,
 	)
 	cfg.SetConfigSource(sourcePath)
@@ -128,20 +137,19 @@ func validateLoopbackListenAddr(address string) error {
 // The returned file can be empty; loadCloudConfig will merge by field with embedded defaults.
 //
 // Disk config.ini candidates in order:
-// exe sibling configs/.../<config file> → working directory configs/.../<config file>
-// → ~/.goteams/config/<config file>. Existing anywhere will override the embedded default value.
+// <data root>/config/<config file> → exe sibling configs/.../<config file>
+// → working directory configs/.../<config file>. Existing anywhere will override the embedded default value.
 // The client can connect to any cloud, so the cloud address is overridden by the disk configuration
 // at runtime instead of being fixed by build-time environment.
-func loadDiskConfigData(cfgName string) ([]byte, string, bool) {
+func loadDiskConfigData(configDir, cfgName string) ([]byte, string, bool) {
 	fileName := configFileName(cfgName)
-	diskCandidates := []string{}
+	diskCandidates := []string{runtimeConfigPath(configDir, cfgName)}
 	if exe, err := os.Executable(); err == nil {
 		diskCandidates = append(diskCandidates,
 			filepath.Join(filepath.Dir(exe), "configs", "goteams-client", fileName))
 	}
 	diskCandidates = append(diskCandidates,
 		filepath.Join("configs", "goteams-client", fileName))
-	diskCandidates = append(diskCandidates, runtimeConfigPath(cfgName))
 	for _, p := range diskCandidates {
 		if data, err := os.ReadFile(p); err == nil {
 			return data, p, true
@@ -150,11 +158,12 @@ func loadDiskConfigData(cfgName string) ([]byte, string, bool) {
 	return nil, "", false
 }
 
-// runtimeConfigPath returns the runtime configuration path (~/.goteams/config/config_<name>.ini)
-func runtimeConfigPath(cfgName string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+// runtimeConfigPath returns the runtime configuration path (<data root>/config/config_<name>.ini).
+// configDir 是已解析数据根下的 config 目录；调用方必须保证它已由
+// workspace.ResolveDataRoot 定址，而不是重新从 HOME 拼接。
+func runtimeConfigPath(configDir, cfgName string) string {
+	if configDir == "" {
 		return filepath.Join("configs", "goteams-client", configFileName(cfgName))
 	}
-	return filepath.Join(home, ".goteams", "config", configFileName(cfgName))
+	return filepath.Join(configDir, configFileName(cfgName))
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"goteams-client/internal/applog"
@@ -180,11 +181,15 @@ func (s *SessionSyncService) nextPendingStep(ctx context.Context, taskUUID strin
 // conversation body into the step-level session sync payload.
 func buildStepSessionPayload(ctx context.Context, db *sql.DB, taskUUID, stepUUID string) (*cloud.PipelineTaskSessionSync, int64, error) {
 	var stepKey, stepName string
+	var executionIndex int
 	err := db.QueryRowContext(ctx,
 		`SELECT COALESCE(step_key,''), COALESCE(name,'') FROM gt_task_steps WHERE uuid = ? AND task_uuid = ?`,
 		stepUUID, taskUUID).Scan(&stepKey, &stepName)
 	if err != nil {
 		return nil, 0, fmt.Errorf("读取步骤信息失败: %w", err)
+	}
+	if err = db.QueryRowContext(ctx, `SELECT COALESCE(execution_index,0) FROM gt_tasks WHERE uuid=?`, taskUUID).Scan(&executionIndex); err != nil {
+		return nil, 0, fmt.Errorf("读取执行序号失败: %w", err)
 	}
 
 	// Latest run row: status/model/prompt/result/error of the most recently updated run.
@@ -206,13 +211,17 @@ func buildStepSessionPayload(ctx context.Context, db *sql.DB, taskUUID, stepUUID
 
 	// Whole-step rollups and the sync watermark (max session updated_at).
 	var startedAt, finishedAt, durationMs, maxUpdatedAt, minCreatedAt int64
+	var toolCallCount, filesChanged, linesAdded, linesDeleted int
 	aggErr := db.QueryRowContext(ctx, `
 		SELECT COALESCE(MIN(NULLIF(s.started_at,0)),0), COALESCE(MAX(COALESCE(s.finished_at,0)),0),
 		       COALESCE(SUM(COALESCE(s.duration_ms,0)),0), COALESCE(MAX(s.updated_at),0),
-		       COALESCE(MIN(s.created_at),0)
+		       COALESCE(MIN(s.created_at),0),
+		       COALESCE(SUM(COALESCE(s.tool_call_count,0)),0), COALESCE(SUM(COALESCE(s.files_changed,0)),0),
+		       COALESCE(SUM(COALESCE(s.lines_added,0)),0), COALESCE(SUM(COALESCE(s.lines_deleted,0)),0)
 		 FROM gt_cli_sessions s
 		 WHERE s.task_uuid = ? AND s.step_uuid = ?`, taskUUID, stepUUID).Scan(
-		&startedAt, &finishedAt, &durationMs, &maxUpdatedAt, &minCreatedAt)
+		&startedAt, &finishedAt, &durationMs, &maxUpdatedAt, &minCreatedAt,
+		&toolCallCount, &filesChanged, &linesAdded, &linesDeleted)
 	if aggErr != nil {
 		return nil, 0, fmt.Errorf("读取步骤会话汇总失败: %w", aggErr)
 	}
@@ -223,6 +232,7 @@ func buildStepSessionPayload(ctx context.Context, db *sql.DB, taskUUID, stepUUID
 	}
 	payload := &cloud.PipelineTaskSessionSync{
 		LocalTaskUUID:      taskUUID,
+		ExecutionIndex:     executionIndex,
 		StepKey:            stepKey,
 		StepName:           stepName,
 		Status:             status,
@@ -239,6 +249,10 @@ func buildStepSessionPayload(ctx context.Context, db *sql.DB, taskUUID, stepUUID
 		TotalTokens:        conv.totalTokens,
 		ConversationRounds: conv.rounds,
 		Conversation:       conv.content,
+		ToolCallCount:      toolCallCount,
+		FilesChanged:       filesChanged,
+		LinesAdded:         linesAdded,
+		LinesDeleted:       linesDeleted,
 		StartedAt:          startedAt,
 		FinishedAt:         finishedAt,
 		DurationMs:         durationMs,
@@ -258,6 +272,88 @@ func (s *SessionSyncService) markStepSuccess(ctx context.Context, taskUUID, step
 		syncStatusSuccess, taskUUID, stepUUID, watermark); err != nil {
 		applog.Warn("[CloudSync] 更新步骤会话同步成功状态失败", "task_uuid", taskUUID, "step_uuid", stepUUID, "error", err.Error())
 	}
+}
+
+// FlushTaskExecution pushes the current execution's task projection and every step
+// conversation before the caller discards the local run. Switching execution mode
+// deletes local sessions, so this is the last chance to keep that run's tokens and
+// dialogue on the cloud under the current execution_index.
+func FlushTaskExecution(ctx context.Context, db *sql.DB, client *cloud.Client, taskUUID string) error {
+	if db == nil || client == nil || strings.TrimSpace(taskUUID) == "" {
+		return nil
+	}
+	var sourceType string
+	err := db.QueryRowContext(ctx, `SELECT source_type FROM gt_tasks WHERE uuid=?`, taskUUID).Scan(&sourceType)
+	if err == sql.ErrNoRows || sourceType != "cloud" {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("读取任务来源失败: %w", err)
+	}
+	if err = DefaultPusher().PushTaskSync(ctx, db, client, taskUUID); err != nil {
+		return err
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT st.uuid
+		 FROM gt_task_steps st
+		 WHERE st.task_uuid = ?
+		   AND EXISTS (
+		     SELECT 1 FROM gt_cli_sessions s
+		     WHERE s.task_uuid = st.task_uuid AND s.step_uuid = st.uuid
+		   )
+		 ORDER BY st.step_order, st.rowid`, taskUUID)
+	if err != nil {
+		return fmt.Errorf("查询待封存步骤失败: %w", err)
+	}
+	stepUUIDs := make([]string, 0)
+	for rows.Next() {
+		var stepUUID string
+		if err = rows.Scan(&stepUUID); err != nil {
+			rows.Close()
+			return fmt.Errorf("读取待封存步骤失败: %w", err)
+		}
+		stepUUIDs = append(stepUUIDs, stepUUID)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("遍历待封存步骤失败: %w", err)
+	}
+	if err = rows.Close(); err != nil {
+		return fmt.Errorf("关闭待封存步骤查询失败: %w", err)
+	}
+	var firstErr error
+	for _, stepUUID := range stepUUIDs {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		payload, watermark, buildErr := buildStepSessionPayload(ctx, db, taskUUID, stepUUID)
+		if buildErr != nil {
+			if firstErr == nil {
+				firstErr = buildErr
+			}
+			continue
+		}
+		if payload == nil {
+			continue
+		}
+		pushCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		pushErr := client.PushPipelineTaskSession(pushCtx, *payload)
+		cancel()
+		if pushErr != nil {
+			if firstErr == nil {
+				firstErr = pushErr
+			}
+			continue
+		}
+		if _, err = db.ExecContext(ctx, `
+			UPDATE gt_cli_sessions
+			 SET cloud_sync_status = ?, cloud_sync_error = '', cloud_synced_at = updated_at
+			 WHERE task_uuid = ? AND step_uuid = ? AND updated_at <= ?`,
+			syncStatusSuccess, taskUUID, stepUUID, watermark); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("更新步骤封存状态失败: %w", err)
+		}
+	}
+	return firstErr
 }
 
 // markStepFailed records the failure reason on the step's pending session rows.

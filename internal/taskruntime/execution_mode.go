@@ -3,6 +3,7 @@ package taskruntime
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -12,6 +13,11 @@ const (
 	ExecutionModeVibeCoding  = "vibe_coding"
 	ExecutionModeCLI         = "cli"
 	ExecutionToolCodex       = "codex"
+	ExecutionToolCodexCLI    = "codex_cli"
+	ExecutionToolClaude      = "claude"
+	ExecutionToolCodeBuddy   = "codebuddy"
+	ExecutionToolQoder       = "qoder"
+	ExecutionToolPi          = "pi"
 
 	// CLIDirectStepKey 是 CLI 直接执行模式的隐式步骤标识。该模式没有 Agent
 	// 编排，但仍复用 gt_task_steps 承载用户选定的 CLI 与模型，使会话、动态、
@@ -21,6 +27,46 @@ const (
 	// 选定的 CLI 与模型覆盖它。
 	CLIDirectStepName = "CLI 直接执行"
 )
+
+// VibeCodingTools 是执行方式弹窗中的 Vibe Coding 工具，顺序与设计稿一致。
+func VibeCodingTools() []string {
+	return []string{
+		ExecutionToolCodex,
+		ExecutionToolCodexCLI,
+		ExecutionToolPi,
+		ExecutionToolQoder,
+		ExecutionToolCodeBuddy,
+		ExecutionToolClaude,
+	}
+}
+
+func IsVibeCodingTool(tool string) bool {
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case ExecutionToolCodex, ExecutionToolCodexCLI, ExecutionToolPi, ExecutionToolQoder, ExecutionToolCodeBuddy, ExecutionToolClaude:
+		return true
+	default:
+		return false
+	}
+}
+
+// VibeSkillRoot 是该工具在用户主目录下读取 Skill 的位置。Codex 应用和
+// Codex CLI 共用 ~/.codex/skills。
+func VibeSkillRoot(home, tool string) string {
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case ExecutionToolCodex, ExecutionToolCodexCLI:
+		return filepath.Join(home, ".codex", "skills")
+	case ExecutionToolClaude:
+		return filepath.Join(home, ".claude", "skills")
+	case ExecutionToolCodeBuddy:
+		return filepath.Join(home, ".codebuddy", "skills")
+	case ExecutionToolQoder:
+		return filepath.Join(home, ".qoder", "skills")
+	case ExecutionToolPi:
+		return filepath.Join(home, ".pi", "agent", "skills")
+	default:
+		return ""
+	}
+}
 
 var (
 	ErrExecutionModeConflict    = errors.New("任务已经指派其他执行方式")
@@ -56,8 +102,8 @@ func ValidateExecutionTarget(mode, tool, pipelineUUID, expertGroupUUID string) e
 		if pipelineUUID != "" || expertGroupUUID != "" {
 			return fmt.Errorf("Vibe Coding 执行不能指定流水线")
 		}
-		if tool != ExecutionToolCodex {
-			return fmt.Errorf("Vibe Coding 当前仅支持 Codex")
+		if !IsVibeCodingTool(tool) {
+			return fmt.Errorf("Vibe Coding 工具无效")
 		}
 		return nil
 	case ExecutionModeExpertGroup:

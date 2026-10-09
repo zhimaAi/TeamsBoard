@@ -60,6 +60,7 @@ type Config struct {
 	SkillsRoot       string
 	CodexSkillReady  bool
 	CodexSkillReason string
+	VibeSkills       []VibeSkillStatus
 	BaseProfileDir   string
 	BootstrapStore   secrets.Store
 	SecretStore      *secrets.DelegatingStore
@@ -121,16 +122,19 @@ func (h *sessionHolder) clear() {
 
 // Server local HTTP service
 type Server struct {
-	config     Config
-	router     *gin.Engine
-	sessions   *sessionHolder
-	dbRef      *storage.DBRef
-	lastLogin  *lastLoginInfo
-	profile    *LocalProfile
-	profileMu  sync.Mutex
-	profileDir string
-	ticketMu   sync.Mutex
-	ticket     string
+	config        Config
+	router        *gin.Engine
+	remoteWeChat  *wechatRemote
+	tasksHandler  *TasksHandler
+	sessions      *sessionHolder
+	dbRef         *storage.DBRef
+	lastLogin     *lastLoginInfo
+	profile       *LocalProfile
+	profileMu     sync.Mutex
+	profileDir    string
+	ticketMu      sync.Mutex
+	ticket        string
+	browserLogins *browserLoginManager
 }
 
 // New creates a local service instance
@@ -138,11 +142,12 @@ func New(config Config) *Server {
 	gin.SetMode(gin.ReleaseMode)
 
 	s := &Server{
-		config:   config,
-		sessions: &sessionHolder{},
-		dbRef:    storage.NewDBRef(),
-		profile:  NewLocalProfile(),
-		ticket:   config.BrowserTicket,
+		config:        config,
+		sessions:      &sessionHolder{},
+		dbRef:         storage.NewDBRef(),
+		profile:       NewLocalProfile(),
+		ticket:        config.BrowserTicket,
+		browserLogins: newBrowserLoginManager(),
 	}
 	if config.WSHub != nil {
 		config.WSHub.SetAPIToken(config.APIToken)
@@ -248,9 +253,19 @@ func (s *Server) Handler() http.Handler {
 	return s.router
 }
 
+// StartRemoteChannels starts local-device channels after the database is ready.
+func (s *Server) StartRemoteChannels(ctx context.Context) {
+	if s.remoteWeChat != nil {
+		s.remoteWeChat.start(ctx)
+	}
+}
+
 // Close releases server-owned base profile resources. Application-level task
 // runtime resources are owned and closed by bootstrap.App.
 func (s *Server) Close() {
+	if s.remoteWeChat != nil {
+		s.remoteWeChat.stop()
+	}
 	if s.profile != nil {
 		s.profile.Close()
 	}
@@ -283,6 +298,13 @@ func (s *Server) buildRouter() *gin.Engine {
 	auth.GET("/session", s.handleSessionStatus)
 	auth.POST("/login", s.handleLogin)
 	auth.POST("/logout", s.handleLogout)
+	// 浏览器登录：客户端发起 → 系统浏览器完成登录 → 深链接回注登录态。
+	// callback 由 Electron 主进程调用（系统把 teamsboard:// 交给主进程），
+	// start/status/cancel 由渲染进程调用。
+	auth.POST("/browser-login/start", s.startBrowserLogin)
+	auth.GET("/browser-login/status", s.browserLoginStatus)
+	auth.POST("/browser-login/callback", s.browserLoginCallback)
+	auth.POST("/browser-login/cancel", s.browserLoginCancel)
 
 	if s.config.DesktopToken != "" && s.config.Shutdown != nil {
 		r.POST("/api/local/desktop/shutdown", s.handleDesktopShutdown)
@@ -298,6 +320,9 @@ func (s *Server) buildRouter() *gin.Engine {
 	configHandler := configcenter.NewHandler(s.dbRef, s.config.SecretStore, s.config.CloudConfig, noopAccountID)
 	// Cloud connection configuration requires no login (access is required when starting for the first time and not logging in)
 	configHandler.RegisterCloudRoutes(r.Group("/api/local/config"))
+	// Workspace (data root) relocation is a pre-login machine-level setting:
+	// it must be reachable without a cloud session because the data root gates login.
+	configHandler.RegisterWorkspaceRoutes(r.Group("/api/local/config"))
 
 	// The following local function routing groups can be used without cloud login, and the data is uniformly read and written to the local general Profile library (data/base.db, shared by all accounts);
 	// Configuration center (Git/SSH/Docker/database/model), interface management, command center, knowledge base.
@@ -313,15 +338,23 @@ func (s *Server) buildRouter() *gin.Engine {
 	commandGroup := local.Group("/commands")
 	command.RegisterRoutes(commandGroup, s.dbRef, s.config.SecretStore)
 
-	//Knowledge base (content files belong to the current Profile directory)
+	//Knowledge base (root directory KR: real disk folder, default <profileDir>/knowledge/root)
 	knowledgeGroup := local.Group("/knowledge")
-	knowledge.RegisterRoutes(knowledgeGroup, s.dbRef, func() (string, error) {
-		dir := s.currentProfileDir()
-		if dir == "" {
-			return "", fmt.Errorf("本地 Profile 未初始化")
-		}
-		return filepath.Join(dir, "knowledge", "content"), nil
-	})
+	knowledge.RegisterRoutes(knowledgeGroup, s.dbRef,
+		func() (string, error) {
+			if dir := s.currentProfileDir(); dir == "" {
+				return "", fmt.Errorf("本地 Profile 未初始化")
+			} else {
+				return knowledge.GetRootDir(s.dbRef.Get(), filepath.Join(dir, "knowledge", "root")), nil
+			}
+		},
+		func() string {
+			dir := s.currentProfileDir()
+			if dir == "" {
+				return ""
+			}
+			return filepath.Join(dir, "knowledge", "root")
+		})
 
 	// Tool Center
 	toolsHandler := tools.NewHandler(s.dbRef, s.config.SecretStore)
@@ -332,20 +365,26 @@ func (s *Server) buildRouter() *gin.Engine {
 	// Local task management and CLI execution are available without cloud login.
 	// Individual cloud-import endpoints validate the cloud session in their handler.
 	tasksHandler := NewTasksHandler(s.currentSessionDB, s.currentOrchestrator, s.currentCloudClient, s.config.WSHub,
-		s.config.TaskRoot, s.config.SkillsRoot, s.config.CodexSkillReady, s.config.CodexSkillReason)
+		s.config.TaskRoot, s.config.SkillsRoot, s.config.CodexSkillReady, s.config.CodexSkillReason, s.config.VibeSkills)
+	s.tasksHandler = tasksHandler
 	tasksGroup := local.Group("/tasks")
 	tasksHandler.RegisterRoutes(tasksGroup)
 	tasksHandler.RegisterSkillRoutes(local.Group("/task-skill", requireTaskSkillCaller()))
+	s.remoteWeChat = newWeChatRemote(s.config.TaskDB, s.config.BootstrapStore, s.config.Orchestrator, tasksHandler)
+	s.remoteWeChat.registerRoutes(local.Group("/remote-channels"))
 	iconStore := NewIconStore(s.config.DataDir)
 	local.GET("/assets/icons/:filename", iconStore.Serve)
 	pipelinesHandler := NewPipelinesHandler(s.currentSessionDB, iconStore, s.currentCloudClient)
 	pipelinesHandler.RegisterRoutes(local.Group("/pipelines"))
-	NewExpertGroupsHandler(s.currentSessionDB, iconStore).RegisterRoutes(local.Group("/expert-groups"))
+	expertGroupsHandler := NewExpertGroupsHandler(s.currentSessionDB, iconStore, s.currentCloudClient)
+	expertGroupsHandler.RegisterRoutes(local.Group("/expert-groups"))
 	NewProjectsHandler(s.currentSessionDB, iconStore).RegisterRoutes(local.Group("/projects"))
 	NewNotificationsHandler(s.currentSessionDB).RegisterRoutes(local.Group("/notifications"))
 	tasksHandler.RegisterTeamRoutes(loggedIn.Group("/api/local/team"))
 	pipelinesHandler.RegisterCloudRoutes(loggedIn.Group("/api/local/team"))
 	pipelinesHandler.RegisterCloudRoutes(loggedIn.Group("/api/local"))
+	expertGroupsHandler.RegisterCloudRoutes(loggedIn.Group("/api/local/team"))
+	expertGroupsHandler.RegisterCloudRoutes(loggedIn.Group("/api/local"))
 
 	registerWebUI(r)
 	return r

@@ -17,9 +17,10 @@ const (
 )
 
 var (
-	ErrNotFound       = errors.New("专家团不存在")
-	ErrMemberNotFound = errors.New("专家团成员不存在")
-	ErrNotReady       = errors.New("专家团配置不完整")
+	ErrNotFound          = errors.New("专家团不存在")
+	ErrMemberNotFound    = errors.New("专家团成员不存在")
+	ErrNotReady          = errors.New("专家团配置不完整")
+	ErrInvalidBatchInput = errors.New("专家团批量配置参数无效")
 )
 
 type Member struct {
@@ -37,15 +38,17 @@ type Member struct {
 }
 
 type Group struct {
-	UUID        string   `json:"uuid"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Avatar      string   `json:"avatar"`
-	CreatedAt   int64    `json:"created_at"`
-	UpdatedAt   int64    `json:"updated_at"`
-	Ready       bool     `json:"ready"`
-	Leader      *Member  `json:"leader,omitempty"`
-	Members     []Member `json:"members"`
+	UUID        string `json:"uuid"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Avatar      string `json:"avatar"`
+	CreatedAt   int64  `json:"created_at"`
+	UpdatedAt   int64  `json:"updated_at"`
+	Ready       bool   `json:"ready"`
+	// SourceType marks read-only cloud 团队资源 ("cloud"); empty = local 私有资源.
+	SourceType string   `json:"source_type,omitempty"`
+	Leader     *Member  `json:"leader,omitempty"`
+	Members    []Member `json:"members"`
 }
 
 type GroupInput struct {
@@ -62,6 +65,12 @@ type MemberInput struct {
 	Prompt      string `json:"prompt"`
 	CLIType     string `json:"cli_type"`
 	ModelName   string `json:"model_name"`
+}
+
+type BatchMemberExecutionInput struct {
+	MemberUUIDs []string `json:"member_uuids"`
+	CLIType     string   `json:"cli_type"`
+	ModelName   string   `json:"model_name"`
 }
 
 type Service struct{ db *sql.DB }
@@ -99,9 +108,16 @@ func (s *Service) List(ctx context.Context) ([]Group, error) {
 }
 
 func (s *Service) Get(ctx context.Context, groupUUID string) (*Group, error) {
+	groupUUID = strings.TrimSpace(groupUUID)
+	// Cloud groups are listed from the in-memory cache. Switching a task must
+	// resolve the same cache; they are never written to gt_expert_groups.
+	if cloudGroup, ok := DefaultCloudStore().Get(groupUUID); ok {
+		item := cloudGroup.ToGroup()
+		return &item, nil
+	}
 	var item Group
 	err := s.db.QueryRowContext(ctx, `SELECT uuid, name, description, avatar, created_at, updated_at
-		FROM gt_expert_groups WHERE uuid=?`, strings.TrimSpace(groupUUID)).Scan(
+		FROM gt_expert_groups WHERE uuid=?`, groupUUID).Scan(
 		&item.UUID, &item.Name, &item.Description, &item.Avatar, &item.CreatedAt, &item.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -238,6 +254,10 @@ func (s *Service) AddMember(ctx context.Context, groupUUID string, input MemberI
 }
 
 func (s *Service) UpdateMember(ctx context.Context, groupUUID, memberUUID string, input MemberInput) (*Member, error) {
+	// 云端团队专家团：仅允许本地配置执行方式（CLI/模型），编排字段由云端管理。
+	if _, ok := DefaultCloudStore().Get(groupUUID); ok {
+		return DefaultCloudStore().UpdateMemberExecution(groupUUID, memberUUID, input.CLIType, input.ModelName)
+	}
 	if err := validateMemberInput(input); err != nil {
 		return nil, err
 	}
@@ -270,6 +290,103 @@ func (s *Service) UpdateMember(ctx context.Context, groupUUID, memberUUID string
 		return nil, err
 	}
 	return s.GetMember(ctx, groupUUID, memberUUID)
+}
+
+// BatchUpdateMemberExecution applies the same CLI and model to the selected
+// leader and members. It validates every target before changing any row.
+func (s *Service) BatchUpdateMemberExecution(ctx context.Context, groupUUID string, input BatchMemberExecutionInput) (*Group, error) {
+	groupUUID = strings.TrimSpace(groupUUID)
+	input.CLIType = strings.TrimSpace(input.CLIType)
+	input.ModelName = strings.TrimSpace(input.ModelName)
+	if groupUUID == "" {
+		return nil, ErrNotFound
+	}
+	if input.CLIType == "" || input.ModelName == "" || len(input.MemberUUIDs) == 0 {
+		return nil, ErrInvalidBatchInput
+	}
+
+	memberUUIDs := make([]string, 0, len(input.MemberUUIDs))
+	selected := make(map[string]struct{}, len(input.MemberUUIDs))
+	for _, rawUUID := range input.MemberUUIDs {
+		memberUUID := strings.TrimSpace(rawUUID)
+		if memberUUID == "" {
+			return nil, ErrInvalidBatchInput
+		}
+		if _, exists := selected[memberUUID]; exists {
+			return nil, ErrInvalidBatchInput
+		}
+		selected[memberUUID] = struct{}{}
+		memberUUIDs = append(memberUUIDs, memberUUID)
+	}
+
+	// 云端专家团只存在于内存缓存，不在 gt_expert_groups。单个成员配置已走这条路径，
+	// 批量配置必须同样先命中缓存，否则会误报「专家团不存在」。
+	if _, ok := DefaultCloudStore().Get(groupUUID); ok {
+		return DefaultCloudStore().BatchUpdateMemberExecution(groupUUID, memberUUIDs, input.CLIType, input.ModelName)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("开启专家团批量配置事务失败: %w", err)
+	}
+	defer tx.Rollback()
+
+	var groupExists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM gt_expert_groups WHERE uuid=?`, groupUUID).Scan(&groupExists); err != nil {
+		return nil, fmt.Errorf("读取专家团失败: %w", err)
+	}
+	if groupExists == 0 {
+		return nil, ErrNotFound
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT uuid FROM gt_expert_group_members WHERE expert_group_uuid=?`, groupUUID)
+	if err != nil {
+		return nil, fmt.Errorf("读取专家团成员失败: %w", err)
+	}
+	available := make(map[string]struct{})
+	for rows.Next() {
+		var memberUUID string
+		if err := rows.Scan(&memberUUID); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("读取专家团成员失败: %w", err)
+		}
+		available[memberUUID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("遍历专家团成员失败: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("关闭专家团成员查询失败: %w", err)
+	}
+	for _, memberUUID := range memberUUIDs {
+		if _, exists := available[memberUUID]; !exists {
+			return nil, ErrMemberNotFound
+		}
+	}
+
+	now := time.Now().UnixMilli()
+	for _, memberUUID := range memberUUIDs {
+		result, err := tx.ExecContext(ctx, `UPDATE gt_expert_group_members
+			SET cli_type=?, model_name=?, updated_at=? WHERE uuid=? AND expert_group_uuid=?`,
+			input.CLIType, input.ModelName, now, memberUUID, groupUUID)
+		if err != nil {
+			return nil, fmt.Errorf("批量配置专家团成员失败: %w", err)
+		}
+		if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+			if err != nil {
+				return nil, fmt.Errorf("读取专家团批量配置结果失败: %w", err)
+			}
+			return nil, ErrMemberNotFound
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE gt_expert_groups SET updated_at=? WHERE uuid=?`, now, groupUUID); err != nil {
+		return nil, fmt.Errorf("更新专家团时间失败: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("提交专家团批量配置事务失败: %w", err)
+	}
+	return s.Get(ctx, groupUUID)
 }
 
 func (s *Service) DeleteMember(ctx context.Context, groupUUID, memberUUID string) error {

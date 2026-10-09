@@ -68,7 +68,13 @@ func syncCloudPipelines(ctx context.Context, svc *pipeline.Service, client *clou
 		}
 		item := pipeline.CloudPipeline{CloudPipelineID: strconv.FormatInt(snapshot.ID, 10), Name: snapshot.Name, Avatar: snapshot.Icon}
 		for _, step := range snapshot.Steps {
-			item.Steps = append(item.Steps, pipeline.CloudStep{CloudStepID: step.StepKey, SortOrder: step.SortOrder, Name: step.Name, Prompt: step.Prompt})
+			item.Steps = append(item.Steps, pipeline.CloudStep{
+				CloudStepID: step.StepKey,
+				SortOrder:   step.SortOrder,
+				Name:        step.Name,
+				Avatar:      step.Avatar,
+				Prompt:      step.Prompt,
+			})
 		}
 		items = append(items, item)
 	}
@@ -85,6 +91,22 @@ func (s *Server) triggerCloudPipelineSync() {
 		defer cancel()
 		if _, err := syncCloudPipelines(ctx, pipeline.NewService(syncDB), syncClient); err != nil {
 			applog.Warn("[LocalServer] 登录后同步云端流水线失败", "error", err)
+		}
+	}()
+}
+
+// triggerCloudExpertGroupSync refreshes the read-only cloud expert-group cache after login
+// (需求 1896 优化点2). A failure must not fail login; it just leaves the cache stale.
+func (s *Server) triggerCloudExpertGroupSync() {
+	syncClient := s.currentCloudClient()
+	if syncClient == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if _, err := syncCloudExpertGroups(ctx, syncClient); err != nil {
+			applog.Warn("[LocalServer] 登录后同步云端专家团失败", "error", err)
 		}
 	}()
 }

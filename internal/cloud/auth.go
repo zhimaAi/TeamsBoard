@@ -38,6 +38,50 @@ type DeviceCredential struct {
 	DeviceUUID string `json:"device_uuid"`
 }
 
+// loginPayload 云端下发登录态的统一结构（账号密码登录与浏览器登录票据兑换同构）。
+// 当前云端是扁平结构；User/RefreshToken 字段用于兼容后续版本。
+type loginPayload struct {
+	Token        string   `json:"token"`
+	RefreshToken string   `json:"refresh_token"`
+	ExpiresAt    int64    `json:"expires_at"`
+	AdminID      string   `json:"admin_id"`
+	TenantID     string   `json:"tenant_id"`
+	ID           string   `json:"id"`
+	Username     string   `json:"username"`
+	Name         string   `json:"name"`
+	Avatar       string   `json:"avatar"`
+	RoleID       string   `json:"role_id"`
+	User         UserInfo `json:"user"`
+}
+
+// toLoginResponse 归一化云端返回：补齐扁平结构中的用户字段，并校验关键字段非空。
+// fallbackUsername 仅在云端未回传用户名时使用（浏览器登录没有用户输入的账号，传空）。
+func (p loginPayload) toLoginResponse(fallbackUsername string) (*LoginResponse, error) {
+	if p.User.ID == "" {
+		p.User = UserInfo{
+			ID:          p.ID,
+			Username:    p.Username,
+			DisplayName: p.Name,
+			Avatar:      p.Avatar,
+			Role:        p.RoleID,
+		}
+	}
+	if p.User.Username == "" {
+		p.User.Username = fallbackUsername
+	}
+	if p.Token == "" || p.AdminID == "" || p.User.ID == "" {
+		return nil, fmt.Errorf("云端登录响应缺少 token、admin_id 或用户 ID")
+	}
+	return &LoginResponse{
+		Token:        p.Token,
+		RefreshToken: p.RefreshToken,
+		ExpiresAt:    p.ExpiresAt,
+		User:         p.User,
+		AdminID:      p.AdminID,
+		TenantID:     p.TenantID,
+	}, nil
+}
+
 // Login calls the cloud login interface
 func (c *Client) Login(ctx context.Context, username, password string) (*LoginResponse, error) {
 	body := map[string]string{
@@ -45,46 +89,11 @@ func (c *Client) Login(ctx context.Context, username, password string) (*LoginRe
 		"password": password,
 	}
 
-	// The current cloud login data is a flat structure; the User/RefreshToken field is retained to be compatible with subsequent versions.
-	var payload struct {
-		Token        string   `json:"token"`
-		RefreshToken string   `json:"refresh_token"`
-		ExpiresAt    int64    `json:"expires_at"`
-		AdminID      string   `json:"admin_id"`
-		TenantID     string   `json:"tenant_id"`
-		ID           string   `json:"id"`
-		Username     string   `json:"username"`
-		Name         string   `json:"name"`
-		Avatar       string   `json:"avatar"`
-		RoleID       string   `json:"role_id"`
-		User         UserInfo `json:"user"`
-	}
+	var payload loginPayload
 	if err := c.do(ctx, http.MethodPost, "/api/auth/login", body, &payload); err != nil {
 		return nil, err
 	}
-	if payload.User.ID == "" {
-		payload.User = UserInfo{
-			ID:          payload.ID,
-			Username:    payload.Username,
-			DisplayName: payload.Name,
-			Avatar:      payload.Avatar,
-			Role:        payload.RoleID,
-		}
-	}
-	if payload.User.Username == "" {
-		payload.User.Username = username
-	}
-	if payload.Token == "" || payload.AdminID == "" || payload.User.ID == "" {
-		return nil, fmt.Errorf("云端登录响应缺少 token、admin_id 或用户 ID")
-	}
-	return &LoginResponse{
-		Token:        payload.Token,
-		RefreshToken: payload.RefreshToken,
-		ExpiresAt:    payload.ExpiresAt,
-		User:         payload.User,
-		AdminID:      payload.AdminID,
-		TenantID:     payload.TenantID,
-	}, nil
+	return payload.toLoginResponse(username)
 }
 
 // RefreshToken refresh JWT

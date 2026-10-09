@@ -37,6 +37,9 @@ func LocalServerKeyError(c *gin.Context, status int, key, code string) {
 func LocalServerErrorWith(c *gin.Context, status int, err error, fields gin.H) {
 	c.Header(headerContentLanguage, FromContext(c))
 	key, code := Key(err)
+	if key == "localserver_internal_error" {
+		key = fallbackKeyForStatus(status)
+	}
 	fields["error"] = T(c, key)
 	if code != "" {
 		fields["code"] = code
@@ -65,6 +68,8 @@ func Key(err error) (string, string) {
 		return "localserver_expert_member_not_found", "expert_member_not_found"
 	case errors.Is(err, expertgroup.ErrNotReady):
 		return "localserver_expert_group_not_ready", "expert_group_not_ready"
+	case errors.Is(err, expertgroup.ErrInvalidBatchInput):
+		return "localserver_expert_group_invalid", "expert_group_invalid"
 	case errors.Is(err, taskruntime.ErrNotFound):
 		return "localserver_task_not_found", "task_not_found"
 	case errors.Is(err, taskruntime.ErrExecutionModeConflict):
@@ -95,6 +100,10 @@ func Key(err error) (string, string) {
 		return "localserver_task_not_found", "task_not_found"
 	case strings.Contains(err.Error(), "任务启动前必须选择流水线"):
 		return "localserver_pipeline_required", "pipeline_required"
+	case strings.Contains(err.Error(), "必须配置 CLI 和模型"), strings.Contains(err.Error(), "缺少 CLI 和模型"):
+		return "localserver_pipeline_step_execution_required", "pipeline_incomplete"
+	case strings.Contains(err.Error(), "必须配置名称和提示词"):
+		return "localserver_pipeline_step_content_required", "pipeline_incomplete"
 	case strings.Contains(err.Error(), "任务启动前必须选择专家团"), strings.Contains(err.Error(), "专家团不能为空"):
 		return "localserver_expert_group_required", "expert_group_required"
 	case strings.Contains(err.Error(), "任务未指派给专家团"):
@@ -105,7 +114,7 @@ func Key(err error) (string, string) {
 		return "localserver_expert_group_invalid", "expert_group_invalid"
 	case strings.Contains(err.Error(), "任务启动前必须选择执行方式"), strings.Contains(err.Error(), "执行方式未选择"):
 		return "localserver_execution_mode_required", "execution_mode_required"
-	case strings.Contains(err.Error(), "Vibe Coding 当前仅支持 Codex"), strings.Contains(err.Error(), "Vibe Coding 执行不能指定流水线"), strings.Contains(err.Error(), "流水线执行不能指定编程工具"), strings.Contains(err.Error(), "无效任务执行方式"), strings.Contains(err.Error(), "CLI 执行不能指定流水线或专家团"):
+	case strings.Contains(err.Error(), "Vibe Coding 当前仅支持 Codex"), strings.Contains(err.Error(), "Vibe Coding 工具无效"), strings.Contains(err.Error(), "Vibe Coding 执行不能指定流水线"), strings.Contains(err.Error(), "流水线执行不能指定编程工具"), strings.Contains(err.Error(), "无效任务执行方式"), strings.Contains(err.Error(), "CLI 执行不能指定流水线或专家团"):
 		return "localserver_execution_mode_invalid", "execution_mode_invalid"
 	case strings.Contains(err.Error(), "CLI 不能为空"), strings.Contains(err.Error(), "模型不能为空"):
 		return "localserver_execution_mode_target_invalid", "execution_mode_target_invalid"

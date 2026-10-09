@@ -1,0 +1,285 @@
+'use strict'
+
+const { spawn } = require('node:child_process')
+const fs = require('node:fs/promises')
+const os = require('node:os')
+const path = require('node:path')
+
+const MAX_PROMPT_LENGTH = 16 * 1024
+const CODEX_THREAD_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const SESSION_ID_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$/
+
+const VIBE_CLI_TOOLS = Object.freeze({
+  codex_cli: Object.freeze({ executables: Object.freeze(['codex']), resume: id => ['resume', id] }),
+  claude: Object.freeze({ executables: Object.freeze(['claude']), resume: id => ['--resume', id] }),
+  codebuddy: Object.freeze({ executables: Object.freeze(['codebuddy', 'cbc']), resume: id => ['--resume', id] }),
+  qoder: Object.freeze({ executables: Object.freeze(['qodercli']), resume: id => ['--resume', id] }),
+  pi: Object.freeze({ executables: Object.freeze(['pi']), resume: id => ['--session', id] }),
+})
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`
+}
+
+function powershellQuote(value) {
+  return `'${String(value).replace(/'/g, "''")}'`
+}
+
+function normalizeVibeThreadID(tool, threadId) {
+  if (threadId == null || threadId === '') return ''
+  if (typeof threadId !== 'string') return null
+  const normalized = threadId.trim()
+  if (tool === 'codex_cli') {
+    return CODEX_THREAD_ID_PATTERN.test(normalized) ? normalized.toLowerCase() : null
+  }
+  return SESSION_ID_PATTERN.test(normalized) ? normalized : null
+}
+
+function normalizePrompt(prompt) {
+  if (typeof prompt !== 'string') throw new TypeError('Vibe CLI prompt must be a string')
+  const normalized = prompt.trim()
+  if (!normalized || normalized.length > MAX_PROMPT_LENGTH || normalized.includes('\0')) {
+    throw new Error('Vibe CLI prompt is invalid')
+  }
+  return normalized
+}
+
+function assertExecutable(tool, execPath) {
+  const spec = VIBE_CLI_TOOLS[tool]
+  if (!spec) throw new Error('Vibe CLI tool is invalid')
+  if (typeof execPath !== 'string' || !path.isAbsolute(execPath) || execPath.includes('\0')) {
+    throw new Error('Vibe CLI executable is invalid')
+  }
+  const base = path.basename(execPath).replace(/\.(exe|cmd|bat)$/i, '').toLowerCase()
+  if (!spec.executables.includes(base)) throw new Error('Vibe CLI executable is invalid')
+  return spec
+}
+
+function buildVibeArguments(tool, execPath, prompt, threadId) {
+  const spec = assertExecutable(tool, execPath)
+  const sessionID = normalizeVibeThreadID(tool, threadId)
+  if (sessionID == null) throw new Error('Vibe CLI session ID is invalid')
+  const args = sessionID ? spec.resume(sessionID) : [normalizePrompt(prompt)]
+  return { execPath, args }
+}
+
+function codebuddyUpdateGuard(tool) {
+  // CodeBuddy 会在交互会话里执行 npm install -g 升级自己。
+  // 升级会删掉当前进程还要加载的 dist/lazy 分片，随后 Read/Bash 报找不到模块。
+  return tool === 'codebuddy' ? 'DISABLE_AUTOUPDATER=1 ' : ''
+}
+
+function darwinLaunchOptions(directory, execPath, args, tool) {
+  const command = [shellQuote(execPath), ...args.map(shellQuote)].join(' ')
+  const script = `cd ${shellQuote(directory)} && ${codebuddyUpdateGuard(tool)}${command}`
+  const source = [
+    'on run argv',
+    'tell application "Terminal"',
+    'activate',
+    'do script (item 1 of argv)',
+    'end tell',
+    'end run',
+  ].join('\n')
+  return {
+    command: '/usr/bin/osascript',
+    args: ['-e', source, script],
+    options: { stdio: 'ignore' },
+    waitForExit: true,
+  }
+}
+
+function windowsPowerShellPath() {
+  const windowsRoot = (process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows').trim()
+  return path.win32.join(windowsRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+}
+
+function windowsCommandProcessor() {
+  const fromEnv = typeof process.env.ComSpec === 'string' ? process.env.ComSpec.trim() : ''
+  if (fromEnv && path.win32.isAbsolute(fromEnv)) return fromEnv
+  const windowsRoot = (process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows').trim()
+  return path.win32.join(windowsRoot, 'System32', 'cmd.exe')
+}
+
+function windowsUtf8Reader(filePath) {
+  // Windows PowerShell 5.1 的 Get-Content 默认按系统 ANSI 代码页解码。
+  // 无 BOM 的 UTF-8 中文会被读成乱码，再作为参数交给 Qoder 等 CLI。
+  return `[System.IO.File]::ReadAllText(${powershellQuote(filePath)}, (New-Object System.Text.UTF8Encoding $false))`
+}
+
+// npm 的 .cmd/.bat 垫片把 "%dp0%\...\入口" 交给 node。返回该相对路径。
+// 不接受上级目录，避免垫片把启动目标带到安装目录外面。
+function npmGlobalShimTarget(cmdText) {
+  if (typeof cmdText !== 'string' || !cmdText) return ''
+  const patterns = [
+    /%dp0%\\([^"\r\n]+)/gi,
+    /%~dp0%\\([^"\r\n]+)/gi,
+    /%~dp0\\([^"\r\n]+)/gi,
+  ]
+  for (const pattern of patterns) {
+    for (const match of cmdText.matchAll(pattern)) {
+      const relative = match[1]
+      const parts = relative.split(/[\\/]+/)
+      if (parts.length === 0 || parts.some(part => part === '.' || part === '..' || !/^[@A-Za-z0-9._-]+$/.test(part))) continue
+      const base = parts[parts.length - 1].toLowerCase()
+      if (base === 'node.exe' || base === 'node') continue
+      return relative
+    }
+  }
+  return ''
+}
+
+async function readNpmShimTarget(execPath) {
+  if (!/\.(cmd|bat)$/i.test(execPath)) return ''
+  try {
+    return npmGlobalShimTarget(await fs.readFile(execPath, 'utf8'))
+  } catch {
+    return ''
+  }
+}
+
+function windowsPromptLauncherLines(execPath, promptPath, shimRelative) {
+  // cmd.exe 按行读取命令，Windows PowerShell 5.1 的调用运算符也不能把含换行的参数完整交给 .cmd。
+  // 提示词第一行是 Skill 链接，后面的任务 UUID 和工具类型会被截掉，Skill 因此拒绝启用。
+  const lines = [
+    `$prompt = ${windowsUtf8Reader(promptPath)}`,
+    `Remove-Item -LiteralPath ${powershellQuote(promptPath)} -Force`,
+    'function ConvertTo-CommandLineArgument([string]$Value) {',
+    '  $builder = New-Object System.Text.StringBuilder',
+    '  [void]$builder.Append([char]34)',
+    '  $slashes = 0',
+    '  foreach ($char in $Value.ToCharArray()) {',
+    '    if ($char -eq [char]92) { $slashes++; continue }',
+    '    if ($char -eq [char]34) {',
+    '      if ($slashes -gt 0) { [void]$builder.Append([char]92, ($slashes * 2)) }',
+    '      [void]$builder.Append([char]92)',
+    '      [void]$builder.Append([char]34)',
+    '      $slashes = 0',
+    '      continue',
+    '    }',
+    '    if ($slashes -gt 0) { [void]$builder.Append([char]92, $slashes); $slashes = 0 }',
+    '    [void]$builder.Append($char)',
+    '  }',
+    '  if ($slashes -gt 0) { [void]$builder.Append([char]92, ($slashes * 2)) }',
+    '  [void]$builder.Append([char]34)',
+    '  return $builder.ToString()',
+    '}',
+    'function Start-VibeProcess([string]$FileName, [string[]]$ArgumentList) {',
+    '  $quoted = foreach ($item in $ArgumentList) { ConvertTo-CommandLineArgument $item }',
+    '  $start = New-Object System.Diagnostics.ProcessStartInfo',
+    '  $start.FileName = $FileName',
+    "  $start.Arguments = ($quoted -join ' ')",
+    '  $start.UseShellExecute = $false',
+    '  $process = [System.Diagnostics.Process]::Start($start)',
+    '  if ($null -eq $process) { throw "Vibe CLI process did not start" }',
+    '  $process.WaitForExit()',
+    '}',
+  ]
+  const flatten = "$flat = $prompt -replace '(\\r\\n|\\n|\\r)', ' '"
+  const direct = `& ${powershellQuote(execPath)} $flat`
+  if (shimRelative) {
+    const quotedShim = powershellQuote(shimRelative)
+    lines.push(`$shimScript = Join-Path (Split-Path -Parent ${powershellQuote(execPath)}) ${quotedShim}`)
+    lines.push(`$node = Join-Path (Split-Path -Parent ${powershellQuote(execPath)}) 'node.exe'`)
+    lines.push('if (-not (Test-Path -LiteralPath $node)) {')
+    lines.push('  $found = Get-Command -Name node -CommandType Application -ErrorAction SilentlyContinue')
+    lines.push('  if ($null -ne $found) { $node = $found.Source } else { $node = "" }')
+    lines.push('}')
+    lines.push('if ((Test-Path -LiteralPath $shimScript) -and $node) {')
+    lines.push('  Start-VibeProcess $node @($shimScript, $prompt)')
+    lines.push('} else {')
+    lines.push(`  ${flatten}`)
+    lines.push(`  ${direct}`)
+    lines.push('}')
+    return lines
+  }
+  if (/\.(cmd|bat)$/i.test(execPath)) {
+    lines.push(flatten)
+    lines.push(direct)
+    return lines
+  }
+  lines.push(`Start-VibeProcess ${powershellQuote(execPath)} @($prompt)`)
+  return lines
+}
+
+async function writeWindowsLauncher(directory, execPath, args, tool) {
+  const stamp = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const directoryPath = path.join(os.tmpdir(), `goteams-vibe-${stamp}`)
+  await fs.mkdir(directoryPath, { mode: 0o700 })
+  const scriptPath = path.join(directoryPath, 'launch.ps1')
+  const lines = [
+    '$utf8 = New-Object System.Text.UTF8Encoding $false',
+    '[Console]::InputEncoding = $utf8',
+    '[Console]::OutputEncoding = $utf8',
+    '& "$env:SystemRoot\\System32\\chcp.com" 65001 | Out-Null',
+    `Set-Location -LiteralPath ${powershellQuote(directory)}`,
+  ]
+  if (tool === 'codebuddy') {
+    lines.push("$env:DISABLE_AUTOUPDATER = '1'")
+  }
+  if (args.length === 1) {
+    const promptPath = path.join(directoryPath, 'prompt.txt')
+    await fs.writeFile(promptPath, args[0], { encoding: 'utf8', mode: 0o600 })
+    lines.push(...windowsPromptLauncherLines(execPath, promptPath, await readNpmShimTarget(execPath)))
+  } else {
+    const quoted = args.map(powershellQuote).join(' ')
+    lines.push(`& ${powershellQuote(execPath)} ${quoted}`)
+  }
+  // BOM 让 Windows PowerShell 5.1 按 UTF-8 解析脚本，中文路径才不会被当成 ANSI。
+  await fs.writeFile(scriptPath, `\uFEFF${lines.join('\n')}\n`, { encoding: 'utf8', mode: 0o600 })
+  return scriptPath
+}
+
+function windowsLaunchOptions(scriptPath) {
+  const command = windowsCommandProcessor()
+  const powershell = windowsPowerShellPath()
+  return {
+    command,
+    args: ['/D', '/C', 'start', '', powershell, '-NoProfile', '-NoExit', '-File', scriptPath],
+    options: { detached: true, stdio: 'ignore', windowsHide: false },
+    waitForExit: true,
+  }
+}
+
+async function vibeLaunchPlan(directory, tool, execPath, prompt, threadId, platform = process.platform) {
+  const built = buildVibeArguments(tool, execPath, prompt, threadId)
+  if (platform === 'darwin') {
+    return { launch: darwinLaunchOptions(directory, built.execPath, built.args, tool), cleanup: null }
+  }
+  if (platform === 'win32') {
+    const scriptPath = await writeWindowsLauncher(directory, built.execPath, built.args, tool)
+    return { launch: windowsLaunchOptions(scriptPath), cleanup: scriptPath }
+  }
+  throw new Error('Unsupported desktop platform')
+}
+
+async function openVibeCli(directory, tool, execPath, prompt, threadId, platform = process.platform, spawnProcess = spawn) {
+  const plan = await vibeLaunchPlan(directory, tool, execPath, prompt, threadId, platform)
+  try {
+    await new Promise((resolve, reject) => {
+      const options = /** @type {import('node:child_process').SpawnOptions} */ (plan.launch.options)
+      const child = spawnProcess(plan.launch.command, plan.launch.args, options)
+      child.once('error', reject)
+      if (plan.launch.waitForExit) {
+        child.once('exit', code => code === 0 ? resolve(undefined) : reject(new Error('Vibe CLI launcher failed')))
+      } else {
+        child.once('spawn', () => { child.unref(); resolve(undefined) })
+      }
+    })
+  } finally {
+    if (plan.cleanup) {
+      setTimeout(() => { fs.rm(path.dirname(plan.cleanup), { recursive: true, force: true }).catch(() => {}) }, 30000)
+    }
+  }
+}
+
+module.exports = {
+  MAX_PROMPT_LENGTH,
+  VIBE_CLI_TOOLS,
+  buildVibeArguments,
+  darwinLaunchOptions,
+  npmGlobalShimTarget,
+  normalizeVibeThreadID,
+  openVibeCli,
+  vibeLaunchPlan,
+  windowsLaunchOptions,
+}

@@ -1,7 +1,7 @@
 'use strict'
 
 module.exports = {
-  extends: './electron-builder.yml',
+  extends: './electron-builder.version.cjs',
   mac: {
     target: ['zip'],
   },

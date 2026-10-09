@@ -3,11 +3,39 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
+
+// snapshotProcessParents 读取当前进程表，返回 pid 到父 pid 的映射。
+// 读不到时由调用方按「子进程还在」处理，避免误杀正在编译的工具。
+func snapshotProcessParents() (map[int]int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,stat=").Output()
+	if err != nil {
+		return nil, err
+	}
+	parents := make(map[int]int)
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || strings.HasPrefix(fields[2], "Z") {
+			continue
+		}
+		pid, errPID := strconv.Atoi(fields[0])
+		ppid, errPPID := strconv.Atoi(fields[1])
+		if errPID != nil || errPPID != nil {
+			continue
+		}
+		parents[pid] = ppid
+	}
+	return parents, nil
+}
 
 // CreateProcessGroup sets process group attributes
 func CreateProcessGroup(cmd *exec.Cmd) {

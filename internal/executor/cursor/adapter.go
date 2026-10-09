@@ -192,9 +192,7 @@ func (d *Decoder) decodeToolCall(event cursorEvent, emit executor.EmitFunc) {
 	if toolKey == "" {
 		// 结构未知时至少透出结果原文，避免执行过程缺环。
 		if event.Subtype == "completed" {
-			if content := strings.TrimSpace(event.Result); content != "" {
-				d.ToolResult(callID, content, emit)
-			}
+			d.ToolResult(callID, strings.TrimSpace(event.Result), emit)
 		}
 		return
 	}

@@ -113,10 +113,8 @@ func (d *Decoder) Decode(raw string, emit executor.EmitFunc) {
 		}
 
 	case "tool":
-		if content := strings.TrimSpace(event.Content); content != "" {
-			// kimi 的工具结果行不带调用 ID，由前端在唯一候选时归属
-			d.ToolResult("", content, emit)
-		}
+		// kimi 的工具结果行不带调用 ID，仅在唯一候选时归属。
+		d.ToolResult("", strings.TrimSpace(event.Content), emit)
 
 	case "meta":
 		// session.resume_hint meta 行携带续聊所需 session id（kimi -S <id>）。

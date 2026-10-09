@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -23,25 +24,25 @@ type EventBroadcaster func(sessionUUID string, sequence int, event executor.Exec
 // latest CLI activity to gt_cli_sessions during event processing.
 const latestEventPersistIntervalMs int64 = 1000
 
-// 执行过程事件（gt_session_events）的内容截断上限：
-// thinking 是完整思考文本可较长；工具调用/结果、中间输出与权限请求只保留摘要即可支撑动态区展示。
-const (
-	sessionEventThinkingLimit = 8192
-	sessionEventToolLimit     = 4096
-)
-
-// sessionEventContentLimit 判定事件是否留存到执行过程回放表，并给出内容截断上限。
+// shouldPersistSessionEvent 判定事件是否留存到执行过程回放表。
 // 只留存过程类事件：思考、中间输出、工具调用、工具结果、权限请求；
+// 这些事件需要供历史回放和最近动态全文查看，因此保存原始内容，不在落库层截断。
 // start / usage / complete 等生命周期事件由会话状态与 token 字段承载，不重复落库。
-func sessionEventContentLimit(eventType string) (int, bool) {
+func shouldPersistSessionEvent(eventType string) bool {
 	switch eventType {
-	case executor.EventThinking:
-		return sessionEventThinkingLimit, true
-	case executor.EventMessage, executor.EventToolCall, executor.EventToolResult, executor.EventPermission:
-		return sessionEventToolLimit, true
+	case executor.EventThinking, executor.EventMessage, executor.EventToolCall, executor.EventToolResult, executor.EventPermission:
+		return true
 	default:
-		return 0, false
+		return false
 	}
+}
+
+func marshalSessionEvent(event executor.ExecutorEvent) ([]byte, bool, error) {
+	if !shouldPersistSessionEvent(event.Type) {
+		return nil, false, nil
+	}
+	payload, err := json.Marshal(event)
+	return payload, true, err
 }
 
 // StateBroadcaster is the state-change broadcast callback type
@@ -49,7 +50,7 @@ type StateBroadcaster func(taskUUID, stepKey, sessionUUID, status string)
 
 // ActivityBroadcaster pushes the latest CLI activity (throttled) to task views,
 // so running-step subtitles stay fresh without polling /progress.
-type ActivityBroadcaster func(taskUUID, sessionUUID, eventType, content string, at int64)
+type ActivityBroadcaster func(taskUUID, sessionUUID string, sequence int, eventType, content string, at int64)
 
 // RunStepOptions are the run-step options
 type RunStepOptions struct {
@@ -275,6 +276,9 @@ func (o *Orchestrator) runStep(ctx context.Context, opts RunStepOptions) (string
 	if _, err = tx.ExecContext(ctx, `UPDATE gt_tasks SET execution_status = 'running', started_at = CASE WHEN started_at = 0 THEN ? ELSE started_at END, updated_at = ? WHERE uuid = ?`, now, now, opts.TaskUUID); err != nil {
 		return "", err
 	}
+	if err = insertRunningTaskNotification(ctx, tx, opts.TaskUUID, stepUUID, aiProgressUUID, sessionUUID, now); err != nil {
+		return "", err
+	}
 	if err = tx.Commit(); err != nil {
 		return "", fmt.Errorf("提交执行事务失败: %w", err)
 	}
@@ -308,6 +312,22 @@ func (o *Orchestrator) ContinueConversation(ctx context.Context, opts ContinueCo
 	release := o.executionGates.acquire(taskUUID, false)
 	defer release()
 	return o.continueConversation(ctx, opts)
+}
+
+// insertRunningTaskNotification 让进行中的这一轮立刻出现在对话列表。
+// 切换执行方式会清掉旧通知，而完成通知要等会话结束才写；中间这段时间列表里没有
+// 当前任务，页面就会停在更早的会话上，用户看不到这次的执行过程。
+func insertRunningTaskNotification(ctx context.Context, tx *sql.Tx, taskUUID, stepUUID, progressUUID, sessionUUID string, now int64) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO gt_task_notifications
+		(uuid, task_uuid, task_step_uuid, step_order, progress_uuid, session_uuid, terminal_status, title, summary, is_read, is_archived, created_at)
+		SELECT ?, t.uuid, s.uuid, s.step_order, ?, ?, 'running', t.title || ' · ' || s.name, '正在执行', 1, 0, ?
+		FROM gt_task_steps s JOIN gt_tasks t ON t.uuid = s.task_uuid
+		WHERE s.uuid = ? AND t.uuid = ?`,
+		uuid.NewString(), progressUUID, sessionUUID, now, stepUUID, taskUUID)
+	if err != nil {
+		return fmt.Errorf("创建进行中通知失败: %w", err)
+	}
+	return nil
 }
 
 func (o *Orchestrator) continueConversation(ctx context.Context, opts ContinueConversationOptions) (string, error) {
@@ -453,6 +473,9 @@ func (o *Orchestrator) continueConversation(ctx context.Context, opts ContinueCo
 	if _, err = tx.ExecContext(ctx, `UPDATE gt_tasks SET status = CASE WHEN status = 'done' THEN status ELSE 'active' END, execution_status='running', updated_at=? WHERE uuid=?`, now, taskUUID); err != nil {
 		return "", err
 	}
+	if err = insertRunningTaskNotification(ctx, tx, taskUUID, stepUUID, aiProgressUUID, sessionUUID, now); err != nil {
+		return "", err
+	}
 	if err = tx.Commit(); err != nil {
 		return "", fmt.Errorf("提交继续会话事务失败: %w", err)
 	}
@@ -517,7 +540,7 @@ func (o *Orchestrator) runCLIProcess(
 	var initialStopRequestedAt int64
 	_ = o.db.QueryRow(`SELECT stop_requested_at FROM gt_cli_sessions WHERE uuid = ?`, sessionUUID).Scan(&initialStopRequestedAt)
 	if initialStopRequestedAt > 0 {
-		o.finishSession(sessionUUID, opts.TaskUUID, opts.StepKey, SessionStatusStopped, externalSessionID, 0, 0, "")
+		o.finishSession(sessionUUID, opts.TaskUUID, opts.StepKey, SessionStatusStopped, externalSessionID, 0, 0, "", nil)
 		return
 	}
 
@@ -539,7 +562,7 @@ func (o *Orchestrator) runCLIProcess(
 	o.mu.Unlock()
 	if shouldStopBeforeStart {
 		cancel()
-		o.finishSession(sessionUUID, opts.TaskUUID, opts.StepKey, SessionStatusStopped, externalSessionID, 0, 0, "")
+		o.finishSession(sessionUUID, opts.TaskUUID, opts.StepKey, SessionStatusStopped, externalSessionID, 0, 0, "", nil)
 		return
 	}
 
@@ -617,11 +640,6 @@ func (o *Orchestrator) runCLIProcess(
 			latestEventType, content, latestEventAt, nowMillis(), sessionUUID,
 		)
 		lastPersistedEventAt = latestEventAt
-		// Push alongside the throttled DB write so task views can update the
-		// running-step subtitle without polling /progress.
-		if o.activityBroadcaster != nil {
-			o.activityBroadcaster(opts.TaskUUID, sessionUUID, latestEventType, content, latestEventAt)
-		}
 	}
 	trackLatestEvent := func(eventType, content string) {
 		content = strings.TrimSpace(content)
@@ -636,8 +654,69 @@ func (o *Orchestrator) runCLIProcess(
 		}
 	}
 
+	// 看板卡片展示最新一条过程事件。该广播独立于会话的 latest_event_* 快照，
+	// 保证工具结果和权限请求也能按真实顺序成为最近动态。
+	latestBoardEventType := ""
+	latestBoardEventContent := ""
+	latestBoardEventAt := int64(0)
+	latestBoardEventSequence := 0
+	lastBroadcastEventAt := int64(0)
+	lastBroadcastSequence := 0
+	broadcastLatestBoardEvent := func() {
+		if latestBoardEventSequence <= lastBroadcastSequence {
+			return
+		}
+		if o.activityBroadcaster != nil {
+			o.activityBroadcaster(opts.TaskUUID, sessionUUID, latestBoardEventSequence, latestBoardEventType,
+				truncate(latestBoardEventContent, 300), latestBoardEventAt)
+		}
+		lastBroadcastEventAt = latestBoardEventAt
+		lastBroadcastSequence = latestBoardEventSequence
+	}
+	trackLatestBoardEvent := func(eventType, content string) {
+		content = strings.TrimSpace(content)
+		latestBoardEventType = eventType
+		latestBoardEventContent = content
+		latestBoardEventAt = nowMillis()
+		latestBoardEventSequence = eventSequence
+		if latestBoardEventAt-lastBroadcastEventAt >= latestEventPersistIntervalMs {
+			broadcastLatestBoardEvent()
+		}
+	}
+
 	// 执行过程回放表：思考/工具调用事件按序写入，供动态区展开回看与 WS 补发
 	eventStore := log.NewEventStore(o.db)
+
+	// 会话级执行统计（工具调用/文件/行数），尽力而为解析，结束时随 finishSession 落库
+	stats := newSessionStats()
+	lastPersistedInput := 0
+	lastPersistedOutput := 0
+	applyTokenEvent := func(event executor.ExecutorEvent) {
+		if event.Type == executor.EventComplete {
+			// complete 携带本次执行的合计，覆盖中途累加值，避免重复计算。
+			inputTokens = event.InputTokens
+			outputTokens = event.OutputTokens
+			completeTokensSeen = true
+			return
+		}
+		if event.InputTokens > 0 {
+			usageInputTokens += event.InputTokens
+		}
+		if event.OutputTokens > 0 {
+			usageOutputTokens += event.OutputTokens
+		}
+	}
+	persistTokens := func() {
+		in, out := usageInputTokens, usageOutputTokens
+		if completeTokensSeen {
+			in, out = inputTokens, outputTokens
+		}
+		if (in == lastPersistedInput && out == lastPersistedOutput) || (in <= 0 && out <= 0) {
+			return
+		}
+		o.persistSessionTokenEstimate(sessionUUID, in, out)
+		lastPersistedInput, lastPersistedOutput = in, out
+	}
 
 	for event := range eventCh {
 		// After termination, the adapter may still return the native session ID in the final complete/error event.
@@ -662,8 +741,19 @@ func (o *Orchestrator) runCLIProcess(
 		stopping := active != nil && active.stopping
 		o.mu.RUnlock()
 		if stopping {
-			// After the stop request is sent, keep draining the adapter channel but no longer persist or broadcast
-			// the buffered Claude/Codex events, to avoid the UI continuing to flash messages after "terminating".
+			// 停止后不再把缓冲事件刷到界面，但 Token、工具统计和最终可见回复仍要记下来。
+			// 切换执行方式会立刻封存这一次运行，漏记就会让云端 Token 变成 0。
+			applyTokenEvent(event)
+			if event.Type == executor.EventMessage && strings.TrimSpace(event.Content) != "" {
+				responseContent = strings.TrimSpace(event.Content)
+			}
+			switch event.Type {
+			case executor.EventToolCall:
+				stats.observeToolCall(strings.TrimSpace(event.Content))
+			case executor.EventToolResult:
+				stats.observeToolResult(strings.TrimSpace(event.Content))
+			}
+			persistTokens()
 			if eventError != "" {
 				o.recomputeSession(opts.TaskUUID, opts.StepKey)
 			}
@@ -678,18 +768,16 @@ func (o *Orchestrator) runCLIProcess(
 		if o.eventBroadcaster != nil {
 			o.eventBroadcaster(sessionUUID, eventSequence, event)
 		}
-		if limit, persist := sessionEventContentLimit(event.Type); persist {
-			stored := event
-			stored.Content = truncate(event.Content, limit)
-			if payload, err := json.Marshal(stored); err == nil {
-				if err := eventStore.Append(log.EventLogEntry{
-					SessionUUID: sessionUUID,
-					Sequence:    eventSequence,
-					EventType:   event.Type,
-					Payload:     string(payload),
-				}); err != nil {
-					applog.Warn("[Orchestrator] 执行过程事件写入失败", "session", sessionUUID, "error", err)
-				}
+		if payload, persist, marshalErr := marshalSessionEvent(event); marshalErr != nil {
+			applog.Warn("[Orchestrator] 执行过程事件序列化失败", "session", sessionUUID, "error", marshalErr)
+		} else if persist {
+			if err := eventStore.Append(log.EventLogEntry{
+				SessionUUID: sessionUUID,
+				Sequence:    eventSequence,
+				EventType:   event.Type,
+				Payload:     string(payload),
+			}); err != nil {
+				applog.Warn("[Orchestrator] 执行过程事件写入失败", "session", sessionUUID, "error", err)
 			}
 		}
 
@@ -701,32 +789,37 @@ func (o *Orchestrator) runCLIProcess(
 				applog.Debug("[Orchestrator] CLI 消息输出", "session", sessionUUID, "content", truncate(content, 2048))
 				trackLatestEvent(executor.EventMessage, content)
 			}
+			trackLatestBoardEvent(executor.EventMessage, content)
 		case executor.EventThinking:
 			applog.Debug("[Orchestrator] CLI 思考过程", "session", sessionUUID, "content", truncate(content, 1024))
 			trackLatestEvent(executor.EventThinking, content)
+			trackLatestBoardEvent(executor.EventThinking, content)
 		case executor.EventToolCall:
 			applog.Debug("[Orchestrator] CLI 工具调用", "session", sessionUUID, "content", truncate(content, 1024))
 			trackLatestEvent(executor.EventToolCall, content)
+			trackLatestBoardEvent(executor.EventToolCall, content)
+			stats.observeToolCall(content)
 		case executor.EventToolResult:
 			applog.Debug("[Orchestrator] CLI 工具结果", "session", sessionUUID, "content", truncate(content, 1024))
 			trackLatestEvent(executor.EventToolResult, content)
+			trackLatestBoardEvent(executor.EventToolResult, content)
+			stats.observeToolResult(content)
+			// 工具结果之后模型可能长时间没有新事件，立即刷新看板，避免继续显示“正在调用工具”。
+			broadcastLatestBoardEvent()
 		case executor.EventPermission:
 			// 非交互模式下 CLI 会停下来等待授权；不上报活动行时，界面表现为「一直在跑」。
 			applog.Info("[Orchestrator] CLI 请求工具权限", "session", sessionUUID, "content", truncate(content, 512))
 			trackLatestEvent(executor.EventPermission, content)
+			trackLatestBoardEvent(executor.EventPermission, content)
+			// 权限请求之后 CLI 可能长期没有新事件，不能等下一次节流刷新或执行结束。
+			broadcastLatestBoardEvent()
 		case executor.EventUsage:
 			applog.Debug("[Orchestrator] CLI Token 用量", "session", sessionUUID, "inputTokens", event.InputTokens, "outputTokens", event.OutputTokens)
 		}
 
-		// Extract token: mid-way events only accumulate into the fallback variable
-		if event.Type != executor.EventComplete {
-			if event.InputTokens > 0 {
-				usageInputTokens += event.InputTokens
-			}
-			if event.OutputTokens > 0 {
-				usageOutputTokens += event.OutputTokens
-			}
-		}
+		// Mid-way usage events accumulate as a fallback. A complete event replaces them.
+		applyTokenEvent(event)
+		persistTokens()
 		// Keep only the latest AI-visible message in memory; finishSession writes it
 		// once as the final local result. Intermediate events are never persisted or uploaded.
 		if event.Type == executor.EventMessage && strings.TrimSpace(event.Content) != "" {
@@ -741,10 +834,6 @@ func (o *Orchestrator) runCLIProcess(
 			if strings.TrimSpace(event.Content) != "" {
 				responseContent = strings.TrimSpace(event.Content)
 			}
-			// complete carries the total of this execution; overwrite rather than accumulate
-			inputTokens = event.InputTokens
-			outputTokens = event.OutputTokens
-			completeTokensSeen = true
 			break
 		}
 		if event.Type == executor.EventError {
@@ -761,13 +850,15 @@ func (o *Orchestrator) runCLIProcess(
 			}
 			// Abnormal termination cannot get complete; fall back to mid-way usage accumulation
 			persistLatestEvent()
-			o.finishSession(sessionUUID, opts.TaskUUID, opts.StepKey, status, sessionID, usageInputTokens, usageOutputTokens, responseContent)
+			broadcastLatestBoardEvent()
+			o.finishSession(sessionUUID, opts.TaskUUID, opts.StepKey, status, sessionID, usageInputTokens, usageOutputTokens, responseContent, stats)
 			return
 		}
 	}
 
 	// Flush the last activity so the progress panel keeps the latest event
 	persistLatestEvent()
+	broadcastLatestBoardEvent()
 
 	var stopRequestedAt int64
 	_ = o.db.QueryRow(`SELECT stop_requested_at FROM gt_cli_sessions WHERE uuid = ?`, sessionUUID).Scan(&stopRequestedAt)
@@ -783,11 +874,11 @@ func (o *Orchestrator) runCLIProcess(
 				"stepKey", opts.StepKey,
 			)
 			o.db.Exec(
-				`UPDATE gt_cli_sessions SET error_message = ?, updated_at = ? WHERE uuid = ?`,
+				`UPDATE gt_cli_sessions SET error_message = CASE WHEN error_message <> '' THEN error_message ELSE ? END, updated_at = ? WHERE uuid = ?`,
 				incompleteReplyMessage, nowMillis(), sessionUUID,
 			)
 		}
-		o.finishSession(sessionUUID, opts.TaskUUID, opts.StepKey, status, sessionID, usageInputTokens, usageOutputTokens, responseContent)
+		o.finishSession(sessionUUID, opts.TaskUUID, opts.StepKey, status, sessionID, usageInputTokens, usageOutputTokens, responseContent, stats)
 		return
 	}
 
@@ -795,7 +886,7 @@ func (o *Orchestrator) runCLIProcess(
 	if stopRequestedAt > 0 {
 		status = SessionStatusStopped
 	}
-	o.finishSession(sessionUUID, opts.TaskUUID, opts.StepKey, status, sessionID, inputTokens, outputTokens, responseContent)
+	o.finishSession(sessionUUID, opts.TaskUUID, opts.StepKey, status, sessionID, inputTokens, outputTokens, responseContent, stats)
 
 	applog.Info("[Orchestrator] CLI 执行结束",
 		"session", sessionUUID,
@@ -925,21 +1016,19 @@ func (o *Orchestrator) failSessionWithError(sessionUUID, taskUUID, stepKey, exte
 			o.eventBroadcaster(sessionUUID, 1, event)
 		}
 	}
-	o.finishSession(sessionUUID, taskUUID, stepKey, SessionStatusFailed, externalSessionID, 0, 0, "")
+	o.finishSession(sessionUUID, taskUUID, stepKey, SessionStatusFailed, externalSessionID, 0, 0, "", nil)
 }
 
 // finishSession completes the Session and updates its status
-func (o *Orchestrator) finishSession(sessionUUID, taskUUID, stepKey, status, externalSessionID string, inputTokens, outputTokens int, responseContent string) {
+func (o *Orchestrator) finishSession(sessionUUID, taskUUID, stepKey, status, externalSessionID string, inputTokens, outputTokens int, responseContent string, stats *sessionStats) {
+	if stats == nil {
+		// Failure/stop paths outside the event loop carry no collected stats.
+		stats = newSessionStats()
+	}
 	now := nowMillis()
 	var errorMessage string
 	_ = o.db.QueryRow(`SELECT error_message FROM gt_cli_sessions WHERE uuid = ?`, sessionUUID).Scan(&errorMessage)
-	finalResult := strings.TrimSpace(responseContent)
-	if status != SessionStatusSuccess && strings.TrimSpace(errorMessage) != "" {
-		finalResult = strings.TrimSpace(errorMessage)
-	}
-	if finalResult == "" && status != SessionStatusSuccess {
-		finalResult = "CLI 执行" + status
-	}
+	finalResult := composeSessionFinalResult(status, responseContent, errorMessage)
 	tx, err := o.db.Begin()
 	if err != nil {
 		applog.Warn("[Orchestrator] 开启完成事务失败", "error", err)
@@ -949,11 +1038,16 @@ func (o *Orchestrator) finishSession(sessionUUID, taskUUID, stepKey, status, ext
 	result, err := tx.Exec(`UPDATE gt_cli_sessions
 		 SET status = ?, result_status = ?, final_result = ?,
 		     external_session_id = CASE WHEN ? <> '' THEN ? ELSE external_session_id END,
-		     input_tokens = ?, output_tokens = ?, total_tokens = ?,
+		     input_tokens = CASE WHEN ? > 0 THEN ? ELSE input_tokens END,
+		     output_tokens = CASE WHEN ? > 0 THEN ? ELSE output_tokens END,
+		     total_tokens = CASE WHEN ? > 0 THEN ? ELSE total_tokens END,
+		     tool_call_count = ?, files_changed = ?, lines_added = ?, lines_deleted = ?,
 		     finished_at = ?, duration_ms = CASE WHEN started_at > 0 THEN ? - started_at ELSE 0 END, updated_at = ?
 		 WHERE uuid = ? AND status IN ('created', 'running', 'waiting_input', 'stop_requested')`,
 		status, status, truncate(finalResult, 64*1024), externalSessionID, externalSessionID,
-		inputTokens, outputTokens, inputTokens+outputTokens, now, now, now, sessionUUID)
+		inputTokens, inputTokens, outputTokens, outputTokens, inputTokens+outputTokens, inputTokens+outputTokens,
+		stats.toolCalls, len(stats.files), stats.linesAdded, stats.linesDeleted,
+		now, now, now, sessionUUID)
 	if err != nil {
 		applog.Warn("[Orchestrator] 更新 Session 状态失败", "error", err)
 		return
@@ -1024,7 +1118,11 @@ func (o *Orchestrator) finishSession(sessionUUID, taskUUID, stepKey, status, ext
 	if summaryContent == "" {
 		summaryContent = finalResult
 	}
-	if err := o.ensureSessionSummary(sessionUUID, stepKey, summaryContent, inputTokens, outputTokens, now); err != nil {
+	summaryIn, summaryOut := inputTokens, outputTokens
+	if summaryIn <= 0 && summaryOut <= 0 {
+		_ = o.db.QueryRow(`SELECT COALESCE(input_tokens,0), COALESCE(output_tokens,0) FROM gt_cli_sessions WHERE uuid=?`, sessionUUID).Scan(&summaryIn, &summaryOut)
+	}
+	if err := o.ensureSessionSummary(sessionUUID, stepKey, summaryContent, summaryIn, summaryOut, now); err != nil {
 		applog.Warn("[Orchestrator] 写入会话摘要失败", "session", sessionUUID, "error", err)
 	}
 
@@ -1094,6 +1192,7 @@ func (o *Orchestrator) StopSession(ctx context.Context, sessionUUID string) erro
 	active := o.activeSessions[sessionUUID]
 	var cancel context.CancelFunc
 	var adapter executor.Adapter
+	hasRunner := active != nil
 	if active != nil {
 		active.stopping = true
 		cancel = active.cancel
@@ -1117,8 +1216,59 @@ func (o *Orchestrator) StopSession(ctx context.Context, sessionUUID string) erro
 		cancel()
 	}
 	o.db.Exec(`UPDATE gt_cli_sessions SET error_message = CASE WHEN error_message <> '' THEN error_message ELSE ? END WHERE uuid = ?`, "用户手动终止", sessionUUID)
-	o.finishSession(sessionUUID, taskUUID, stepKey, SessionStatusStopped, "", 0, 0, "")
+	if hasRunner {
+		// 事件循环还在收尾时会带上已采集的 Token。这里等它自己落库，避免用 0 覆盖。
+		if err := o.waitSessionTerminal(ctx, sessionUUID, 8*time.Second); err != nil {
+			applog.Warn("[Orchestrator] 等待会话自行结束失败，按已采集 Token 收口", "session", sessionUUID, "error", err)
+			o.finishSession(sessionUUID, taskUUID, stepKey, SessionStatusStopped, "", 0, 0, "", nil)
+		}
+		return nil
+	}
+	o.finishSession(sessionUUID, taskUUID, stepKey, SessionStatusStopped, "", 0, 0, "", nil)
 	return nil
+}
+
+// persistSessionTokenEstimate writes the best token total seen so far. A later
+// zero-token stop must not erase it; finishSession only replaces a positive total.
+func (o *Orchestrator) persistSessionTokenEstimate(sessionUUID string, inputTokens, outputTokens int) {
+	if inputTokens <= 0 && outputTokens <= 0 {
+		return
+	}
+	total := inputTokens + outputTokens
+	if _, err := o.db.Exec(`UPDATE gt_cli_sessions SET
+		input_tokens = CASE WHEN ? > input_tokens THEN ? ELSE input_tokens END,
+		output_tokens = CASE WHEN ? > output_tokens THEN ? ELSE output_tokens END,
+		total_tokens = CASE WHEN ? > total_tokens THEN ? ELSE total_tokens END,
+		updated_at = ?
+		WHERE uuid = ? AND status IN ('created', 'running', 'waiting_input', 'stop_requested')`,
+		inputTokens, inputTokens, outputTokens, outputTokens, total, total, nowMillis(), sessionUUID); err != nil {
+		applog.Debug("[Orchestrator] 暂存会话 Token 失败", "session", sessionUUID, "error", err)
+	}
+}
+
+// waitSessionTerminal polls until the session row leaves the active states or the timeout elapses.
+func (o *Orchestrator) waitSessionTerminal(ctx context.Context, sessionUUID string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		var status string
+		err := o.db.QueryRow(`SELECT status FROM gt_cli_sessions WHERE uuid=?`, sessionUUID).Scan(&status)
+		if err == nil && IsTerminalStatus(status) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("等待会话结束超时")
+		}
+		timer := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 // validateRun pre-flight validation

@@ -2,8 +2,8 @@
 
 const path = require('node:path')
 const { app, BrowserWindow, session } = require('electron')
-const { APP_ICON_PATH } = require('./app-identity.cjs')
-const { createOriginAllowlist, installNavigationPolicy } = require('./security.cjs')
+const { APP_ICON_PATH, APP_NAME } = require('./app-identity.cjs')
+const { createOriginAllowlist, installNavigationPolicy, installAssetRefererPolicy } = require('./security.cjs')
 
 // DevTools（F12）仅在非打包的开发模式启用，避免影响生产发布。
 const isDev = !app.isPackaged
@@ -18,6 +18,21 @@ function createMainWindow({ baseURL, browserTicket, rendererURL }) {
     minHeight: 680,
     show: false,
     autoHideMenuBar: true,
+    // macOS 继续用 hiddenInset，红黄绿由系统画在内容区顶部。
+    // Windows 用标题栏覆盖，把侧栏收起按钮放进系统按钮同一行，避免标题栏下面再空出一栏。
+    // 窗口按钮仍由系统绘制，页面不画假按钮。
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset' }
+      : process.platform === 'win32'
+        ? {
+            titleBarStyle: 'hidden',
+            titleBarOverlay: {
+              color: '#ffffff',
+              symbolColor: '#1d1d1f',
+              height: 38,
+            },
+          }
+        : {}),
     icon: APP_ICON_PATH,
     backgroundColor: '#f5f7fb',
     webPreferences: {
@@ -29,7 +44,11 @@ function createMainWindow({ baseURL, browserTicket, rendererURL }) {
     },
   })
 
+  win.on('page-title-updated', event => event.preventDefault())
+  win.setTitle(`${APP_NAME} v${app.getVersion()}`)
+
   installNavigationPolicy(win, allowedOrigins)
+  installAssetRefererPolicy(session.defaultSession, win.webContents.id)
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     callback(permission === 'clipboard-sanitized-write')
   })

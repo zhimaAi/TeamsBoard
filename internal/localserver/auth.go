@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -223,11 +224,9 @@ func (s *Server) handleLogin(c *gin.Context) {
 		serverType = "official"
 	}
 
-	// 1. Select the cloud client. Both login modes keep the fixed local profile.
+	// 1. 选择云端客户端。两种登录模式都保持固定的本地 Profile。
 	var client *cloud.Client
-	var profileDir string
-	var secretDir string
-	var normalized string // Normalized server URL, used to derive the account subdirectory
+	var normalized string // 归一化后的云端地址，用于派生账号索引与重启后恢复会话
 	switch serverType {
 	case "custom":
 		serverURL := strings.TrimSpace(body.ServerURL)
@@ -242,23 +241,13 @@ func (s *Server) handleLogin(c *gin.Context) {
 		}
 		normalized = norm
 		client = s.customCloudClient(normalized)
-		// The local function library and credential file remain application-scoped.
-		profileDir = s.config.BaseProfileDir
-		if profileDir == "" {
-			profileDir = s.config.DataDir
-		}
-		secretDir = profileDir
 	default: // official
 		if s.config.CloudClient == nil || !s.config.CloudClient.IsConfigured() {
 			i18n.Error(c, http.StatusBadRequest, "auth_official_url_missing", "official_url_missing")
 			return
 		}
 		client = s.config.CloudClient
-		profileDir = s.config.BaseProfileDir
-		if profileDir == "" {
-			profileDir = s.config.DataDir
-		}
-		// Persist the normalized official endpoint for restoring the correct client.
+		// 持久化归一化的官方地址，便于重启后选择正确的客户端。
 		if s.config.CloudConfig != nil && s.config.CloudConfig.APIBaseURL != "" {
 			if norm, err := normalizeServerURL(s.config.CloudConfig.APIBaseURL); err == nil {
 				normalized = norm
@@ -268,7 +257,6 @@ func (s *Server) handleLogin(c *gin.Context) {
 			i18n.Error(c, http.StatusBadRequest, "auth_official_url_invalid", "official_url_invalid")
 			return
 		}
-		secretDir = profileDir
 	}
 
 	// 2. Call the cloud to log in (any account is acceptable, as long as the password is correct)
@@ -278,21 +266,69 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
-	// 3. Keep the fixed local Profile and create the optional cloud account session.
-	if err := s.switchProfile(c.Request.Context(), profileDir, secretDir); err != nil {
-		i18n.Error(c, http.StatusInternalServerError, "auth_profile_switch_failed", "profile_switch_failed")
+	// 3-6. 云端已确认身份，完成本地登录的全部副作用。
+	deviceRegistered, err := s.completeCloudLogin(c, client, serverType, normalized, loginResp)
+	if err != nil {
+		writeLoginStageError(c, err)
 		return
 	}
 
-	if s.config.AccountMgr == nil {
+	c.JSON(http.StatusOK, gin.H{
+		"status":            "ok",
+		"user":              loginResp.User,
+		"device_registered": deviceRegistered,
+		"admin_id":          loginResp.AdminID,
+	})
+}
+
+// 登录链路中可区分的失败阶段。账号密码登录与浏览器登录共用 completeCloudLogin，
+// 但各自把阶段映射成自己的错误文案。
+var (
+	errLoginProfileSwitchFailed = errors.New("login_profile_switch_failed")
+	errLoginAccountManagerGone  = errors.New("login_account_manager_missing")
+	errLoginSessionCreateFailed = errors.New("login_session_create_failed")
+)
+
+// writeLoginStageError 把 completeCloudLogin 的阶段错误映射成稳定的本地 API 错误响应。
+func writeLoginStageError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, errLoginProfileSwitchFailed):
+		i18n.Error(c, http.StatusInternalServerError, "auth_profile_switch_failed", "profile_switch_failed")
+	case errors.Is(err, errLoginAccountManagerGone):
 		i18n.Error(c, http.StatusInternalServerError, "auth_account_manager_missing", "account_manager_missing")
-		return
+	default:
+		i18n.Error(c, http.StatusInternalServerError, "auth_session_create_failed", "session_create_failed")
+	}
+}
+
+// completeCloudLogin 在云端已经确认身份之后完成本地登录：切换 Profile、建立账号会话、
+// 同步云端流水线缓存、注册设备并下发浏览器会话 Cookie。
+//
+// 账号密码登录（handleLogin）与浏览器登录（handleBrowserLoginCallback）共用这一段，
+// 保证两条链路产生的本地登录态完全一致。client 必须是签发该登录态的云端客户端，
+// serverType/serverURL 用于重启后按同一目标恢复会话。
+func (s *Server) completeCloudLogin(
+	c *gin.Context,
+	client *cloud.Client,
+	serverType, serverURL string,
+	loginResp *cloud.LoginResponse,
+) (bool, error) {
+	// 本地 Profile 与凭据文件始终是应用级的，不随账号或云端地址拆分。
+	profileDir := s.config.BaseProfileDir
+	if profileDir == "" {
+		profileDir = s.config.DataDir
+	}
+	if err := s.switchProfile(c.Request.Context(), profileDir, profileDir); err != nil {
+		return false, errLoginProfileSwitchFailed
+	}
+	if s.config.AccountMgr == nil {
+		return false, errLoginAccountManagerGone
 	}
 
 	opts := LoginOptions{
-		PersistLastLogin: true, // Both official and custom logins persist the last login index, and automatically restore the session after restart.
+		PersistLastLogin: true, // 两种登录都持久化最后登录索引，重启后自动恢复会话
 		ServerType:       serverType,
-		ServerURL:        normalized, // official and custom both record the normalized server address
+		ServerURL:        serverURL,
 	}
 	if serverType == "custom" {
 		opts.CloudClient = client
@@ -307,22 +343,17 @@ func (s *Server) handleLogin(c *gin.Context) {
 		opts,
 	)
 	if err != nil {
-		i18n.Error(c, http.StatusInternalServerError, "auth_session_create_failed", "session_create_failed")
-		return
+		return false, errLoginSessionCreateFailed
 	}
 
-	// 4. Set the current session of the server
+	// 4. 设置服务端当前会话，并刷新只读云流水线缓存（云端不可用不得让登录失败）。
 	s.SetSession(sessionInfo)
-	// Refresh the read-only cloud pipeline cache after both official and custom
-	// login. A cloud outage must not turn a successful login into a failure.
 	s.triggerCloudPipelineSync()
+	s.triggerCloudExpertGroupSync()
 
-	// 5. Device registration check (using DeviceMgr in the account session)
-	//
-	// Note: SetSession has been executed here and the server is already logged in. Any early return will cause
-	// The status of "the server is logged in and the browser did not get the cookie" is split. Device-related failures will be downgraded.
-	// (Consistent with the handling of RegisterDevice failure below), let the login process complete normally and issue cookies.
-	// Users can retry device registration on the settings page.
+	// 5. 设备注册检查。此时服务端已经处于登录态，任何提前返回都会造成
+	// 「服务端已登录、浏览器没拿到 Cookie」的割裂状态，因此设备相关失败一律降级：
+	// 登录照常完成并下发 Cookie，用户可在设置页重试设备注册。
 	deviceRegistered := false
 	if sessionInfo.DeviceMgr != nil {
 		deviceRegistered = sessionInfo.DeviceMgr.IsRegistered()
@@ -332,33 +363,28 @@ func (s *Server) handleLogin(c *gin.Context) {
 				applog.Warn("生成设备 UUID 失败，登录继续但设备未注册",
 					"admin_id", loginResp.AdminID, "error", err.Error())
 			} else {
-				// Register the device (no boot keys are used, the cloud has been simplified to just JWT).
-				// Must use the session cloud client: when customizing the login, the registration target is a custom cloud,
-				// Otherwise, the JWT issued by the cloud will be sent to the official cloud, resulting in 401/registration failure.
+				// 必须使用会话云客户端：自定义登录时注册目标是自定义云端。
 				registerClient := s.config.CloudClient
 				if sessionInfo.CloudClient != nil {
 					registerClient = sessionInfo.CloudClient
 				}
 				deviceCred, err := registerClient.RegisterDevice(c.Request.Context(), deviceUUID, "")
 				if err != nil {
-					// Device registration failure does not block login, and the user can try again later.
 					applog.Warn("设备注册失败，登录继续",
 						"admin_id", loginResp.AdminID, "error", err.Error())
 					deviceRegistered = false
+				} else if err := sessionInfo.DeviceMgr.SaveRegistration(loginResp.AdminID, deviceUUID, deviceCred.Credential); err != nil {
+					applog.Warn("保存设备注册信息失败，登录继续",
+						"admin_id", loginResp.AdminID, "error", err.Error())
+					deviceRegistered = false
 				} else {
-					if err := sessionInfo.DeviceMgr.SaveRegistration(loginResp.AdminID, deviceUUID, deviceCred.Credential); err != nil {
-						applog.Warn("保存设备注册信息失败，登录继续",
-							"admin_id", loginResp.AdminID, "error", err.Error())
-						deviceRegistered = false
-					} else {
-						deviceRegistered = true
-					}
+					deviceRegistered = true
 				}
 			}
 		}
 	}
 
-	// 6. Create a local browser session
+	// 6. 创建本地浏览器会话并下发 HttpOnly Cookie（有效期 30 天）。
 	sessionID := generateSessionID()
 	browserSess := &browserSession{
 		ID:          sessionID,
@@ -372,7 +398,6 @@ func (s *Server) handleLogin(c *gin.Context) {
 		ExpiresAt:   time.Now().Add(sessionValidity),
 	}
 
-	// Record this login information (persistent to the account index, Login is responsible for writing to the boot storage)
 	s.lastLogin = &lastLoginInfo{
 		AdminID:     loginResp.AdminID,
 		UserID:      loginResp.User.ID,
@@ -381,7 +406,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 		Avatar:      loginResp.User.Avatar,
 		Role:        loginResp.User.Role,
 		ServerType:  serverType,
-		ServerURL:   normalized,
+		ServerURL:   serverURL,
 	}
 
 	sessionMgr.mu.Lock()
@@ -389,16 +414,10 @@ func (s *Server) handleLogin(c *gin.Context) {
 	sessionMgr.mu.Unlock()
 	s.persistBrowserSessions()
 
-	//Set HttpOnly Cookie (valid for 30 days)
 	c.SetSameSite(http.SameSiteStrictMode)
 	c.SetCookie("goteams_local_session", sessionID, int(sessionValidity.Seconds()), "/", "", false, true)
 
-	c.JSON(http.StatusOK, gin.H{
-		"status":            "ok",
-		"user":              loginResp.User,
-		"device_registered": deviceRegistered,
-		"admin_id":          loginResp.AdminID,
-	})
+	return deviceRegistered, nil
 }
 
 // handleLogout log out
@@ -667,6 +686,7 @@ func (s *Server) RestoreSession(ctx context.Context) {
 	}
 	s.SetSession(sessionInfo)
 	s.triggerCloudPipelineSync()
+	s.triggerCloudExpertGroupSync()
 	s.lastLogin = last
 	// GetMe must use the session cloud client: user information comes from the custom cloud during custom login.
 	if client := s.currentCloudClient(); client != nil {

@@ -1,26 +1,86 @@
 package localserver
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
+	"goteams-client/internal/cloud"
 	"goteams-client/internal/expertgroup"
 	"goteams-client/internal/i18n"
 	"goteams-client/internal/pipeline"
 )
 
 type ExpertGroupsHandler struct {
-	db        func() *sql.DB
-	iconStore *IconStore
+	db          func() *sql.DB
+	iconStore   *IconStore
+	cloudClient func() *cloud.Client
 }
 
-func NewExpertGroupsHandler(db func() *sql.DB, iconStore *IconStore) *ExpertGroupsHandler {
-	return &ExpertGroupsHandler{db: db, iconStore: iconStore}
+func NewExpertGroupsHandler(db func() *sql.DB, iconStore *IconStore, cloudClients ...func() *cloud.Client) *ExpertGroupsHandler {
+	h := &ExpertGroupsHandler{db: db, iconStore: iconStore}
+	if len(cloudClients) > 0 {
+		h.cloudClient = cloudClients[0]
+	}
+	return h
+}
+
+func (h *ExpertGroupsHandler) RegisterCloudRoutes(r *gin.RouterGroup) {
+	r.POST("/expert-groups/sync", h.syncCloud)
+	r.POST("/expert-groups/sync-cloud", h.syncCloud)
+}
+
+// syncCloud 拉取云端可用专家团（scope 过滤后）并镜像到内存缓存。仅供云端登录态。
+func (h *ExpertGroupsHandler) syncCloud(c *gin.Context) {
+	if h.cloudClient == nil || h.cloudClient() == nil {
+		i18n.LocalServerError(c, http.StatusServiceUnavailable, errors.New("云端客户端未初始化"))
+		return
+	}
+	items, err := syncCloudExpertGroups(c.Request.Context(), h.cloudClient())
+	if err != nil {
+		i18n.LocalServerError(c, http.StatusBadGateway, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items, "synced": len(items)})
+}
+
+// syncCloudExpertGroups fetches the cloud expert-group list and replaces the in-memory cache.
+func syncCloudExpertGroups(ctx context.Context, client *cloud.Client) ([]expertgroup.CloudGroup, error) {
+	groups, err := client.GetExpertGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	inputs := make([]expertgroup.CloudGroupInput, 0, len(groups))
+	for _, group := range groups {
+		input := expertgroup.CloudGroupInput{
+			CloudGroupID: strconv.FormatInt(group.ID, 10),
+			Name:         group.Name,
+			Description:  group.Description,
+			Avatar:       group.Avatar,
+		}
+		for _, agent := range group.Agents {
+			role := agent.Role
+			if role == "" {
+				role = expertgroup.RoleMember
+			}
+			input.Agents = append(input.Agents, expertgroup.CloudAgent{
+				CloudAgentID: agent.Name, // 云端 agent 唯一性以 name 为准
+				Role:         role,
+				Name:         agent.Name,
+				Avatar:       agent.Avatar,
+				Prompt:       agent.Prompt,
+				SortOrder:    agent.SortOrder,
+			})
+		}
+		inputs = append(inputs, input)
+	}
+	return expertgroup.DefaultCloudStore().ReplaceAll(pipeline.CloudSourceKey(client.BaseURL()), inputs)
 }
 
 func (h *ExpertGroupsHandler) RegisterRoutes(r *gin.RouterGroup) {
@@ -32,6 +92,7 @@ func (h *ExpertGroupsHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.PUT("/:uuid", h.update)
 	r.DELETE("/:uuid", h.delete)
 	r.POST("/:uuid/members", h.addMember)
+	r.PUT("/:uuid/members/execution-config", h.batchUpdateMemberExecution)
 	r.PUT("/:uuid/members/:member_uuid", h.updateMember)
 	r.DELETE("/:uuid/members/:member_uuid", h.deleteMember)
 }
@@ -53,6 +114,10 @@ func (h *ExpertGroupsHandler) list(c *gin.Context) {
 	if err != nil {
 		expertGroupError(c, err)
 		return
+	}
+	// 合并内存中的云端专家团（团队只读，source_type=cloud），与云端流水线一致；本地列表在前。
+	for _, cg := range expertgroup.DefaultCloudStore().List() {
+		items = append(items, cg.ToGroup())
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }
@@ -173,6 +238,24 @@ func (h *ExpertGroupsHandler) updateMember(c *gin.Context) {
 		if uploaded != "" {
 			_ = h.iconStore.Remove(uploaded)
 		}
+		expertGroupError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
+func (h *ExpertGroupsHandler) batchUpdateMemberExecution(c *gin.Context) {
+	var input expertgroup.BatchMemberExecutionInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		i18n.LocalServerError(c, http.StatusBadRequest, err)
+		return
+	}
+	svc, ok := h.service(c)
+	if !ok {
+		return
+	}
+	item, err := svc.BatchUpdateMemberExecution(c.Request.Context(), c.Param("uuid"), input)
+	if err != nil {
 		expertGroupError(c, err)
 		return
 	}

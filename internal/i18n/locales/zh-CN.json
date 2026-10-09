@@ -200,6 +200,21 @@
   "auth_account_manager_missing": {
     "other": "账号管理器未初始化"
   },
+  "auth_browser_login_callback_invalid": {
+    "other": "浏览器登录回调参数不完整"
+  },
+  "auth_browser_login_exchange_failed": {
+    "other": "浏览器登录凭证已失效，请重新登录"
+  },
+  "auth_browser_login_session_missing": {
+    "other": "浏览器登录会话不存在或已结束，请重新发起登录"
+  },
+  "auth_browser_login_start_failed": {
+    "other": "无法发起浏览器登录，请检查网络后重试"
+  },
+  "auth_browser_login_state_required": {
+    "other": "缺少浏览器登录会话标识"
+  },
   "auth_cloud_url_invalid": {
     "other": "云端地址无效"
   },
@@ -343,6 +358,57 @@
   },
   "configcenter_connection_ok": {
     "other": "连接成功"
+  },
+  "configcenter_workspace_confirm_required": {
+    "other": "请先确认搬迁提示"
+  },
+  "configcenter_workspace_desktop_only": {
+    "other": "仅桌面客户端支持修改工作空间"
+  },
+  "configcenter_workspace_dir_changed": {
+    "other": "目标目录在搬迁前被写入内容，已中止"
+  },
+  "configcenter_workspace_dir_not_dir": {
+    "other": "目标路径不是目录"
+  },
+  "configcenter_workspace_dir_not_empty": {
+    "other": "目标目录不为空，请选择空目录"
+  },
+  "configcenter_workspace_dir_not_exist": {
+    "other": "目标目录不存在，请先创建"
+  },
+  "configcenter_workspace_dir_required": {
+    "other": "请选择目标目录"
+  },
+  "configcenter_workspace_inside_current": {
+    "other": "目标目录不能位于当前工作空间之内"
+  },
+  "configcenter_workspace_invalid": {
+    "other": "目标目录无效"
+  },
+  "configcenter_workspace_move_failed": {
+    "other": "工作空间搬迁失败，请查看日志"
+  },
+  "configcenter_workspace_not_writable": {
+    "other": "目标目录不可写"
+  },
+  "configcenter_workspace_resolve_failed": {
+    "other": "无法解析当前工作空间，请检查磁盘后重试"
+  },
+  "configcenter_workspace_restart_first": {
+    "other": "工作空间已迁移，请重启客户端后再操作"
+  },
+  "configcenter_workspace_root_forbidden": {
+    "other": "目标目录不能是磁盘根目录"
+  },
+  "configcenter_workspace_same_dir": {
+    "other": "目标目录与当前工作空间相同"
+  },
+  "configcenter_workspace_system_forbidden": {
+    "other": "目标目录不能位于系统目录之下"
+  },
+  "configcenter_workspace_target_has_data": {
+    "other": "目标目录下已存在 .goteams 数据，为避免覆盖请另选空目录"
   },
   "configcenter_database_lookup_failed": {
     "other": "读取数据库配置失败"
@@ -551,6 +617,27 @@
   "knowledge_title_required": {
     "other": "title 不能为空"
   },
+  "knowledge_root_not_writable": {
+    "other": "知识库目录不可写或无权限，请选择可写目录"
+  },
+  "knowledge_root_set_failed": {
+    "other": "设置知识库目录失败（文件已迁移到新目录），重试即可"
+  },
+  "knowledge_root_scan_warning": {
+    "other": "知识库目录已迁移，但重建索引失败，请手动刷新或重新扫描"
+  },
+  "knowledge_folder_mode_invalid": {
+    "other": "删除模式无效，仅支持 keep（保留文件）或 purge（全部删除）"
+  },
+  "knowledge_folder_root_not_deletable": {
+    "other": "根文件夹不可删除"
+  },
+  "knowledge_document_ext_invalid": {
+    "other": "文档格式无效，仅支持 md 或 txt"
+  },
+  "knowledge_scan_failed": {
+    "other": "扫描知识库目录失败"
+  },
   "knowledge_trash_document_not_found": {
     "other": "回收站中不存在该文档"
   },
@@ -566,8 +653,23 @@
   "knowledge_uuid_required": {
     "other": "uuid 参数不能为空"
   },
+  "knowledge_root_mode_invalid": {
+    "other": "知识库目录切换模式无效，仅支持 migrate（迁移）"
+  },
+  "knowledge_root_target_invalid": {
+    "other": "目标目录不能是当前知识库目录或其子目录"
+  },
+  "knowledge_root_migrate_conflict": {
+    "other": "目标目录存在同名文件或文件夹，已中止迁移，原配置未变更"
+  },
+  "knowledge_root_migrate_failed": {
+    "other": "迁移知识库目录失败，已尝试回滚，原配置未变更"
+  },
   "localserver_active_sessions": {
     "other": "任务仍有正在执行的 CLI 会话，请先终止后再删除"
+  },
+  "localserver_activity_not_found": {
+    "other": "任务动态不存在"
   },
   "localserver_agent_upload_local_only": {
     "other": "仅本地 Agent 支持上传头像"
@@ -637,14 +739,20 @@
     "other": "检测到同名但非 TeamsBoard 管理的 teamsboard Skill，为避免覆盖，Codex 功能已禁用"
   },
   "localserver_codex_task_prompt": {
-    "description": "SkillPath and TaskUUID identify the managed TeamsBoard task.",
-    "other": "[$teamsboard]({{.SkillPath}})\n\n请使用 teamsboard Skill 处理以下 TeamsBoard 本地任务。\n任务 UUID：{{.TaskUUID}}\n本会话持续绑定该任务；后续每轮均按 Skill 规则同步，直到会话结束。"
+    "description": "SkillPath, TaskUUID and Tool identify the managed TeamsBoard task.",
+    "other": "[$teamsboard]({{.SkillPath}})\n\n请使用 teamsboard Skill 处理以下 TeamsBoard 本地任务。\n任务 UUID：{{.TaskUUID}}\n工具类型：{{.Tool}}\n绑定请求的 type 必须等于工具类型。Codex 的 thread_id 只读取环境变量 CODEX_THREAD_ID（Windows 用 $env:CODEX_THREAD_ID）。这是当前会话提供的线程 ID，不要猜测或扫描历史会话。该值为空时跳过绑定，但仍上报最终答复并省略 thread_id。Claude Code、CodeBuddy、Qoder 使用当前会话 ID；Pi 使用 /session 展示的会话 ID。\n本会话持续绑定该任务；后续每轮均按 Skill 规则同步，直到会话结束。"
+  },
+  "localserver_vibe_cli_not_found": {
+    "other": "未找到对应 CLI，请先安装并加入 PATH"
   },
   "localserver_current_session_unavailable": {
     "other": "当前 Agent 编排尚无可继续的 CLI 会话"
   },
   "localserver_database_not_ready": {
     "other": "本地任务数据库尚未就绪"
+  },
+  "localserver_execution_history_not_found": {
+    "other": "历史执行不存在"
   },
   "localserver_execution_mode_conflict": {
     "other": "任务已经指派其他执行方式"
@@ -788,6 +896,12 @@
   "localserver_pipeline_required": {
     "other": "请选择流水线"
   },
+  "localserver_pipeline_step_content_required": {
+    "other": "流水线中的 Agent 必须配置名称和提示词"
+  },
+  "localserver_pipeline_step_execution_required": {
+    "other": "流水线中的 Agent 尚未配置 CLI 和模型，请先完成配置后再启动"
+  },
   "localserver_pipeline_upload_local_only": {
     "other": "仅本地流水线支持上传图标"
   },
@@ -809,6 +923,15 @@
   "localserver_readable_file_type": {
     "description": "Unsupported file extension; FileType is the extension.",
     "other": "不支持读取 {{.FileType}} 类型的文件内容，仅支持文本和图片文件"
+  },
+  "localserver_reference_content_required": {
+    "other": "引用内容不能为空"
+  },
+  "localserver_reference_name_required": {
+    "other": "引用文件名不能为空"
+  },
+  "localserver_reference_write_failed": {
+    "other": "引用内容转存失败，请检查磁盘空间与权限"
   },
   "localserver_request_invalid": {
     "other": "请求参数无效"
@@ -850,13 +973,16 @@
     "other": "任务已创建，但读取任务详情失败"
   },
   "localserver_task_not_codex": {
-    "other": "任务未指派给 Vibe Coding / Codex"
+    "other": "任务未指派给 Vibe Coding"
   },
   "localserver_task_not_found": {
     "other": "任务不存在"
   },
   "localserver_task_not_vibe_coding": {
     "other": "任务未指派给 Vibe Coding"
+  },
+  "localserver_task_title_or_description_required": {
+    "other": "任务标题与任务描述不能同时为空"
   },
   "localserver_task_uuid_invalid": {
     "other": "任务 UUID 无效"
@@ -868,10 +994,10 @@
     "other": "已指派至 Vibe Coding"
   },
   "localserver_vibe_session_thread_id_invalid": {
-    "other": "Codex thread_id 必须是有效的 UUID"
+    "other": "会话 ID 无效"
   },
   "localserver_vibe_session_type_invalid": {
-    "other": "当前仅支持绑定 Codex 会话"
+    "other": "当前 Vibe Coding 工具不支持会话绑定"
   },
   "localserver_vibe_session_type_mismatch": {
     "other": "会话类型与任务的 Vibe Coding 工具不一致"
@@ -896,6 +1022,159 @@
   },
   "localserver_workspace_unavailable": {
     "other": "任务工作目录不可用"
+  },
+  "remote_wechat_busy": {
+    "other": "{{.Task}}当前有执行正在进行，请结束后再发送新消息。"
+  },
+  "remote_wechat_codex_empty": {
+    "other": "Codex 已完成本轮执行，但没有返回文本结果。"
+  },
+  "remote_wechat_codex_executable_unavailable": {
+    "other": "TeamsBoard 后端无法找到 Codex 命令。请检查 Codex 安装或重启 TeamsBoard 后重试。"
+  },
+  "remote_wechat_codex_failed": {
+    "other": "Codex 本轮执行未成功，请在客户端检查会话。"
+  },
+  "remote_wechat_codex_input": {
+    "other": "Codex 本轮需要人工输入，微信通道已请求中断。请在客户端查看该会话。"
+  },
+  "remote_wechat_codex_recovery_uncertain": {
+    "other": "连续多次无法确认 Codex 的执行状态，已停止自动恢复。这次指令是否执行完成尚不确定，请先在客户端检查任务。"
+  },
+  "remote_wechat_codex_writer_locked": {
+    "other": "此 Codex 会话的写锁正由其他进程持有，微信暂时无法发送消息。请在该会话释放后重试。"
+  },
+  "remote_wechat_config_cli": {
+    "other": "任务执行配置未完成：请在 TeamsBoard 中选择 CLI 工具。"
+  },
+  "remote_wechat_config_codex_binding": {
+    "other": "任务执行配置未完成：请在 TeamsBoard 中绑定有效的 Codex 会话。"
+  },
+  "remote_wechat_config_expert": {
+    "other": "任务执行配置未完成：请在 TeamsBoard 中配置可用的专家团。"
+  },
+  "remote_wechat_config_mode": {
+    "other": "任务执行配置未完成：请在 TeamsBoard 中选择受支持的执行方式。"
+  },
+  "remote_wechat_config_model": {
+    "other": "任务执行配置未完成：请在 TeamsBoard 中选择模型。"
+  },
+  "remote_wechat_config_pipeline": {
+    "other": "任务执行配置未完成：请在 TeamsBoard 中补齐流水线及各步骤的执行配置。"
+  },
+  "remote_wechat_config_step": {
+    "other": "任务执行配置未完成：请在 TeamsBoard 中配置可执行的任务步骤。"
+  },
+  "remote_wechat_config_workspace": {
+    "other": "任务执行配置未完成：请在 TeamsBoard 中设置可用的工作目录。"
+  },
+  "remote_wechat_connect_failed": {
+    "other": "连接微信失败，请刷新二维码后重试"
+  },
+  "remote_wechat_connected": {
+    "other": "微信已经连接"
+  },
+  "remote_wechat_disconnect_failed": {
+    "other": "取消微信连接失败"
+  },
+  "remote_wechat_dispatch_failed": {
+    "other": "指令下发失败，请稍后重试或查看客户端日志。"
+  },
+  "remote_wechat_dispatch_uncertain": {
+    "other": "Codex 指令可能已开始执行，但客户端未收到运行 ID。请先在客户端核对会话，不要立即重发。"
+  },
+  "remote_wechat_empty_tasks": {
+    "other": "当前没有处于{{.Status}}的任务。\n{{.Help}}"
+  },
+  "remote_wechat_final_empty": {
+    "other": "任务执行完成，未返回文本结果。"
+  },
+  "remote_wechat_help": {
+    "other": "输入 /task -a 查看所有任务，/task 或 /task -r 查看进行中任务，/task -f 查看已完成任务，/task -e 查看已阻塞任务。输入 @ 后接任务 ID，即可切换任务。"
+  },
+  "remote_wechat_id_invalid": {
+    "other": "任务 ID 无效。\n{{.Help}}"
+  },
+  "remote_wechat_last_none": {
+    "other": "暂无最终执行结果"
+  },
+  "remote_wechat_list": {
+    "other": "您当前一共有{{.Count}}个{{.Status}}任务：\n\n{{.Tasks}}\n\n{{.Help}}"
+  },
+  "remote_wechat_login_not_found": {
+    "other": "扫码会话不存在"
+  },
+  "remote_wechat_login_not_waiting": {
+    "other": "当前扫码会话无需验证码"
+  },
+  "remote_wechat_message_too_long": {
+    "other": "消息过长，请缩短后再发送。"
+  },
+  "remote_wechat_no_binding": {
+    "other": "请问您想要操作哪个任务？\n\n{{.Help}}"
+  },
+  "remote_wechat_params_invalid": {
+    "other": "不支持的 /task 参数。\n{{.Help}}"
+  },
+  "remote_wechat_processing_failed": {
+    "other": "指令处理失败，请先在客户端核对执行情况，再决定是否重试。"
+  },
+  "remote_wechat_qr_error": {
+    "other": "获取微信登录二维码失败"
+  },
+  "remote_wechat_qr_render_error": {
+    "other": "生成微信登录二维码失败"
+  },
+  "remote_wechat_result": {
+    "other": "#{{.ID}} {{.Task}} 本轮执行结果：\n\n{{.Result}}\n\n输入 @{{.ID}} 切换到该任务可继续对话。"
+  },
+  "remote_wechat_result_unavailable": {
+    "other": "无法获取这次执行结果，请在客户端核对任务执行记录。"
+  },
+  "remote_wechat_secret_error": {
+    "other": "删除微信凭据失败，请重试"
+  },
+  "remote_wechat_send_ack": {
+    "other": "已切换到{{.Task}}，并发送了消息：{{.Message}}\n\n客户端返回执行结果后我会发送给您，执行期间不支持继续对该任务发送消息。您可以输入 @ 后接任务 ID，切换到其他任务。"
+  },
+  "remote_wechat_state_error": {
+    "other": "读取微信连接状态失败"
+  },
+  "remote_wechat_status_all": {
+    "other": "全部"
+  },
+  "remote_wechat_status_blocked": {
+    "other": "已阻塞"
+  },
+  "remote_wechat_status_done": {
+    "other": "已完成"
+  },
+  "remote_wechat_status_running": {
+    "other": "进行中"
+  },
+  "remote_wechat_switch": {
+    "other": "已切换到{{.Task}}，最近一次执行结果是：\n{{.Result}}\n\n现在可以直接向我发送消息。我会自动将消息下发到该任务。也可以输入 @ 后接任务 ID，切换到其他任务。"
+  },
+  "remote_wechat_task_deleted_title": {
+    "other": "已删除任务"
+  },
+  "remote_wechat_task_missing": {
+    "other": "任务不存在或已删除。\n{{.Help}}"
+  },
+  "remote_wechat_uncertain": {
+    "other": "客户端重启时仍在处理上一条指令，其执行状态不确定。请先在客户端核对任务，再决定是否重新发送。"
+  },
+  "remote_wechat_uncertain_ack_missing": {
+    "other": "这条不确定的执行记录不存在或已处理，请刷新远程通道页面。"
+  },
+  "remote_wechat_uncertain_action_required": {
+    "other": "远程指令的执行结果尚不确定。请先在远程通道页面核对并确认，再修改或删除任务。"
+  },
+  "remote_wechat_uncertain_blocked": {
+    "other": "此任务有执行结果不确定的远程指令。请先在客户端的远程通道页面核对并确认，再发送新指令。"
+  },
+  "remote_wechat_verify_invalid": {
+    "other": "请输入微信显示的验证码"
   },
   "taskgit_branch_invalid": {
     "other": "Git 分支无效或不存在"

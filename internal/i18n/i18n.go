@@ -226,6 +226,20 @@ func Error(c *gin.Context, status int, key string, code string) {
 	c.AbortWithStatusJSON(status, payload)
 }
 
+// Error aborts the current Gin chain and sends a localized error response with the common `{error, code}` shape.
+func ErrorDev(c *gin.Context, status int, key string, code string, devErr error) {
+	c.Header(headerContentLanguage, FromContext(c))
+	payload := gin.H{"error": T(c, key)}
+	if code != "" {
+		payload["code"] = code
+	}
+	//有devErr且是debug模式则返回dev_error,否则不返回
+	if devErr != nil && gin.IsDebugging() {
+		payload["dev_error"] = devErr.Error()
+	}
+	c.AbortWithStatusJSON(status, payload)
+}
+
 // Message sends a localized success message in the common response shape.
 func Message(c *gin.Context, status int, key string, params Params) {
 	c.Header(headerContentLanguage, FromContext(c))

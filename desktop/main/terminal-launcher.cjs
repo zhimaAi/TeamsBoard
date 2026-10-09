@@ -19,6 +19,12 @@ function windowsCommandProcessor() {
   return path.win32.join(windowsRoot, 'System32', 'cmd.exe')
 }
 
+// Windows PowerShell 5.1 随系统提供。不依赖可选的 PowerShell 7（pwsh）。
+function windowsPowerShellPath() {
+  const windowsRoot = (process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows').trim()
+  return path.win32.join(windowsRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+}
+
 /**
  * @param {string} directory
  * @param {NodeJS.Platform} platform
@@ -30,14 +36,14 @@ function terminalLaunchOptions(directory, platform = process.platform) {
   }
   if (platform === 'win32') {
     const command = windowsCommandProcessor()
-    // 通过 cwd 定位目录，不把目录拼入 cmd 命令，路径中的 %、& 等字符不会被 shell 解释。
+    const powershell = windowsPowerShellPath()
+    // 通过 cwd 定位目录，不把目录拼入命令，路径中的 %、& 等字符不会被 shell 解释。
     return {
       command,
-      // Electron 是 GUI 进程，自身没有控制台；此时直接 spawn cmd.exe，新控制台由
-      // 系统控制台宿主（Windows 11 默认是 Windows Terminal）按隐藏句柄转交，可能
-      // 拿不到可见窗口，表现为点击无反应。改用 cmd 内建 start 显式创建带真实控制台
-      // 句柄的新窗口，再由内层 cmd /D /K 关闭 AutoRun 并保持窗口常驻。
-      args: ['/D', '/C', 'start', '', command, '/D', '/K'],
+      // Electron 是 GUI 进程，自身没有控制台；直接 spawn PowerShell 时，新控制台由
+      // 系统控制台宿主按隐藏句柄转交，可能拿不到可见窗口。外层仍用 cmd start 创建
+      // 可见窗口，内层打开 Windows PowerShell 并保持常驻。
+      args: ['/D', '/C', 'start', '', powershell, '-NoLogo', '-NoExit', '-NoProfile'],
       options: {
         cwd: directory,
         detached: true,

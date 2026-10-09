@@ -168,14 +168,14 @@ func (d *Decoder) Decode(raw string, emit executor.EmitFunc) {
 		d.ToolCall(event.ToolCallID, event.ToolName, executor.FormatToolArgs(event.Args), emit)
 
 	case "tool_execution_update":
-		d.ToolResult(event.ToolCallID, event.Content, emit)
+		d.ToolProgress(event.ToolCallID, event.Content, emit)
 
 	case "tool_execution_end":
 		// result 既可能是字符串，也可能是 {content:[{type,text}]} 形态的对象
 		d.ToolResult(event.ToolCallID, executor.RawText(event.Result), emit)
 
 	case "bash_execution_update":
-		d.ToolResult(event.ToolCallID, event.Content, emit)
+		d.ToolProgress(event.ToolCallID, event.Content, emit)
 
 	case "error":
 		reason := strings.TrimSpace(event.Error)

@@ -32,12 +32,78 @@ type managedMetadata struct {
 }
 
 // InstallBuiltin synchronizes only the built-in Skill owned by TeamsBoard. It
-// never traverses or changes sibling directories below targetRoot.
+// never traverses or changes sibling directories below the skill root.
+// A skill root that is a symlink is resolved once to a real directory inside
+// the user home; later writes use that path, so replacing the original link
+// cannot redirect the install. The teamsboard directory itself must still be
+// a real directory.
 func InstallBuiltin(sourceFS fs.FS, targetRoot string) error {
-	if err := os.MkdirAll(targetRoot, 0o700); err != nil {
+	root, err := writableSkillRoot(targetRoot)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		return fmt.Errorf("创建 Skill 根目录失败: %w", err)
 	}
-	return installOne(sourceFS, targetRoot, TaskSkillName)
+	return installOne(sourceFS, root, TaskSkillName)
+}
+
+// skillInstallHome is the home directory used to bound a resolved skill root.
+var skillInstallHome = os.UserHomeDir
+
+// writableSkillRoot returns the directory that receives the managed skill.
+// Missing roots are created later as real directories. An existing symlink is
+// accepted only when its final target is a real directory inside the user home.
+func writableSkillRoot(targetRoot string) (string, error) {
+	info, err := os.Lstat(targetRoot)
+	if os.IsNotExist(err) {
+		return targetRoot, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		if !info.IsDir() {
+			return "", fmt.Errorf("Skill 根目录不是安全目录")
+		}
+		return targetRoot, nil
+	}
+	resolved, err := filepath.EvalSymlinks(targetRoot)
+	if err != nil {
+		return "", fmt.Errorf("Skill 根目录不是安全目录")
+	}
+	resolvedInfo, err := os.Lstat(resolved)
+	if err != nil || resolvedInfo.Mode()&os.ModeSymlink != 0 || !resolvedInfo.IsDir() {
+		return "", fmt.Errorf("Skill 根目录不是安全目录")
+	}
+	if !pathWithinHome(resolved) {
+		return "", fmt.Errorf("Skill 根目录不是安全目录")
+	}
+	return resolved, nil
+}
+
+func pathWithinHome(path string) bool {
+	home, err := skillInstallHome()
+	if err != nil {
+		return false
+	}
+	home = canonicalizePath(home)
+	path = canonicalizePath(path)
+	rel, err := filepath.Rel(home, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+}
+
+func canonicalizePath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	return filepath.Clean(path)
 }
 
 func installOne(sourceFS fs.FS, targetRoot, name string) error {

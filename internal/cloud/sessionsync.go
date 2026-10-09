@@ -15,6 +15,7 @@ import (
 // against out-of-order pushes via client_updated_at.
 type PipelineTaskSessionSync struct {
 	LocalTaskUUID      string                          `json:"local_task_uuid"`
+	ExecutionIndex     int                             `json:"execution_index"`
 	StepKey            string                          `json:"step_key"`
 	StepName           string                          `json:"step_name"`
 	Status             string                          `json:"status"`
@@ -31,11 +32,16 @@ type PipelineTaskSessionSync struct {
 	TotalTokens        int64                           `json:"total_tokens"`
 	ConversationRounds int                             `json:"conversation_rounds"`
 	Conversation       PipelineTaskConversationContent `json:"conversation"`
-	StartedAt          int64                           `json:"started_at"`
-	FinishedAt         int64                           `json:"finished_at"`
-	DurationMs         int64                           `json:"duration_ms"`
-	CreatedAt          int64                           `json:"created_at"`
-	ClientUpdatedAt    int64                           `json:"client_updated_at"`
+	// Best-effort execution statistics aggregated over the step's sessions.
+	ToolCallCount   int   `json:"tool_call_count"`
+	FilesChanged    int   `json:"files_changed"`
+	LinesAdded      int   `json:"lines_added"`
+	LinesDeleted    int   `json:"lines_deleted"`
+	StartedAt       int64 `json:"started_at"`
+	FinishedAt      int64 `json:"finished_at"`
+	DurationMs      int64 `json:"duration_ms"`
+	CreatedAt       int64 `json:"created_at"`
+	ClientUpdatedAt int64 `json:"client_updated_at"`
 }
 
 // PushPipelineTaskSession pushes the step-level session projection to the cloud.
