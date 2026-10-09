@@ -50,6 +50,10 @@ defineProps<{ name: string }>()
       <path d="M9 4.1v11.9" stroke="currentColor" stroke-width="1.3"/>
     </svg>
     <!-- API management -->
+    <svg v-else-if="name === 'remote'" width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <path d="M9 10.3v5M6.7 15.3h4.6M5.3 6.7a5 5 0 0 0 0 4.2m7.4-4.2a5 5 0 0 1 0 4.2M3 4.4a8.3 8.3 0 0 0 0 8.8m12-8.8a8.3 8.3 0 0 1 0 8.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+      <circle cx="9" cy="8.4" r="1.4" fill="currentColor"/>
+    </svg>
     <svg v-else-if="name === 'api'" width="18" height="18" viewBox="0 0 18 18" fill="none">
       <path d="M3.2 7.2h4l1.6-2.7 1.8 5 1.6-2.3h2.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
       <circle cx="3.2" cy="7.2" r="1.2" stroke="currentColor" stroke-width="1.3"/>

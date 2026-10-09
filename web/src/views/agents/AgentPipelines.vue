@@ -26,6 +26,7 @@
 		  :selected-uuid="selectedResourceUuid"
           :copying-uuid="copyingUuid"
 		  :mode="managementMode"
+		  :navigation-disabled="expertBatchSaving"
 		  @change-mode="changeManagementMode"
 		  @copy="copyResource"
 		  @create="createResource"
@@ -47,6 +48,7 @@
 		  v-else
 		  ref="expertWorkspaceRef"
 		  v-model:selected-uuid="selectedExpertUuid"
+		  @batch-saving-change="expertBatchSaving = $event"
 		/>
       </template>
       <span
@@ -76,6 +78,7 @@
       v-model:open="copyModalOpen"
       :target-pipeline-uuid="selectedUuid"
       :source-steps="allReusableSteps"
+      multiple
       @saved="refreshSelectedPipeline"
     />
   </div>
@@ -118,6 +121,7 @@ const initialLoadFinished = ref(loaded.value)
 const syncing = ref(false)
 const selectedUuid = ref('')
 const selectedExpertUuid = ref('')
+const expertBatchSaving = ref(false)
 const expertWorkspaceRef = ref<InstanceType<typeof ExpertGroupsWorkspace>>()
 const handledPipelineQuery = ref('')
 const pipelineModalOpen = ref(false)
@@ -239,9 +243,24 @@ async function syncCloudPipelines(manual = false) {
   }
 }
 
+// 云端团队专家团同步（需求 1896 优化点2）：慢败静默；登出态直接返回。
+async function syncCloudExpertGroups() {
+  if (!authStore.cloudLoggedIn) return
+  try {
+    await apiClient.post<{ synced?: number }>('/expert-groups/sync-cloud', {})
+    await expertGroupStore.load(true)
+  } catch (error) {
+    // 专家团拉取失败不阻塞页面可用性；仅记录。
+    console.warn('同步云端专家团失败', error)
+  }
+}
+
 async function refreshAfterActivation() {
   await load(false)
-  if (isActiveAgentRoute()) await syncCloudPipelines(false)
+  if (isActiveAgentRoute()) {
+    await syncCloudPipelines(false)
+    void syncCloudExpertGroups()
+  }
 }
 
 function openPipelineModal(pipeline?: Pipeline) {
@@ -415,6 +434,7 @@ function isExpertGroup(resource: Pipeline | ExpertGroup): resource is ExpertGrou
 }
 
 async function changeManagementMode(mode: 'pipeline' | 'expert_group') {
+  if (expertBatchSaving.value) return
   managementMode.value = mode
 	if (mode === 'expert_group') {
 	  try {
@@ -430,6 +450,7 @@ async function changeManagementMode(mode: 'pipeline' | 'expert_group') {
 
 function selectResource(uuid: string) {
   if (managementMode.value === 'expert_group') {
+    if (expertBatchSaving.value) return
     selectedExpertUuid.value = uuid
     return
   }
@@ -437,6 +458,7 @@ function selectResource(uuid: string) {
 }
 
 function createResource() {
+  if (expertBatchSaving.value) return
   if (managementMode.value === 'expert_group') {
     expertWorkspaceRef.value?.openGroupEditor()
     return
@@ -445,6 +467,7 @@ function createResource() {
 }
 
 function editResource(resource: Pipeline | ExpertGroup) {
+  if (expertBatchSaving.value) return
   if (isExpertGroup(resource)) {
     expertWorkspaceRef.value?.openGroupEditor(resource)
     return
@@ -453,6 +476,7 @@ function editResource(resource: Pipeline | ExpertGroup) {
 }
 
 function copyResource(resource: Pipeline | ExpertGroup) {
+  if (expertBatchSaving.value) return
   if (isExpertGroup(resource)) {
     void expertWorkspaceRef.value?.handleGroupAction('copy', resource)
     return
@@ -461,6 +485,7 @@ function copyResource(resource: Pipeline | ExpertGroup) {
 }
 
 function deleteResource(resource: Pipeline | ExpertGroup) {
+  if (expertBatchSaving.value) return
   if (isExpertGroup(resource)) {
     void expertWorkspaceRef.value?.handleGroupAction('delete', resource)
     return

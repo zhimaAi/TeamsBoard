@@ -69,6 +69,14 @@ const TOOL_ITEMS = computed<ToolItem[]>(() => [
     detail: t('tools.items.knowledge.detail'),
   },
   {
+    key: 'remote-channels',
+    label: t('tools.items.remoteChannels.label'),
+    tag: 'remote',
+    icon: 'remote',
+    description: t('tools.items.remoteChannels.description'),
+    detail: t('tools.items.remoteChannels.detail'),
+  },
+  {
     key: 'apis',
     label: t('tools.items.apis.label'),
     tag: 'api',

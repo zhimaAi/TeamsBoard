@@ -1,794 +1,1434 @@
+<template>
+  <aside
+    v-show="!sidebarCollapsed"
+    class="app-sidebar"
+    :class="{ 'theme-dark': isDark, 'mac-desktop': isMacDesktop, 'windows-desktop': isWindowsDesktop }"
+  >
+    <div class="sidebar-top-bar">
+      <button
+        type="button"
+        class="sidebar-collapse-btn"
+        :aria-label="t('layout.sidebar.collapse')"
+        :title="t('layout.sidebar.collapse')"
+        @click="collapseSidebar"
+      >
+        <img
+          :src="toggleIcon"
+          alt=""
+          class="collapse-icon"
+        />
+      </button>
+    </div>
+
+    <!-- 品牌行 -->
+    <div class="sidebar-brand">
+      <img
+        class="brand-logo"
+        :src="isDark ? logoDark : logo"
+        alt="Logo"
+      />
+      <span class="brand-name">TeamsBoard</span>
+    </div>
+
+    <!-- 顶部主导航菜单 -->
+    <nav class="sidebar-primary-nav" :aria-label="t('layout.sidebar.navigation')">
+      <!-- 新对话 -->
+      <RouterLink
+        to="/tasks/new"
+        class="nav-item new-conversation-item"
+        :class="{ active: isNewConversationActive }"
+      >
+        <SidebarMenuIcon class="nav-icon" name="newConversation" :dark="isDark" />
+        <span class="nav-label">{{ t('layout.sidebar.newConversation') || '新对话' }}</span>
+      </RouterLink>
+
+      <!-- 看板 -->
+      <RouterLink
+        to="/board"
+        class="nav-item"
+        :class="{ active: activeKey === 'workflows' }"
+      >
+        <SidebarMenuIcon class="nav-icon" name="dashboard" :dark="isDark" />
+        <span class="nav-label">{{ t('layout.menu.workflows') }}</span>
+      </RouterLink>
+
+      <!-- Agent员工 -->
+      <RouterLink
+        to="/agents"
+        class="nav-item"
+        :class="{ active: activeKey === 'agents' }"
+      >
+        <SidebarMenuIcon class="nav-icon" name="agent" :dark="isDark" />
+        <span class="nav-label">{{ t('layout.menu.agents') }}</span>
+      </RouterLink>
+
+      <!-- 知识库 -->
+      <RouterLink
+        to="/knowledge"
+        class="nav-item"
+        :class="{ active: activeKey === 'knowledge' }"
+      >
+        <SidebarMenuIcon class="nav-icon" name="book" :dark="isDark" />
+        <span class="nav-label">{{ t('layout.menu.knowledge') }}</span>
+      </RouterLink>
+
+      <!-- 远程通道 -->
+      <RouterLink
+        to="/remote-channels"
+        class="nav-item"
+        :class="{ active: activeKey === 'remote-channels' }"
+      >
+        <SidebarMenuIcon class="nav-icon" name="remote" :dark="isDark" />
+        <span class="nav-label">{{ t('layout.menu.remoteChannels') }}</span>
+      </RouterLink>
+
+      <!-- 更多菜单（悬停或点击展示项目、配置中心、命令、接口管理） -->
+      <a-dropdown
+        :trigger="['hover', 'click']"
+        placement="bottomRight"
+        overlay-class-name="sidebar-more-dropdown"
+      >
+        <div
+          class="nav-item more-item"
+          :class="{ active: isMoreMenuActive }"
+        >
+          <div class="more-item__left">
+            <EllipsisOutlined class="nav-icon ellipsis-icon" />
+            <span class="nav-label">{{ t('layout.sidebar.more') || '更多' }}</span>
+          </div>
+          <RightOutlined class="more-chevron" />
+        </div>
+
+        <template #overlay>
+          <div class="more-menu-panel" role="menu">
+            <RouterLink
+              to="/projects"
+              class="more-menu-item"
+              :class="{ active: activeKey === 'projects' }"
+            >
+              <SidebarMenuIcon class="item-icon" name="project" :dark="isDark" />
+              <span>{{ t('layout.menu.projects') }}</span>
+            </RouterLink>
+            <RouterLink
+              to="/settings"
+              class="more-menu-item"
+              :class="{ active: activeKey === 'settings' }"
+            >
+              <SidebarMenuIcon class="item-icon" name="settings" :dark="isDark" />
+              <span>{{ t('layout.menu.settings') }}</span>
+            </RouterLink>
+            <RouterLink
+              to="/commands"
+              class="more-menu-item"
+              :class="{ active: activeKey === 'commands' }"
+            >
+              <SidebarMenuIcon class="item-icon" name="command" :dark="isDark" />
+              <span>{{ t('layout.menu.commands') }}</span>
+            </RouterLink>
+            <RouterLink
+              to="/apis"
+              class="more-menu-item"
+              :class="{ active: activeKey === 'apis' }"
+            >
+              <SidebarMenuIcon class="item-icon" name="api" :dark="isDark" />
+              <span>{{ t('layout.menu.apis') }}</span>
+            </RouterLink>
+          </div>
+        </template>
+      </a-dropdown>
+    </nav>
+
+    <!-- 搜索对话框 -->
+    <div class="sidebar-search">
+      <div class="search-input-box">
+        <SearchOutlined class="search-icon" />
+        <input
+          v-model="searchKeyword"
+          type="text"
+          class="search-input"
+          :placeholder="t('layout.sidebar.searchConversations') || '搜索对话'"
+          @input="onSearchInput"
+        />
+        <button
+          v-if="searchKeyword"
+          type="button"
+          class="search-clear-btn"
+          @click="clearSearch"
+        >
+          <CloseCircleFilled />
+        </button>
+      </div>
+    </div>
+
+    <!-- 对话列表区域（按工作目录分组，自适应高度，单独滚动） -->
+    <div class="sidebar-conversations-scroll scrollbar--subtle">
+      <div
+        v-if="conversationStore.loading && !conversationStore.loaded"
+        class="conversations-loading"
+      >
+        <a-spin size="small" />
+      </div>
+
+      <div
+        v-else-if="conversationStore.error && !conversationStore.allConversations.length"
+        class="conversations-error"
+      >
+        <span>{{ conversationStore.error }}</span>
+        <button
+          type="button"
+          class="retry-btn"
+          @click="conversationStore.loadConversations(true)"
+        >
+          {{ t('common.actions.retry') }}
+        </button>
+      </div>
+
+      <!-- 未归档对话分组列表 -->
+      <div
+        v-for="group in conversationStore.activeGroups"
+        :key="group.key"
+        class="directory-group"
+      >
+        <div
+          class="group-header"
+          :title="group.fullPath"
+          @click="toggleGroup(group.key)"
+        >
+          <div class="group-header__main">
+            <RightOutlined
+              class="group-chevron"
+              :class="{ 'is-expanded': !conversationStore.isGroupCollapsed(group.key) }"
+            />
+            <FolderOutlined class="group-folder-icon" />
+            <span class="group-name">{{ group.displayName }}</span>
+          </div>
+
+          <a-tooltip :title="t('layout.sidebar.addConversationInDir') || '在此目录新增对话'">
+            <button
+              type="button"
+              class="group-add-btn"
+              @click.stop="goToNewConversationWithDir(group.workDir)"
+            >
+              <PlusOutlined />
+            </button>
+          </a-tooltip>
+        </div>
+
+        <div
+          v-show="!conversationStore.isGroupCollapsed(group.key)"
+          class="group-conversations"
+        >
+          <div
+            v-for="conv in group.items"
+            :key="conv.task_uuid"
+            class="conversation-entry"
+            :class="{ active: isConversationActive(conv.task_uuid) }"
+            @click="selectConversation(conv)"
+          >
+            <span
+              class="conv-title"
+              :title="conv.title"
+            >{{ conv.title }}</span>
+
+            <div class="conv-actions">
+              <!-- 未读红点 -->
+              <span
+                v-if="conv.unread"
+                class="unread-dot"
+                :title="t('workflows.task.common.unread')"
+              />
+
+              <!-- 悬停更多操作按钮 -->
+              <a-dropdown
+                :trigger="['click']"
+                placement="bottomRight"
+              >
+                <button
+                  type="button"
+                  class="conv-more-btn"
+                  @click.stop
+                >
+                  <EllipsisOutlined />
+                </button>
+                <template #overlay>
+                  <a-menu>
+                    <a-menu-item @click="toggleReadState(conv)">
+                      {{ conv.unread ? (t('workflows.task.common.markRead') || '标为已读') : (t('workflows.task.common.markUnread') || '设为未读') }}
+                    </a-menu-item>
+                    <a-menu-item @click="toggleArchiveState(conv)">
+                      {{ t('workflows.task.common.archive') || '归档' }}
+                    </a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 已归档折叠组（默认收起） -->
+      <div
+        v-if="conversationStore.archivedConversations.length > 0"
+        class="archived-section"
+      >
+        <div
+          class="archived-header"
+          @click="conversationStore.toggleArchivedCollapse"
+        >
+          <div class="archived-header__left">
+            <RightOutlined
+              class="group-chevron"
+              :class="{ 'is-expanded': !conversationStore.archivedCollapsed }"
+            />
+            <InboxOutlined class="archived-icon" />
+            <span class="archived-label">{{ t('layout.sidebar.archived') || '已归档' }}</span>
+          </div>
+          <span class="archived-count">{{ conversationStore.archivedConversations.length }}</span>
+        </div>
+
+        <div
+          v-show="!conversationStore.archivedCollapsed"
+          class="archived-content"
+        >
+          <div
+            v-for="group in conversationStore.archivedGroups"
+            :key="`archived-${group.key}`"
+            class="directory-group archived-group"
+          >
+            <div
+              class="group-header"
+              :title="group.fullPath"
+              @click="toggleGroup(`archived-${group.key}`)"
+            >
+              <div class="group-header__main">
+                <RightOutlined
+                  class="group-chevron"
+                  :class="{ 'is-expanded': !conversationStore.isGroupCollapsed(`archived-${group.key}`) }"
+                />
+                <FolderOutlined class="group-folder-icon" />
+                <span class="group-name">{{ group.displayName }}</span>
+              </div>
+            </div>
+
+            <div
+              v-show="!conversationStore.isGroupCollapsed(`archived-${group.key}`)"
+              class="group-conversations"
+            >
+              <div
+                v-for="conv in group.items"
+                :key="conv.task_uuid"
+                class="conversation-entry archived-entry"
+                :class="{ active: isConversationActive(conv.task_uuid) }"
+                @click="selectConversation(conv)"
+              >
+                <span
+                  class="conv-title"
+                  :title="conv.title"
+                >{{ conv.title }}</span>
+
+                <div class="conv-actions">
+                  <a-dropdown
+                    :trigger="['click']"
+                    placement="bottomRight"
+                  >
+                    <button
+                      type="button"
+                      class="conv-more-btn"
+                      @click.stop
+                    >
+                      <EllipsisOutlined />
+                    </button>
+                    <template #overlay>
+                      <a-menu>
+                        <a-menu-item @click="toggleReadState(conv)">
+                          {{ conv.unread ? (t('workflows.task.common.markRead') || '标为已读') : (t('workflows.task.common.markUnread') || '设为未读') }}
+                        </a-menu-item>
+                        <a-menu-item @click="toggleArchiveState(conv)">
+                          {{ t('layout.sidebar.unarchive') || '取消归档' }}
+                        </a-menu-item>
+                      </a-menu>
+                    </template>
+                  </a-dropdown>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 底部：用户信息与设置上滑菜单 -->
+    <footer class="sidebar-footer">
+      <div
+        class="user-info-card"
+        @click="handleUserClick"
+      >
+        <div class="user-avatar">
+          <UserOutlined />
+        </div>
+        <div class="user-text">
+          <span class="user-title">{{ authStore.cloudLoggedIn ? (authStore.cloudUser?.displayName || authStore.cloudUser?.username || '已登录') : (t('layout.sidebar.notLoggedIn') || '未登录') }}</span>
+          <span class="user-sub">{{ authStore.cloudLoggedIn ? (authStore.cloudUser?.username || 'GoTeams') : (t('layout.sidebar.guestLogin') || '本地 · 点击登录') }}</span>
+        </div>
+      </div>
+
+      <!-- 设置按钮（点击上滑弹出菜单） -->
+      <a-dropdown
+        v-model:open="settingsMenuOpen"
+        :trigger="['click']"
+        placement="topLeft"
+        overlay-class-name="sidebar-settings-popover"
+      >
+        <button
+          type="button"
+          class="settings-btn"
+          :class="{ 'is-open': settingsMenuOpen }"
+          :aria-label="t('layout.menu.settings')"
+        >
+          <SettingOutlined />
+        </button>
+
+        <template #overlay>
+          <div
+            class="settings-up-menu"
+            role="menu"
+            @click.stop
+          >
+            <!-- 用户状态行 -->
+            <div class="menu-user-row">
+              <div class="user-avatar small">
+                <UserOutlined />
+              </div>
+              <div class="user-text">
+                <span class="user-title">{{ authStore.cloudLoggedIn ? (authStore.cloudUser?.displayName || authStore.cloudUser?.username) : (t('layout.sidebar.notLoggedIn') || '未登录') }}</span>
+                <span class="user-sub">{{ authStore.cloudLoggedIn ? (authStore.cloudUser?.username || '') : (t('layout.sidebar.guestLogin') || '本地 · 点击登录') }}</span>
+              </div>
+            </div>
+
+            <div class="menu-divider" />
+
+            <!-- 外观切换菜单项 -->
+            <a-dropdown
+              placement="rightTop"
+              :trigger="['hover', 'click']"
+            >
+              <div class="settings-menu-row">
+                <div class="row-left">
+                  <BulbOutlined class="row-icon" />
+                  <span>{{ t('layout.sidebar.theme') || '外观' }}</span>
+                </div>
+                <div class="row-right">
+                  <span class="current-val">{{ currentThemeLabel }}</span>
+                  <RightOutlined class="chevron-right" />
+                </div>
+              </div>
+              <template #overlay>
+                <div class="sub-options-panel">
+                  <button
+                    type="button"
+                    class="sub-option"
+                    :class="{ 'is-selected': currentThemeConfig === 'light' }"
+                    @click="chooseTheme('light')"
+                  >
+                    <span>{{ t('layout.sidebar.themeLight') || '浅色' }}</span>
+                    <CheckOutlined v-if="currentThemeConfig === 'light'" class="check-icon" />
+                  </button>
+                  <button
+                    type="button"
+                    class="sub-option"
+                    :class="{ 'is-selected': currentThemeConfig === 'dark' }"
+                    @click="chooseTheme('dark')"
+                  >
+                    <span>{{ t('layout.sidebar.themeDark') || '深色' }}</span>
+                    <CheckOutlined v-if="currentThemeConfig === 'dark'" class="check-icon" />
+                  </button>
+                  <button
+                    type="button"
+                    class="sub-option"
+                    :class="{ 'is-selected': currentThemeConfig === 'auto' }"
+                    @click="chooseTheme('auto')"
+                  >
+                    <span>{{ t('layout.sidebar.themeAuto') || '跟随系统' }}</span>
+                    <CheckOutlined v-if="currentThemeConfig === 'auto'" class="check-icon" />
+                  </button>
+                </div>
+              </template>
+            </a-dropdown>
+
+            <!-- 语言切换菜单项 -->
+            <a-dropdown
+              placement="rightTop"
+              :trigger="['hover', 'click']"
+            >
+              <div class="settings-menu-row">
+                <div class="row-left">
+                  <GlobalOutlined class="row-icon" />
+                  <span>{{ t('layout.sidebar.language') || '语言' }}</span>
+                </div>
+                <div class="row-right">
+                  <span class="current-val">{{ currentLocaleLabel }}</span>
+                  <RightOutlined class="chevron-right" />
+                </div>
+              </div>
+              <template #overlay>
+                <div class="sub-options-panel">
+                  <button
+                    type="button"
+                    class="sub-option"
+                    :class="{ 'is-selected': locale === 'zh-CN' }"
+                    @click="chooseLocale('zh-CN')"
+                  >
+                    <span>{{ t('layout.sidebar.languageChinese') }}</span>
+                    <CheckOutlined v-if="locale === 'zh-CN'" class="check-icon" />
+                  </button>
+                  <button
+                    type="button"
+                    class="sub-option"
+                    :class="{ 'is-selected': locale === 'en-US' }"
+                    @click="chooseLocale('en-US')"
+                  >
+                    <span>{{ t('layout.sidebar.languageEnglish') }}</span>
+                    <CheckOutlined v-if="locale === 'en-US'" class="check-icon" />
+                  </button>
+                </div>
+              </template>
+            </a-dropdown>
+
+            <button
+              type="button"
+              class="settings-menu-row"
+              @click="reviewOnboarding"
+            >
+              <div class="row-left">
+                <CompassOutlined class="row-icon" />
+                <span>{{ t('layout.sidebar.onboarding') }}</span>
+              </div>
+            </button>
+
+            <!-- 退出登录（如已登录） -->
+            <template v-if="authStore.cloudLoggedIn">
+              <div class="menu-divider" />
+              <button
+                type="button"
+                class="settings-menu-row logout-row"
+                @click="handleLogout"
+              >
+                <div class="row-left">
+                  <LogoutOutlined class="row-icon" />
+                  <span>{{ t('layout.sidebar.logout') || '退出登录' }}</span>
+                </div>
+              </button>
+            </template>
+          </div>
+        </template>
+      </a-dropdown>
+    </footer>
+  </aside>
+</template>
+
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-// 本期去掉登录：团队工作跳转暂不使用 useRouter
-// import { useRoute, useRouter } from 'vue-router'
-import { useRoute } from 'vue-router'
-// 本期去掉登录：账号/登录入口隐藏，相关图标暂不使用
-// import { CloudOutlined, LogoutOutlined } from '@ant-design/icons-vue'
-// import { message } from 'ant-design-vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { message } from 'ant-design-vue'
+import {
+  EllipsisOutlined,
+  RightOutlined,
+  SearchOutlined,
+  CloseCircleFilled,
+  PlusOutlined,
+  FolderOutlined,
+  InboxOutlined,
+  UserOutlined,
+  SettingOutlined,
+  BulbOutlined,
+  GlobalOutlined,
+  LogoutOutlined,
+  CheckOutlined,
+  CompassOutlined,
+} from '@ant-design/icons-vue'
 import { useAppStore } from '@/stores/app'
-import type { MenuConfigItem } from '@/stores/app'
-// import { useAuthStore } from '@/stores/auth'
-import apiClient from '@/api/client'
+import { useAuthStore } from '@/stores/auth'
+import { useConversationStore, type TaskConversation } from '@/stores/conversation'
 import { useAppI18n } from '@/i18n'
+import { useOnboardingGuide } from '@/composables/useOnboardingGuide'
 import { useLocale } from '@/composables/useLocale'
-import sidebarLanguageDark from '@/assets/icons/sidebar-language-dark.svg'
-import sidebarLanguageLight from '@/assets/icons/sidebar-language-light.svg'
-// import sidebarLoginDarkCollapsed from '@/assets/icons/sidebar-login-dark-collapsed.svg'
-// import sidebarLoginDarkExpanded from '@/assets/icons/sidebar-login-dark-expanded.svg'
-// import sidebarLoginLightCollapsed from '@/assets/icons/sidebar-login-light-collapsed.svg'
-// import sidebarLoginLightExpanded from '@/assets/icons/sidebar-login-light-expanded.svg'
-import sidebarThemeDark from '@/assets/icons/sidebar-theme-dark.svg'
-import sidebarThemeLight from '@/assets/icons/sidebar-theme-light.svg'
-import sidebarToggleDark from '@/assets/icons/sidebar-toggle-dark.svg'
-import sidebarToggleLight from '@/assets/icons/sidebar-toggle-light.svg'
+import { useBrowserLogin } from '@/composables/useBrowserLogin'
+import { isMacDesktopRuntime, isWindowsDesktopRuntime } from '@/composables/useDesktop'
+import apiClient from '@/api/client'
 import logo from '@/assets/logo.svg'
 import logoDark from '@/assets/logo-dark.svg'
+import sidebarToggleDark from '@/assets/icons/sidebar-toggle-dark.svg'
+import sidebarToggleLight from '@/assets/icons/sidebar-toggle-light.svg'
 import SidebarMenuIcon from './SidebarMenuIcon.vue'
 
-type SidebarTheme = 'light' | 'dark'
+type ThemeMode = 'light' | 'dark' | 'auto'
 
-const sidebarCollapsedStorageKey = 'goteams.sidebar.collapsed'
-const sidebarThemeStorageKey = 'goteams.sidebar.theme'
-
-// 本期去掉登录：团队工作跳转暂不使用
-// const router = useRouter()
 const route = useRoute()
+const router = useRouter()
 const appStore = useAppStore()
+const authStore = useAuthStore()
+const conversationStore = useConversationStore()
 const { t } = useAppI18n()
-const { locale, currentOption, setLocale } = useLocale()
-// const authStore = useAuthStore()
+const { replay: replayOnboarding } = useOnboardingGuide()
+const { locale, setLocale } = useLocale()
+const {
+  pending: browserLoginPending,
+  errorMessage: browserLoginError,
+  startBrowserLogin,
+} = useBrowserLogin()
 
-function readSidebarCollapsed() {
-  try {
-    return window.localStorage.getItem(sidebarCollapsedStorageKey) === 'true'
-  } catch {
-    return false
-  }
-}
+const searchKeyword = ref('')
+const settingsMenuOpen = ref(false)
 
-function readSidebarTheme(): SidebarTheme {
+const sidebarCollapsed = computed(() => appStore.sidebarCollapsed)
+const isMacDesktop = isMacDesktopRuntime()
+const isWindowsDesktop = isWindowsDesktopRuntime()
+
+function readThemePreference(): ThemeMode {
   try {
-    return window.localStorage.getItem(sidebarThemeStorageKey) === 'dark' ? 'dark' : 'light'
+    const raw = localStorage.getItem('goteams.theme.mode')
+    if (raw === 'light' || raw === 'dark' || raw === 'auto') return raw
+    return 'light'
   } catch {
     return 'light'
   }
 }
 
-const sidebarCollapsed = ref(readSidebarCollapsed())
-const sidebarTheme = ref<SidebarTheme>(readSidebarTheme())
-// 本期去掉登录：退出登录入口隐藏，暂不使用
-// const logoutLoading = ref(false)
+const currentThemeConfig = ref<ThemeMode>(readThemePreference())
+const systemDark = ref(
+  typeof window !== 'undefined' ? window.matchMedia('(prefers-color-scheme: dark)').matches : false,
+)
 
-const toggleIcon = computed(() => (
-  sidebarTheme.value === 'dark' ? sidebarToggleDark : sidebarToggleLight
-))
-const themeIcon = computed(() => (
-  sidebarTheme.value === 'dark' ? sidebarThemeDark : sidebarThemeLight
-))
-const languageIcon = computed(() => (
-  sidebarTheme.value === 'dark' ? sidebarLanguageDark : sidebarLanguageLight
-))
-// 本期去掉登录：登录入口图标暂不使用
-// const loginIcon = computed(() => {
-//   if (sidebarTheme.value === 'dark') {
-//     return sidebarCollapsed.value ? sidebarLoginDarkCollapsed : sidebarLoginDarkExpanded
-//   }
-//
-//   return sidebarCollapsed.value ? sidebarLoginLightCollapsed : sidebarLoginLightExpanded
-// })
+let mediaQueryListener: ((e: MediaQueryListEvent) => void) | null = null
 
-const menuItems = [
-  { key: 'tasks', labelKey: 'layout.menu.tasks', path: '/tasks', icon: 'task' },
-  { key: 'workflows', labelKey: 'layout.menu.workflows', path: '/board', icon: 'dashboard' },
-  { key: 'agents', labelKey: 'layout.menu.agents', path: '/agents', icon: 'agent' },
-  { key: 'projects', labelKey: 'layout.menu.projects', path: '/projects', icon: 'project' },
-  { key: 'commands', labelKey: 'layout.menu.commands', path: '/commands', icon: 'command' },
-  { key: 'knowledge', labelKey: 'layout.menu.knowledge', path: '/knowledge', icon: 'book' },
-  { key: 'apis', labelKey: 'layout.menu.apis', path: '/apis', icon: 'api' },
-  { key: 'settings', labelKey: 'layout.menu.settings', path: '/settings', icon: 'settings' },
-] as const
-
-const visibleMenuItems = computed(() => {
-  const order = new Map(appStore.menuOrder.map((key, index) => [key, index]))
-  return [...menuItems]
-    .sort((a, b) => (order.get(a.key) ?? menuItems.length) - (order.get(b.key) ?? menuItems.length))
-    .filter((item) => appStore.isMenuVisible(item.key))
-    .map((item) => ({ ...item, label: t(item.labelKey) }))
+onMounted(() => {
+  if (typeof window !== 'undefined') {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    mediaQueryListener = (e) => {
+      systemDark.value = e.matches
+    }
+    mq.addEventListener('change', mediaQueryListener)
+  }
 })
+
+onUnmounted(() => {
+  if (mediaQueryListener && typeof window !== 'undefined') {
+    window.matchMedia('(prefers-color-scheme: dark)').removeEventListener('change', mediaQueryListener)
+  }
+})
+
+const isDark = computed(() => {
+  if (currentThemeConfig.value === 'dark') return true
+  if (currentThemeConfig.value === 'light') return false
+  return systemDark.value
+})
+
+const toggleIcon = computed(() => (isDark.value ? sidebarToggleDark : sidebarToggleLight))
+
+const currentThemeLabel = computed(() => {
+  if (currentThemeConfig.value === 'light') return t('layout.sidebar.themeLight') || '浅色'
+  if (currentThemeConfig.value === 'dark') return t('layout.sidebar.themeDark') || '深色'
+  return t('layout.sidebar.themeAuto') || '跟随系统'
+})
+
+const currentLocaleLabel = computed(() => (locale.value === 'zh-CN' ? '中文' : 'English'))
 
 const activeKey = computed(() => {
   const name = route.name as string | undefined
   if (!name) return ''
   if (name.startsWith('workflows') || name.startsWith('board')) return 'workflows'
   if (name.startsWith('apis')) return 'apis'
-  return menuItems.find((item) => item.key === name)?.key ?? ''
+  if (name === 'remote-channels') return 'remote-channels'
+  if (name === 'agents') return 'agents'
+  if (name === 'projects') return 'projects'
+  if (name === 'commands') return 'commands'
+  if (name === 'knowledge') return 'knowledge'
+  if (name === 'settings') return 'settings'
+  return name
 })
 
-const unreadTaskCount = computed(() => appStore.unreadTaskNotifications)
-const unreadTaskBadge = computed(() => {
-  const count = unreadTaskCount.value
-  if (count <= 0) return ''
-  return count > 99 ? '99+' : String(count)
+const isNewConversationActive = computed(() => {
+  return route.name === 'tasks-new' || (route.path === '/tasks' && !route.query.taskUuid)
 })
 
-// 本期去掉登录：账号卡片隐藏，相关文案暂不使用
-// const accountTitle = computed(() => (
-//   authStore.cloudUser?.displayName || authStore.cloudUser?.username || '已登录'
-// ))
-//
-// const accountSubtitle = computed(() => {
-//   const username = authStore.cloudUser?.username
-//   return username && username !== accountTitle.value ? username : '这里是账号'
-// })
+const isMoreMenuActive = computed(() => {
+  return ['projects', 'settings', 'commands', 'apis'].includes(activeKey.value)
+})
 
-function persist(key: string, value: string) {
+function isConversationActive(taskUuid: string): boolean {
+  return route.name === 'tasks' && route.query.taskUuid === taskUuid
+}
+
+function collapseSidebar() {
+  appStore.setSidebarCollapsed(true)
+}
+
+function chooseTheme(mode: ThemeMode) {
+  currentThemeConfig.value = mode
   try {
-    window.localStorage.setItem(key, value)
+    localStorage.setItem('goteams.theme.mode', mode)
+    localStorage.setItem('goteams.sidebar.theme', isDark.value ? 'dark' : 'light')
   } catch {
-    // 浏览器禁用本地存储时，本次页面内的侧边栏状态仍然可用。
+    // ignore
   }
 }
 
-function toggleSidebar() {
-  sidebarCollapsed.value = !sidebarCollapsed.value
-  persist(sidebarCollapsedStorageKey, String(sidebarCollapsed.value))
+function chooseLocale(targetLocale: 'zh-CN' | 'en-US') {
+  setLocale(targetLocale)
 }
 
-function toggleSidebarTheme() {
-  sidebarTheme.value = sidebarTheme.value === 'light' ? 'dark' : 'light'
-  persist(sidebarThemeStorageKey, sidebarTheme.value)
+function reviewOnboarding() {
+  replayOnboarding()
+  settingsMenuOpen.value = false
+  if (route.name !== 'tasks-new') {
+    void router.push({ name: 'tasks-new' })
+  }
 }
 
-function toggleLocale() {
-  setLocale(locale.value === 'zh-CN' ? 'en-US' : 'zh-CN')
+function handleUserClick() {
+  if (authStore.cloudLoggedIn) {
+    void router.push({ path: '/board', query: { tab: 'team' } })
+    return
+  }
+  if (browserLoginPending.value) return
+  message.info(t('teamwork.login.pending'))
+  void startBrowserLogin().then((ok) => {
+    if (!ok && browserLoginError.value) message.error(browserLoginError.value)
+  })
 }
 
-// 本期去掉登录：团队工作跳转入口隐藏，暂不使用
-// function goToTeamWorkspace() {
-//   void router.push({ path: '/board', query: { tab: 'team' } })
-// }
-//
-// async function handleLogout() {
-//   if (logoutLoading.value) return
-//   logoutLoading.value = true
-//   try {
-//     await apiClient.post('/auth/logout')
-//   } catch {
-//     // 请求失败时仍清理本地状态，避免失效账号继续留在侧边栏中。
-//   } finally {
-//     authStore.clearCloudAuth()
-//     authStore.setLocalSession(false)
-//     appStore.setCloudStatus('offline')
-//     logoutLoading.value = false
-//     message.success('已退出登录')
-//   }
-// }
-
-function loadMenuConfig() {
-  apiClient
-    .get<{ items: MenuConfigItem[] }>('/tools/menu')
-    .then((data) => {
-      appStore.setMenuConfig(data?.items ?? [])
-    })
-    .catch(() => {
-      // 加载失败时保留默认顺序和全部可见的菜单。
-    })
+async function handleLogout() {
+  try {
+    await apiClient.post('/auth/logout')
+  } catch {
+    // ignore
+  } finally {
+    authStore.clearCloudAuth()
+    authStore.setLocalSession(false)
+    appStore.setCloudStatus('offline')
+    settingsMenuOpen.value = false
+    message.success(t('layout.sidebar.logoutSuccess') || '已退出登录')
+  }
 }
 
-onMounted(loadMenuConfig)
+function onSearchInput() {
+  conversationStore.setSearchQuery(searchKeyword.value)
+}
+
+function clearSearch() {
+  searchKeyword.value = ''
+  conversationStore.setSearchQuery('')
+}
+
+function toggleGroup(key: string) {
+  conversationStore.toggleGroupCollapse(key)
+}
+
+function selectConversation(conv: TaskConversation) {
+  if (conv.unread) {
+    void conversationStore.setTaskRead(conv.task_uuid, true)
+  }
+  void router.push({ name: 'tasks', query: { taskUuid: conv.task_uuid } })
+}
+
+function goToNewConversationWithDir(dir: string) {
+  void router.push({ name: 'tasks-new', query: dir ? { workDir: dir } : undefined })
+}
+
+async function toggleReadState(conv: TaskConversation) {
+  try {
+    await conversationStore.setTaskRead(conv.task_uuid, conv.unread)
+    message.success(conv.unread ? (t('workflows.task.common.markRead') || '已标为已读') : (t('workflows.task.common.markUnread') || '已设为未读'))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : '操作失败')
+  }
+}
+
+async function toggleArchiveState(conv: TaskConversation) {
+  try {
+    await conversationStore.archiveTask(conv.task_uuid, !conv.is_archived)
+    message.success(conv.is_archived ? (t('layout.sidebar.unarchive') || '已取消归档') : (t('workflows.task.feedback.archived') || '已归档'))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : '操作失败')
+  }
+}
+
+onMounted(() => {
+  void conversationStore.loadConversations()
+})
 </script>
 
-<template>
-  <aside
-    class="sidebar"
-    :class="{
-      collapsed: sidebarCollapsed,
-      'theme-dark': sidebarTheme === 'dark',
-    }"
-  >
-    <header class="sidebar-header">
-      <div class="brand">
-        <img
-          class="brand-logo"
-          :src="sidebarTheme === 'dark' ? logoDark : logo"
-          alt=""
-        >
-        <span class="brand-name">TeamsBoard</span>
-      </div>
-
-      <button
-        type="button"
-        class="sidebar-toggle"
-        :aria-expanded="!sidebarCollapsed"
-        :aria-label="sidebarCollapsed ? t('layout.sidebar.expand') : t('layout.sidebar.collapse')"
-        :title="sidebarCollapsed ? t('layout.sidebar.expand') : t('layout.sidebar.collapse')"
-        @click="toggleSidebar"
-      >
-        <img
-          class="sidebar-toggle-icon"
-          :class="{ 'is-collapsed': sidebarCollapsed }"
-          :src="toggleIcon"
-          alt=""
-        >
-      </button>
-    </header>
-
-    <nav class="sidebar-nav" :aria-label="t('layout.sidebar.navigation')">
-      <a-tooltip
-        v-for="item in visibleMenuItems"
-        :key="item.key"
-        :title="sidebarCollapsed ? item.label : undefined"
-        placement="right"
-      >
-        <RouterLink
-          :to="item.path"
-          class="nav-item"
-          :class="{ active: activeKey === item.key }"
-          :aria-current="activeKey === item.key ? 'page' : undefined"
-        >
-          <SidebarMenuIcon class="nav-icon" :name="item.icon" :dark="sidebarTheme === 'dark'" />
-          <span class="nav-label">{{ item.label }}</span>
-          <span
-            v-if="item.key === 'tasks' && unreadTaskBadge"
-            class="nav-unread-badge"
-            :aria-label="t('workflows.task.common.unreadCount', { count: unreadTaskCount })"
-          >{{ unreadTaskBadge }}</span>
-        </RouterLink>
-      </a-tooltip>
-    </nav>
-
-    <!-- 本期去掉登录：原 footer 绑定 :class="{ 'has-guest-account': !authStore.cloudLoggedIn }" -->
-    <footer class="sidebar-footer">
-      <!-- 本期去掉登录：账号/登录入口整体隐藏，恢复登录时取消注释
-      <template v-if="authStore.cloudLoggedIn">
-        <button
-          type="button"
-          class="account-card"
-          :title="sidebarCollapsed ? `${accountTitle} · ${accountSubtitle}` : undefined"
-          @click="goToTeamWorkspace"
-        >
-          <span class="account-icon" aria-hidden="true"><CloudOutlined /></span>
-          <span class="account-copy">
-            <strong>{{ accountTitle }}</strong>
-            <small>{{ accountSubtitle }}</small>
-          </span>
-        </button>
-        <button
-          type="button"
-          class="logout-button"
-          :disabled="logoutLoading"
-          aria-label="退出登录"
-          title="退出登录"
-          @click="handleLogout"
-        >
-          <LogoutOutlined />
-        </button>
-      </template>
-
-      <button
-        v-else
-        type="button"
-        class="account-card account-card-guest"
-        :title="sidebarCollapsed ? '登录与团队一起协作' : undefined"
-        @click="goToTeamWorkspace"
-      >
-        <span class="account-icon" aria-hidden="true">
-          <img class="guest-account-icon" :src="loginIcon" alt="">
-        </span>
-        <span class="account-copy">
-          <strong>登录与团队一起协作</strong>
-          <small>本地模式 · 点击登录</small>
-        </span>
-      </button>
-      -->
-
-      <div class="sidebar-controls">
-        <button
-          type="button"
-          class="sidebar-control"
-          :aria-pressed="sidebarTheme === 'dark'"
-          :aria-label="sidebarTheme === 'dark' ? t('layout.sidebar.switchToLight') : t('layout.sidebar.switchToDark')"
-          :title="sidebarTheme === 'dark' ? t('layout.sidebar.switchToLight') : t('layout.sidebar.switchToDark')"
-          @click="toggleSidebarTheme"
-        >
-          <img class="sidebar-control-icon theme-control-icon" :src="themeIcon" alt="">
-          <span>{{ sidebarTheme === 'dark' ? t('layout.sidebar.dark') : t('layout.sidebar.light') }}</span>
-        </button>
-        <button
-          type="button"
-          class="sidebar-control language-control"
-          :aria-label="t('layout.sidebar.currentLanguage', { language: currentOption.autonym })"
-          :title="t('layout.sidebar.currentLanguage', { language: currentOption.autonym })"
-          @click="toggleLocale"
-        >
-          <img class="sidebar-control-icon" :src="languageIcon" alt="">
-          <span>{{ currentOption.shortLabel }}</span>
-        </button>
-      </div>
-    </footer>
-  </aside>
-</template>
-
 <style scoped>
-.sidebar {
+.app-sidebar {
   --sidebar-bg: #f9f9f9;
-  --sidebar-hover: #f0f1f3;
+  --sidebar-border: #f0f0f0;
+  --sidebar-text: #262626;
+  --sidebar-subtext: #8c8c8c;
+  --sidebar-hover: #f0f0f0;
   --sidebar-active: #e9e9eb;
-  --sidebar-text: #595959;
-  --sidebar-text-strong: #1d1d1f;
-  --sidebar-muted: #8c8c8c;
-  --sidebar-toggle-bg: transparent;
-  --sidebar-toggle-border: transparent;
-  --sidebar-account-bg: transparent;
-  position: relative;
-  display: flex;
-  width: 220px;
-  min-width: 220px;
+  --sidebar-item-radius: 8px;
+  width: 280px;
+  min-width: 280px;
   height: 100vh;
-  min-height: 0;
-  flex-direction: column;
-  overflow: visible;
   background: var(--sidebar-bg);
-  color: var(--sidebar-text);
-  transition: background-color 0.2s ease, color 0.2s ease;
+  border-right: 1px solid var(--sidebar-border);
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+  overflow: hidden;
+  transition: background-color 0.2s;
 }
 
-.sidebar.theme-dark {
+.app-sidebar.theme-dark {
   --sidebar-bg: #0f172a;
+  --sidebar-border: #1e293b;
+  --sidebar-text: #f1f5f9;
+  --sidebar-subtext: #94a3b8;
   --sidebar-hover: #1e293b;
-  --sidebar-active: #1e293b;
-  --sidebar-text: #94a3b8;
-  --sidebar-text-strong: #fff;
-  --sidebar-muted: #94a3b8;
-  --sidebar-toggle-bg: transparent;
-  --sidebar-toggle-border: transparent;
-  --sidebar-account-bg: transparent;
+  --sidebar-active: #334155;
 }
 
-.sidebar.collapsed {
-  width: 64px;
-  min-width: 64px;
-}
-
-.sidebar-header {
+.sidebar-top-bar {
   display: flex;
-  height: 60px;
-  min-height: 60px;
   align-items: center;
-  justify-content: space-between;
-  padding: 16px 12px;
+  justify-content: flex-end;
+  height: 38px;
+  flex-shrink: 0;
+  padding: 0 12px;
 }
 
-.brand {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
+.mac-desktop .sidebar-top-bar {
+  -webkit-app-region: drag;
+  justify-content: flex-start;
+  padding-left: 80px;
 }
 
-.brand-logo {
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
+.windows-desktop .sidebar-top-bar {
+  -webkit-app-region: drag;
 }
 
-.brand-name {
-  overflow: hidden;
-  color: var(--sidebar-text-strong);
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: -0.98px;
-  line-height: 22px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sidebar-toggle {
-  display: inline-flex;
-  width: 32px;
-  height: 32px;
-  align-items: center;
-  justify-content: center;
-  padding: 6px;
-  border: 1px solid var(--sidebar-toggle-border);
-  border-radius: 10px;
-  background: var(--sidebar-toggle-bg);
-  color: var(--sidebar-text);
-  cursor: pointer;
-  transition: background-color 180ms ease, border-color 180ms ease;
-}
-
-.sidebar-toggle:hover,
-.sidebar-toggle:focus-visible {
-  background: var(--sidebar-hover);
-  color: var(--sidebar-text-strong);
-}
-
-.sidebar-toggle-icon {
-  display: block;
-  width: 20px;
-  height: 20px;
-  transition: transform 180ms ease;
-}
-
-.sidebar-toggle-icon.is-collapsed {
-  transform: rotate(180deg);
-}
-
-.sidebar-toggle:focus-visible,
-.nav-item:focus-visible,
-.account-card:focus-visible,
-.logout-button:focus-visible,
-.sidebar-control:focus-visible {
-  outline: 2px solid #3157e2;
-  outline-offset: 2px;
-}
-
-.sidebar-nav {
-  display: flex;
-  min-height: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-  overflow-y: auto;
-  padding: 0 10px;
-}
-
-.nav-item {
-  position: relative;
-  display: flex;
-  min-height: 36px;
-  align-items: center;
-  gap: 12px;
-  padding: 7px 12px;
-  border-radius: 12px;
-  color: var(--sidebar-text);
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 22px;
-  text-decoration: none;
-}
-
-.nav-item:hover {
-  background: var(--sidebar-hover);
-  color: var(--sidebar-text-strong);
-}
-
-.nav-item.active {
-  background: var(--sidebar-active);
-  color: var(--sidebar-text-strong);
-}
-
-.nav-icon {
-  display: inline-flex;
-  width: 20px;
-  height: 20px;
-  min-width: 20px;
-  align-items: center;
-  justify-content: center;
-}
-
-.nav-label {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.nav-unread-badge {
-  display: inline-flex;
-  min-width: 18px;
-  height: 18px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  border-radius: 9px;
-  padding: 0 5px;
-  color: #fff;
-  background: #fb363f;
-  font-size: 11px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  line-height: 18px;
-}
-
-
-.sidebar-footer {
-  display: grid;
-  flex: 0 0 auto;
-  grid-template-columns: minmax(0, 1fr) 32px;
-  gap: 8px;
-  padding: 14px 10px 12px;
-}
-
-.account-card {
-  display: flex;
-  min-width: 0;
-  height: 48px;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 8px;
-  border: 0;
-  border-radius: 12px;
-  background: var(--sidebar-account-bg);
-  color: var(--sidebar-text-strong);
-  cursor: pointer;
-  text-align: left;
-}
-
-.account-card-guest {
-  grid-column: 1 / -1;
-}
-
-.account-card:hover {
-  background: var(--sidebar-hover);
-}
-
-.account-icon {
-  display: inline-flex;
-  width: 36px;
-  height: 36px;
-  min-width: 36px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 18px;
-  background: #f0f1f3;
-  color: #8c8c8c;
-  font-size: 20px;
-}
-
-.account-copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
-
-.account-copy strong,
-.account-copy small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.account-copy strong {
-  color: var(--sidebar-text-strong);
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 20px;
-}
-
-.account-copy small {
-  color: var(--sidebar-muted);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.logout-button {
-  display: inline-flex;
-  width: 32px;
-  height: 32px;
-  align-self: center;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 0;
-  border-radius: 10px;
+.sidebar-collapse-btn {
+  -webkit-app-region: no-drag;
+  width: 24px;
+  height: 24px;
+  border: none;
   background: transparent;
-  color: var(--sidebar-muted);
-  cursor: pointer;
-}
-
-.logout-button:hover:not(:disabled) {
-  background: var(--sidebar-hover);
-  color: var(--sidebar-text-strong);
-}
-
-.logout-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.sidebar-controls {
-  display: contents;
-}
-
-.sidebar-control {
-  display: inline-flex;
-  height: 34px;
-  min-width: 0;
+  border-radius: 6px;
+  display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 9px 8px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--sidebar-text);
   cursor: pointer;
-  font-size: 12px;
-  line-height: 16px;
+  transition: background 0.15s;
 }
 
-.sidebar-control:hover {
+.sidebar-collapse-btn:hover {
   background: var(--sidebar-hover);
-  color: var(--sidebar-text-strong);
 }
 
-.sidebar-control-icon {
-  display: block;
+.collapse-icon {
   width: 16px;
   height: 16px;
 }
 
-.theme-control-icon {
-  width: 14px;
-  height: 14px;
-}
-
-.language-control {
-  cursor: pointer;
-}
-
-.sidebar-footer > .sidebar-controls {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
-.sidebar-footer.has-guest-account {
+.sidebar-brand {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 0;
-  padding: 0;
-}
-
-.sidebar-footer.has-guest-account .account-card-guest {
-  box-sizing: border-box;
-  width: 200px;
-  height: 70px;
-  padding: 14px 8px 8px;
-}
-
-.sidebar-footer.has-guest-account > .sidebar-controls {
-  display: grid;
-  width: 100%;
-  height: 54px;
-  flex: 0 0 54px;
-  grid-template-columns: 1fr 1fr;
   gap: 8px;
-  padding: 8px 12px 12px;
+  height: 44px;
+  padding: 0 14px;
 }
 
-.guest-account-icon {
-  display: block;
+.brand-logo {
   width: 24px;
   height: 24px;
 }
 
-.theme-dark .account-card-guest .account-icon {
-  background: #1e293b;
+.brand-name {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--sidebar-text);
+  letter-spacing: -0.5px;
 }
 
-.sidebar.collapsed .sidebar-header {
-  justify-content: center;
-  padding: 0;
+.sidebar-primary-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 10px;
 }
 
-.sidebar.collapsed .brand-name,
-.sidebar.collapsed .nav-label,
-.sidebar.collapsed .account-copy,
-.sidebar.collapsed .sidebar-control > span {
-  display: none;
-}
-
-.sidebar.collapsed .sidebar-toggle {
-  position: absolute;
-  top: 14px;
-  right: -18px;
-  z-index: 1;
-  border-color: #f0f0f0;
-  border-radius: 32px;
-  background: var(--sidebar-bg);
-}
-
-.sidebar.collapsed .sidebar-nav {
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
   padding: 0 10px;
+  border-radius: var(--sidebar-item-radius);
+  color: var(--sidebar-text);
+  text-decoration: none;
+  font-size: 14px;
+  transition: background 0.15s, color 0.15s;
+  cursor: pointer;
 }
 
-.sidebar.collapsed .nav-item {
-  justify-content: center;
-  padding-right: 0;
-  padding-left: 0;
+.nav-item:hover {
+  background: var(--sidebar-hover);
 }
 
-.sidebar.collapsed .nav-unread-badge {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  min-width: 16px;
+.nav-item.active {
+  background: var(--sidebar-active);
+  font-weight: 500;
+}
+
+.nav-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.nav-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.more-item {
+  justify-content: space-between;
+}
+
+.more-item__left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ellipsis-icon {
+  font-size: 16px;
+}
+
+.more-chevron {
+  font-size: 11px;
+  color: var(--sidebar-subtext);
+}
+
+.more-menu-panel {
+  width: 160px;
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid #f0f0f0;
+}
+
+.more-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: #262626;
+  text-decoration: none;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+
+.more-menu-item:hover,
+.more-menu-item.active {
+  background: #f5f5f5;
+}
+
+.more-menu-item .item-icon {
+  width: 16px;
   height: 16px;
+}
+
+.sidebar-search {
+  padding: 8px 10px 4px;
+}
+
+.search-input-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  transition: border-color 0.2s;
+}
+
+.app-sidebar.theme-dark .search-input-box {
+  background: #1e293b;
+  border-color: #334155;
+}
+
+.search-input-box:focus-within {
+  border-color: #3157e2;
+}
+
+.search-icon {
+  color: #9ca3af;
+  font-size: 13px;
+}
+
+.search-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--sidebar-text);
+}
+
+.search-input::placeholder {
+  color: #9ca3af;
+}
+
+.search-clear-btn {
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-conversations-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.conversations-loading {
+  padding: 24px;
+  text-align: center;
+}
+
+.conversations-error {
+  padding: 16px;
+  font-size: 12px;
+  color: #ef4444;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.retry-btn {
+  border: none;
+  background: transparent;
+  color: #2563eb;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.directory-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 28px;
   padding: 0 4px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.group-header:hover {
+  background: var(--sidebar-hover);
+}
+
+.group-header__main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.group-chevron {
   font-size: 10px;
+  color: var(--sidebar-subtext);
+  transition: transform 0.2s;
+}
+
+.group-chevron.is-expanded {
+  transform: rotate(90deg);
+}
+
+.group-folder-icon {
+  font-size: 14px;
+  color: #595959;
+}
+
+.group-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--sidebar-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-add-btn {
+  opacity: 0;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--sidebar-text);
+  cursor: pointer;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.group-header:hover .group-add-btn {
+  opacity: 1;
+}
+
+.group-add-btn:hover {
+  background: var(--sidebar-active);
+}
+
+.group-conversations {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-left: 12px;
+}
+
+.conversation-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+  color: var(--sidebar-text);
+}
+
+.conversation-entry:hover {
+  background: var(--sidebar-hover);
+}
+
+.conversation-entry.active {
+  background: var(--sidebar-active);
+  font-weight: 500;
+}
+
+.conv-title {
+  flex: 1;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.unread-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #fb363f;
+}
+
+.conv-more-btn {
+  opacity: 0;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--sidebar-subtext);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.conversation-entry:hover .conv-more-btn {
+  opacity: 1;
+}
+
+.conv-more-btn:hover {
+  color: var(--sidebar-text);
+}
+
+.archived-section {
+  margin-top: 6px;
+  border-top: 1px solid var(--sidebar-border);
+  padding-top: 6px;
+}
+
+.archived-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 28px;
+  padding: 0 6px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.archived-header:hover {
+  background: var(--sidebar-hover);
+}
+
+.archived-header__left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.archived-icon {
+  font-size: 13px;
+  color: var(--sidebar-subtext);
+}
+
+.archived-label {
+  font-size: 12px;
+  color: var(--sidebar-subtext);
+}
+
+.archived-count {
+  font-size: 11px;
+  color: var(--sidebar-subtext);
+}
+
+.archived-content {
+  padding-top: 4px;
+}
+
+.sidebar-footer {
+  height: 52px;
+  border-top: 1px solid var(--sidebar-border);
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.user-info-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.user-info-card:hover {
+  background: var(--sidebar-hover);
+}
+
+.user-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #e5e7eb;
+  color: #4b5563;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.user-avatar.small {
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+}
+
+.user-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.user-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--sidebar-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   line-height: 16px;
 }
 
-.sidebar.collapsed .sidebar-footer {
+.user-sub {
+  font-size: 11px;
+  color: var(--sidebar-subtext);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 14px;
+}
+
+.settings-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #595959;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.settings-btn:hover,
+.settings-btn.is-open {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-text);
+}
+
+.settings-up-menu {
+  width: 220px;
+  background: #ffffff;
+  border-radius: 10px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  padding: 8px;
+  border: 1px solid #f0f0f0;
   display: flex;
   flex-direction: column;
+  gap: 2px;
+}
+
+.menu-user-row {
+  display: flex;
   align-items: center;
   gap: 8px;
-  padding: 14px 10px 12px;
+  padding: 4px 6px 8px;
 }
 
-.sidebar.collapsed .account-card,
-.sidebar.collapsed .logout-button,
-.sidebar.collapsed .sidebar-control {
-  width: 44px;
+.menu-divider {
+  height: 1px;
+  background: #f0f0f0;
+  margin: 4px 0;
 }
 
-.sidebar.collapsed .account-card {
-  justify-content: center;
+.settings-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: #262626;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+  border: none;
+  background: transparent;
+  width: 100%;
+}
+
+.settings-menu-row:hover {
+  background: #f5f5f5;
+}
+
+.row-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.row-icon {
+  font-size: 14px;
+}
+
+.row-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.current-val {
+  font-size: 12px;
+  color: #8c8c8c;
+}
+
+.chevron-right {
+  font-size: 10px;
+  color: #8c8c8c;
+}
+
+.logout-row {
+  color: #ef4444;
+}
+
+.sub-options-panel {
+  width: 140px;
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
   padding: 4px;
-}
-
-.sidebar.collapsed .sidebar-controls,
-.sidebar.collapsed .sidebar-footer > .sidebar-controls {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
+  border: 1px solid #f0f0f0;
 }
 
-.sidebar.collapsed .sidebar-control {
-  min-height: 32px;
-  padding: 8px;
-}
-
-.sidebar.collapsed .logout-button {
-  order: 1;
-}
-
-.sidebar.collapsed .sidebar-footer.has-guest-account {
-  height: 128px;
-  padding: 0 10px 8px;
-  gap: 8px;
-}
-
-.sidebar.collapsed .sidebar-footer.has-guest-account .account-card-guest {
-  width: 44px;
-  height: 40px;
-  padding: 4px 6px;
-}
-
-.sidebar.collapsed .account-card-guest .account-icon {
-  width: 32px;
-  height: 32px;
-  min-width: 32px;
-  border-radius: 16px;
-}
-
-.sidebar.collapsed .guest-account-icon {
-  width: 21.3333px;
-  height: 21.3333px;
-}
-
-.sidebar.collapsed .sidebar-footer.has-guest-account > .sidebar-controls {
+.sub-option {
   display: flex;
-  width: 44px;
-  height: 72px;
-  flex: 0 0 72px;
-  flex-direction: column;
-  gap: 8px;
-  padding: 0;
+  align-items: center;
+  justify-content: space-between;
+  height: 30px;
+  padding: 0 8px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  color: #262626;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
 }
 
-.sidebar.collapsed .sidebar-footer.has-guest-account .sidebar-control {
-  width: 44px;
-  height: 32px;
-  min-height: 32px;
-  padding: 8px;
+.sub-option:hover {
+  background: #f5f5f5;
+}
+
+.sub-option.is-selected {
+  background: #f0f7ff;
+  color: #2563eb;
+}
+
+.check-icon {
+  color: #2563eb;
+  font-size: 12px;
 }
 </style>

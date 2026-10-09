@@ -1,12 +1,13 @@
 <template>
   <a-modal
     :open="open"
-    width="448px"
-    :title="t(replaceExisting ? 'workflows.task.assign.switchTitle' : 'workflows.task.assign.executionTitle')"
+    :width="730"
+    :title="modalTitle"
     :confirm-loading="saving"
     :ok-button-props="{ disabled: !canConfirm }"
     :cancel-button-props="{ disabled: saving }"
-    :ok-text="t(replaceExisting ? 'workflows.task.assign.confirmSwitch' : 'workflows.task.assign.confirmAssign')"
+    :z-index="modalZIndex"
+    :ok-text="confirmLabel"
     :cancel-text="t('workflows.task.assign.cancel')"
     :keyboard="!saving"
     :mask-closable="false"
@@ -14,22 +15,27 @@
     @ok="confirm"
     @cancel="close"
   >
-    <!-- 需求设计图为纯文本说明，不使用提示条容器 -->
-    <I18nT
-      tag="p"
-      class="assign-description"
-      :keypath="
-        replaceExisting
-          ? 'workflows.task.assign.executionDescriptionSwitch'
-          : mode === 'board'
-          ? 'workflows.task.assign.executionDescriptionBoard'
-          : 'workflows.task.assign.executionDescriptionDetail'
-      "
-    >
-      <template #title>
-        <strong>{{ taskTitle }}</strong>
-      </template>
-    </I18nT>
+    <div class="assign-banner">
+      <InfoCircleFilled aria-hidden="true" />
+      <I18nT
+        v-if="intent === 'assign' || selectOnly"
+        tag="p"
+        :keypath="
+          selectOnly && !taskTitle.trim()
+            ? 'workflows.task.assign.executionDescriptionSelect'
+            : replaceExisting
+              ? 'workflows.task.assign.executionDescriptionSwitch'
+              : mode === 'board'
+                ? 'workflows.task.assign.executionDescriptionBoard'
+                : 'workflows.task.assign.executionDescriptionDetail'
+        "
+      >
+        <template #title>
+          <strong>{{ taskTitle }}</strong>
+        </template>
+      </I18nT>
+      <p v-else>{{ t('workflows.task.assign.createConversationHint') }}</p>
+    </div>
     <p v-if="replaceExisting" class="assign-switch-warning">
       <ExclamationCircleFilled aria-hidden="true" />
       <span>{{ t('workflows.task.assign.switchWarning') }}</span>
@@ -37,289 +43,241 @@
 
     <fieldset class="assign-mode-fieldset">
       <legend class="visually-hidden">{{ t('workflows.task.assign.executionMode') }}</legend>
+
       <section class="assign-section">
-        <p class="assign-section__label">
-          <DeploymentUnitOutlined
-            class="assign-section__icon"
-            aria-hidden="true"
-          />
-          {{ t('workflows.task.assign.pipelineField') }}
-        </p>
-        <a-spin
-          class="pipeline-spin"
-          :spinning="pipelinesLoading"
-        >
-        <div
-          class="assign-list pipeline-list"
-        >
-          <div
-            v-for="pipeline in pipelines"
-            :key="pipeline.uuid"
-            class="assign-card"
-            :class="{
-              'assign-card--selected': selectedPipelineUuid === pipeline.uuid,
-              'assign-card--disabled': !isPipelineAvailable(pipeline),
-            }"
+        <div class="assign-section__head">
+          <div>
+            <p class="assign-section__title">
+              <img class="assign-section__logo" :src="vibeCodingLogo" alt="" />
+              {{ t('workflows.task.assign.vibeCodingMode') }}
+            </p>
+            <p class="assign-section__hint">{{ t('workflows.task.assign.vibeCodingCardHint') }}</p>
+          </div>
+          <button
+            v-if="vibeTools.length > previewCount"
+            type="button"
+            class="assign-section__toggle"
+            @click="vibeExpanded = !vibeExpanded"
           >
-            <label class="assign-card__choice">
+            {{ t(vibeExpanded ? 'workflows.task.assign.collapseAll' : 'workflows.task.assign.viewAll', { count: vibeTools.length }) }}
+          </button>
+        </div>
+        <div class="assign-grid">
+          <div v-for="tool in visibleVibeTools" :key="tool.id" class="assign-grid__cell">
+          <a-tooltip
+            :title="vibeToolDisabledReason(tool.id)"
+          >
+            <label
+              class="assign-choice"
+              :class="{
+                'is-selected': selectedMode === 'vibe_coding' && selectedTarget === tool.id,
+                'is-disabled': vibeToolDisabled(tool.id),
+              }"
+            >
               <input
-                class="assign-card__radio"
+                class="assign-choice__input"
                 type="radio"
                 :name="executionModeRadioName"
-                :value="`pipeline:${pipeline.uuid}`"
-                :checked="selectedPipelineUuid === pipeline.uuid"
-                :disabled="!isPipelineAvailable(pipeline)"
-                @change="choosePipeline(pipeline.uuid)"
+                :value="tool.id"
+                :checked="selectedMode === 'vibe_coding' && selectedTarget === tool.id"
+                :disabled="vibeToolDisabled(tool.id)"
+                @change="chooseVibeTool(tool.id)"
               />
-              <span class="assign-card__avatar">
-                <img
-                  v-if="pipeline.avatar"
-                  :src="pipeline.avatar"
-                  alt=""
-                />
-                <span v-else>{{ pipeline.name.slice(0, 1) }}</span>
-              </span>
-              <span
-                class="assign-card__name"
-                :title="pipeline.name"
-              >{{ pipeline.name }}</span>
+              <img class="assign-choice__logo" :src="vibeToolLogo(tool.id)" alt="" />
+              <span class="assign-choice__name">{{ t(`workflows.task.assign.vibeTools.${tool.id}`) }}</span>
+              <span v-if="tool.id === recentVibeTool" class="assign-choice__recent">{{ t('workflows.task.assign.recent') }}</span>
               <CheckCircleFilled
-                v-if="selectedPipelineUuid === pipeline.uuid"
-                class="assign-card__check"
+                v-if="selectedMode === 'vibe_coding' && selectedTarget === tool.id"
+                class="assign-choice__check"
                 aria-hidden="true"
               />
+              <span v-else class="assign-choice__radio" aria-hidden="true" />
             </label>
-            <button
-              v-if="!isPipelineConfigured(pipeline)"
-              type="button"
-              class="assign-card__config assign-card__config--warning"
-              @click="goToPipelineConfig"
+          </a-tooltip>
+          </div>
+        </div>
+      </section>
+
+      <section class="assign-section">
+        <p class="assign-section__title">
+          <img class="assign-section__logo" :src="cliExecutionLogo" alt="" />
+          {{ t('workflows.task.common.directExecution') }}
+        </p>
+        <p class="assign-section__hint">{{ t('workflows.task.assign.directExecutionHint') }}</p>
+        <div class="assign-runtime" :class="{ 'is-disabled': cliModeLocked }">
+          <a-select
+            class="assign-runtime__select"
+            :value="selectedMode === 'cli' ? selectedTarget : undefined"
+            :placeholder="t('workflows.task.assign.chooseCli')"
+            :options="cliSelectOptions"
+            :loading="cliLoading"
+            :disabled="saving || cliModeLocked"
+            :dropdown-style="selectDropdownStyle"
+            @change="chooseCLIType"
+          />
+          <a-select
+            class="assign-runtime__select"
+            :value="selectedMode === 'cli' ? selectedModelName || undefined : undefined"
+            :placeholder="selectedMode === 'cli' && selectedTarget ? t('workflows.task.assign.chooseModel') : t('workflows.task.assign.chooseCliFirst')"
+            :options="modelSelectOptions"
+            :loading="modelLoading"
+            :disabled="saving || cliModeLocked || selectedMode !== 'cli' || !selectedTarget"
+            :dropdown-style="selectDropdownStyle"
+            @change="chooseCLIModel"
+          >
+            <template #option="{ label, value }">
+              <a-tooltip
+                :title="String(label ?? value ?? '')"
+                placement="right"
+                :mouse-enter-delay="0"
+                :overlay-style="modelNameTooltipStyle"
+              >
+                <span class="assign-model-option">{{ label ?? value }}</span>
+              </a-tooltip>
+            </template>
+          </a-select>
+        </div>
+        <p v-if="!cliLoading && !availableCliOptions.length" class="field-help">
+          {{ t('workflows.task.assign.noCli') }}
+        </p>
+      </section>
+
+      <section class="assign-section">
+        <div class="assign-section__head">
+          <div>
+            <p class="assign-section__title">
+              <DeploymentUnitOutlined class="assign-section__icon" aria-hidden="true" />
+              {{ t('workflows.task.assign.pipelineField') }}
+            </p>
+            <p class="assign-section__hint">{{ t('workflows.task.assign.pipelineHint') }}</p>
+          </div>
+          <button
+            v-if="pipelines.length > previewCount"
+            type="button"
+            class="assign-section__toggle"
+            @click="pipelineExpanded = !pipelineExpanded"
+          >
+            {{ t(pipelineExpanded ? 'workflows.task.assign.collapseAll' : 'workflows.task.assign.viewAll', { count: pipelines.length }) }}
+          </button>
+        </div>
+        <a-spin :spinning="pipelinesLoading">
+          <div class="assign-grid">
+            <div
+              v-for="pipeline in visiblePipelines"
+              :key="pipeline.uuid"
+              class="assign-choice"
+              :class="{
+                'is-selected': selectedPipelineUuid === pipeline.uuid,
+                'is-disabled': !isPipelineAvailable(pipeline),
+              }"
             >
-              <ExclamationCircleFilled
-                class="assign-card__warning"
-                aria-hidden="true"
-              />
+              <label class="assign-choice__body">
+                <input
+                  class="assign-choice__input"
+                  type="radio"
+                  :name="executionModeRadioName"
+                  :checked="selectedPipelineUuid === pipeline.uuid"
+                  :disabled="!isPipelineAvailable(pipeline)"
+                  @change="choosePipeline(pipeline.uuid)"
+                />
+                <span class="assign-choice__avatar">
+                  <img v-if="pipeline.avatar" :src="pipeline.avatar" alt="" />
+                  <span v-else>{{ pipeline.name.slice(0, 1) }}</span>
+                </span>
+                <span class="assign-choice__name" :title="pipeline.name">{{ pipeline.name }}</span>
+                <CheckCircleFilled
+                  v-if="selectedPipelineUuid === pipeline.uuid"
+                  class="assign-choice__check"
+                  aria-hidden="true"
+                />
+                <span v-else class="assign-choice__radio" aria-hidden="true" />
+              </label>
+              <button
+                v-if="!isPipelineConfigured(pipeline)"
+                type="button"
+                class="assign-choice__config"
+                @click="goToPipelineConfig"
+              >
+                {{ t('workflows.task.assign.configure') }}
+              </button>
+            </div>
+          </div>
+          <div v-if="!pipelinesLoading && !configuredPipelines.length" class="field-help">
+            <span>{{ t('workflows.task.assign.noConfiguredPipeline') }}</span>
+            <button type="button" class="assign-section__toggle" @click="goToPipelineConfig">
               {{ t('workflows.task.assign.configure') }}
             </button>
           </div>
-        </div>
-        <div
-          v-if="!pipelinesLoading && !configuredPipelines.length"
-          class="field-help"
-        >
-          <span>{{ t('workflows.task.assign.noConfiguredPipeline') }}</span>
-          <button
-            type="button"
-            class="assign-card__config"
-            @click="goToPipelineConfig"
-          >
-            {{ t('workflows.task.assign.configure') }}
-          </button>
-        </div>
         </a-spin>
       </section>
 
       <section class="assign-section">
-        <p class="assign-section__label">
-          <TeamOutlined
-            class="assign-section__icon"
-            aria-hidden="true"
-          />
-          {{ t('agents.expertTeam') }}
-        </p>
+        <div class="assign-section__head">
+          <div>
+            <p class="assign-section__title">
+              <TeamOutlined class="assign-section__icon" aria-hidden="true" />
+              {{ t('agents.expertTeam') }}
+            </p>
+            <p class="assign-section__hint">{{ t('workflows.task.assign.expertHint') }}</p>
+          </div>
+          <button
+            v-if="expertGroups.length > previewCount"
+            type="button"
+            class="assign-section__toggle"
+            @click="expertExpanded = !expertExpanded"
+          >
+            {{ t(expertExpanded ? 'workflows.task.assign.collapseAll' : 'workflows.task.assign.viewAll', { count: expertGroups.length }) }}
+          </button>
+        </div>
         <a-spin :spinning="expertGroupsLoading">
-          <div class="assign-list">
-            <label
-              v-for="group in expertGroups"
+          <div class="assign-grid">
+            <div
+              v-for="group in visibleExpertGroups"
               :key="group.uuid"
-              class="assign-card"
+              class="assign-choice"
               :class="{
-                'assign-card--selected': selectedMode === 'expert_group' && selectedTarget === group.uuid,
-                'assign-card--disabled': expertModeLocked || !group.ready,
+                'is-selected': selectedMode === 'expert_group' && selectedTarget === group.uuid,
+                'is-disabled': expertModeLocked || !group.ready,
               }"
             >
-              <input
-                class="assign-card__radio"
-                type="radio"
-                :name="executionModeRadioName"
-                :checked="selectedMode === 'expert_group' && selectedTarget === group.uuid"
-                :disabled="expertModeLocked || !group.ready"
-                @change="chooseExpertGroup(group.uuid)"
-              />
-              <span class="assign-card__avatar">
-                <img
-                  v-if="group.avatar"
-                  :src="group.avatar"
-                  alt=""
+              <label class="assign-choice__body">
+                <input
+                  class="assign-choice__input"
+                  type="radio"
+                  :name="executionModeRadioName"
+                  :checked="selectedMode === 'expert_group' && selectedTarget === group.uuid"
+                  :disabled="expertModeLocked || !group.ready"
+                  @change="chooseExpertGroup(group.uuid)"
                 />
-                <span v-else>{{ group.name.slice(0, 1) }}</span>
-              </span>
-              <span class="assign-card__name">{{ group.name }}</span>
-              <span
+                <span class="assign-choice__avatar">
+                  <img v-if="group.avatar" :src="group.avatar" alt="" />
+                  <span v-else>{{ group.name.slice(0, 1) }}</span>
+                </span>
+                <span class="assign-choice__name" :title="group.name">{{ group.name }}</span>
+                <CheckCircleFilled
+                  v-if="selectedMode === 'expert_group' && selectedTarget === group.uuid"
+                  class="assign-choice__check"
+                  aria-hidden="true"
+                />
+                <span v-else class="assign-choice__radio" aria-hidden="true" />
+              </label>
+              <button
                 v-if="!group.ready"
-                class="assign-card__subtitle"
-              >{{ t('expertGroups.notReady') }}</span>
-              <CheckCircleFilled
-                v-if="selectedMode === 'expert_group' && selectedTarget === group.uuid"
-                class="assign-card__check"
-                aria-hidden="true"
-              />
-            </label>
+                type="button"
+                class="assign-choice__config"
+                @click="goToExpertGroupConfig"
+              >
+                {{ t('workflows.task.assign.configure') }}
+              </button>
+            </div>
           </div>
-          <div
-            v-if="!expertGroupsLoading && !expertGroups.some((group) => group.ready)"
-            class="field-help"
-          >
+          <div v-if="!expertGroupsLoading && !expertGroups.some((group) => group.ready)" class="field-help">
             <span>{{ t('expertGroups.notReady') }}</span>
-            <button
-              type="button"
-              class="assign-card__config"
-              @click="goToExpertGroupConfig"
-            >
+            <button type="button" class="assign-section__toggle" @click="goToExpertGroupConfig">
               {{ t('expertGroups.listTitle') }}
             </button>
           </div>
         </a-spin>
-      </section>
-
-      <section class="assign-section">
-        <p class="assign-section__label">
-          <img
-            class="assign-section__icon assign-section__icon--logo"
-            :src="cliExecutionLogo"
-            alt=""
-          />
-          {{ t('workflows.task.common.directExecution') }}
-        </p>
-        <div class="assign-list">
-          <!-- CLI 调用：选中后 CLI 与模型下拉内嵌在卡片内，与需求设计图一致 -->
-          <div
-            class="assign-card assign-card--stacked"
-            :class="{
-              'assign-card--selected': selectedMode === 'cli',
-              'assign-card--disabled': cliModeLocked,
-            }"
-          >
-            <label class="assign-card__choice">
-              <input
-                class="assign-card__radio"
-                type="radio"
-                :name="executionModeRadioName"
-                value="cli"
-                :checked="selectedMode === 'cli'"
-                :disabled="cliModeLocked"
-                @change="chooseCLI"
-              />
-              <span class="assign-card__avatar assign-card__avatar--soft">
-                <img
-                  class="assign-card__logo assign-card__logo--cli"
-                  :src="cliExecutionLogo"
-                  alt=""
-                />
-              </span>
-              <span class="assign-card__name">{{ t('workflows.task.assign.cliMode') }}</span>
-              <CheckCircleFilled
-                v-if="selectedMode === 'cli'"
-                class="assign-card__check"
-                aria-hidden="true"
-              />
-            </label>
-            <div
-              v-if="selectedMode === 'cli'"
-              class="assign-runtime"
-              @click.stop
-            >
-              <a-select
-                class="assign-runtime__select"
-                :value="selectedTarget || undefined"
-                :placeholder="t('workflows.task.assign.chooseCli')"
-                :options="cliSelectOptions"
-                :loading="cliLoading"
-                :disabled="saving"
-                @change="chooseCLIType"
-              />
-              <a-select
-                class="assign-runtime__select"
-                :value="selectedModelName || undefined"
-                :placeholder="
-                  selectedTarget
-                    ? t('workflows.task.assign.chooseModel')
-                    : t('workflows.task.assign.chooseCliFirst')
-                "
-                :options="modelSelectOptions"
-                :loading="modelLoading"
-                :disabled="saving || !selectedTarget"
-                @change="chooseCLIModel"
-              />
-            </div>
-          </div>
-
-          <!-- Vibe Coding：外部编码工具选择内嵌在卡片内，与需求设计图一致 -->
-          <div
-            class="assign-card assign-card--stacked"
-            :class="{
-              'assign-card--selected': selectedMode === 'vibe_coding',
-              'assign-card--disabled': directModeLocked,
-            }"
-          >
-            <label class="assign-card__choice">
-              <input
-                class="assign-card__radio"
-                type="radio"
-                :name="executionModeRadioName"
-                value="vibe_coding"
-                :checked="selectedMode === 'vibe_coding'"
-                :disabled="directModeLocked"
-                @change="chooseVibeCoding"
-              />
-              <span class="assign-card__avatar assign-card__avatar--soft">
-                <img
-                  class="assign-card__logo assign-card__logo--vibe"
-                  :src="vibeCodingLogo"
-                  alt=""
-                />
-              </span>
-              <span class="assign-card__name">{{ t('workflows.task.assign.vibeCodingMode') }}</span>
-              <span class="assign-card__subtitle assign-card__subtitle--end">
-                {{ t('workflows.task.assign.vibeCodingCardHint') }}
-              </span>
-              <CheckCircleFilled
-                v-if="selectedMode === 'vibe_coding'"
-                class="assign-card__check"
-                aria-hidden="true"
-              />
-            </label>
-            <a-tooltip
-              :title="
-                codexCapability.available
-                  ? ''
-                  : codexCapability.message || t('workflows.task.codex.capabilityUnavailable')
-              "
-            >
-              <button
-                type="button"
-                class="assign-tool"
-                :class="{ 'assign-tool--selected': isCodexSelected }"
-                :disabled="codexLocked"
-                :aria-pressed="isCodexSelected"
-                @click.stop="chooseCodex"
-              >
-                <img
-                  class="assign-tool__logo"
-                  :src="codexLogo"
-                  alt=""
-                />
-                <span>{{ t('workflows.task.assign.codex') }}</span>
-              </button>
-            </a-tooltip>
-          </div>
-        </div>
-        <p
-          v-if="selectedMode === 'cli' && !cliLoading && !availableCliOptions.length"
-          class="field-help"
-        >
-          <span>{{ t('workflows.task.assign.noCli') }}</span>
-        </p>
       </section>
     </fieldset>
   </a-modal>
@@ -333,19 +291,27 @@ import {
   CheckCircleFilled,
   DeploymentUnitOutlined,
   ExclamationCircleFilled,
+  InfoCircleFilled,
   TeamOutlined,
 } from '@ant-design/icons-vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import apiClient from '@/api/client'
 import cliExecutionLogo from '@/assets/icons/task-composer-cli.svg'
-import codexLogo from '@/assets/icons/codex-logo.svg'
 import vibeCodingLogo from '@/assets/icons/vibe-coding-logo.svg'
 import {
   loadCodexCapability,
-  openTaskInCodex,
+  openTaskVibeTool,
   type CodexCapability,
 } from '@/composables/useTaskCodex'
+import {
+  VIBE_CODING_TOOLS,
+  vibeToolLogo,
+  isVibeCodingTool,
+  readRecentVibeTool,
+  writeRecentVibeTool,
+  type VibeCodingToolId,
+} from '@/composables/useVibeCoding'
 import { useCliModelOptions } from '@/composables/useCliModelOptions'
 import { useCliKickoffNavigation } from '@/composables/useCliKickoff'
 import { useAppI18n } from '@/i18n'
@@ -353,10 +319,18 @@ import { usePipelineStore } from '@/stores/pipeline'
 import { useExpertGroupStore } from '@/stores/expert-group'
 import type { ExpertGroup, Pipeline, TaskExecutionMode } from '@/types/pipeline'
 
+export interface ExecutionModeSelection {
+  mode: 'pipeline' | 'expert_group' | 'vibe_coding' | 'cli'
+  tool: string
+  pipelineUuid: string
+  expertGroupUuid: string
+  modelName: string
+}
+
 const props = withDefaults(
   defineProps<{
     open: boolean
-    taskUuid: string
+    taskUuid?: string
     taskTitle?: string
     mode?: 'detail' | 'board'
     initialMode?: Extract<TaskExecutionMode, 'pipeline' | 'expert_group' | 'vibe_coding' | 'cli'> | ''
@@ -364,9 +338,14 @@ const props = withDefaults(
     preferredExpertGroupUuid?: string
     initialCliType?: string
     initialModelName?: string
+    initialVibeTool?: string
     replaceExisting?: boolean
+    intent?: 'assign' | 'create'
+    /** 只回传选择，不调用指派接口。新建任务和配置团队需求用这个入口。 */
+    selectOnly?: boolean
   }>(),
   {
+    taskUuid: '',
     taskTitle: '',
     mode: 'detail',
     initialMode: '',
@@ -374,16 +353,26 @@ const props = withDefaults(
     preferredExpertGroupUuid: '',
     initialCliType: '',
     initialModelName: '',
+    initialVibeTool: '',
     replaceExisting: false,
+    intent: 'assign',
+    selectOnly: false,
   },
 )
 
 const emit = defineEmits<{
   'update:open': [value: boolean]
   assigned: []
+  create: [value: ExecutionModeSelection]
+  selected: [value: ExecutionModeSelection]
 }>()
 
 const { t } = useAppI18n()
+// 新建任务弹窗是 1000。本弹窗要盖住它。antd 下拉层默认 1050，
+// 不抬高的话 CLI / 模型菜单落在弹窗后面，选项点不到。
+const modalZIndex = 1100
+const selectDropdownStyle = { zIndex: modalZIndex + 100 }
+const modelNameTooltipStyle = { zIndex: selectDropdownStyle.zIndex + 100 }
 const { openCliConversation } = useCliKickoffNavigation()
 const router = useRouter()
 const pipelineStore = usePipelineStore()
@@ -391,7 +380,13 @@ const { pipelines, loading: pipelinesLoading } = storeToRefs(pipelineStore)
 const expertGroupStore = useExpertGroupStore()
 const { items: expertGroups, loading: expertGroupsLoading } = storeToRefs(expertGroupStore)
 const saving = ref(false)
+const previewCount = 2
+const vibeExpanded = ref(false)
+const pipelineExpanded = ref(false)
+const expertExpanded = ref(false)
+const recentVibeTool = ref('')
 const codexCapability = ref<CodexCapability>({ available: false })
+const vibeTools = VIBE_CODING_TOOLS
 const radioGroupId = useId()
 const executionModeRadioName = `assign-execution-mode-${radioGroupId}`
 const selectedMode = ref<Extract<TaskExecutionMode, 'pipeline' | 'expert_group' | 'vibe_coding' | 'cli'> | undefined>()
@@ -429,33 +424,53 @@ const cliSelectOptions = computed(() => {
   return items
 })
 const modelSelectOptions = computed(() =>
-  modelOptions.value.map((model) => ({ value: model, label: model })),
+  modelOptions.value.map((model) => ({ value: model, label: model, title: '' })),
 )
 
 const configuredPipelines = computed(() => pipelines.value.filter(isPipelineConfigured))
 const selectedPipelineUuid = computed(() =>
   selectedMode.value === 'pipeline' ? selectedTarget.value || '' : '',
 )
-const isCodexSelected = computed(
-  () => selectedMode.value === 'vibe_coding' && selectedTarget.value === 'codex',
+const visibleVibeTools = computed(() =>
+  vibeExpanded.value ? vibeTools : vibeTools.slice(0, previewCount),
+)
+const visiblePipelines = computed(() =>
+  pipelineExpanded.value ? pipelines.value : pipelines.value.slice(0, previewCount),
+)
+const visibleExpertGroups = computed(() =>
+  expertExpanded.value ? expertGroups.value : expertGroups.value.slice(0, previewCount),
+)
+const modalTitle = computed(() =>
+  t(
+    props.selectOnly
+      ? 'workflows.task.assign.executionTitle'
+      : props.intent === 'create'
+        ? 'workflows.task.assign.createConversationTitle'
+        : props.replaceExisting
+          ? 'workflows.task.assign.switchTitle'
+          : 'workflows.task.assign.executionTitle',
+  ),
+)
+const confirmLabel = computed(() =>
+  t(
+    props.selectOnly
+      ? 'workflows.task.assign.confirm'
+      : props.intent === 'create'
+        ? 'workflows.task.assign.createConversationAction'
+        : props.replaceExisting
+          ? 'workflows.task.assign.confirmSwitch'
+          : 'workflows.task.assign.confirmAssign',
+  ),
 )
 // 看板仍会用本组件补全已预选但尚未冻结的流水线；该入口不是执行方式切换，
 // 只能继续配置当前方式。详情页显式切换时 replaceExisting=true，才解锁其他方式。
-const pipelineLocked = computed(
-  () => !props.replaceExisting && Boolean(props.initialMode) && props.initialMode !== 'pipeline',
+const modeLocked = computed(
+  () => props.intent === 'assign' && !props.selectOnly && !props.replaceExisting && Boolean(props.initialMode),
 )
-const directModeLocked = computed(
-  () => !props.replaceExisting && Boolean(props.initialMode) && props.initialMode !== 'vibe_coding',
-)
-const cliModeLocked = computed(
-  () => !props.replaceExisting && Boolean(props.initialMode) && props.initialMode !== 'cli',
-)
-const expertModeLocked = computed(
-  () => !props.replaceExisting && Boolean(props.initialMode) && props.initialMode !== 'expert_group',
-)
-const codexLocked = computed(
-  () => directModeLocked.value || !codexCapability.value.available,
-)
+const pipelineLocked = computed(() => modeLocked.value && props.initialMode !== 'pipeline')
+const directModeLocked = computed(() => modeLocked.value && props.initialMode !== 'vibe_coding')
+const cliModeLocked = computed(() => modeLocked.value && props.initialMode !== 'cli')
+const expertModeLocked = computed(() => modeLocked.value && props.initialMode !== 'expert_group')
 const selectionChanged = computed(() => {
   if (!props.replaceExisting) return true
   if (selectedMode.value !== props.initialMode) return true
@@ -464,6 +479,7 @@ const selectionChanged = computed(() => {
   if (selectedMode.value === 'cli') {
     return selectedTarget.value !== props.initialCliType || selectedModelName.value !== props.initialModelName
   }
+  if (selectedMode.value === 'vibe_coding') return selectedTarget.value !== props.initialVibeTool
   return false
 })
 const canConfirm = computed(() => {
@@ -473,7 +489,7 @@ const canConfirm = computed(() => {
     return Boolean(selectedModelName.value)
   }
   if (selectedMode.value === 'vibe_coding') {
-    return codexCapability.value.available && selectedTarget.value === 'codex'
+    return isVibeCodingTool(selectedTarget.value) && !vibeToolDisabled(selectedTarget.value)
   }
   if (selectedMode.value === 'expert_group') {
     return expertGroups.value.some((group: ExpertGroup) => group.ready && group.uuid === selectedTarget.value)
@@ -499,22 +515,34 @@ function choosePipeline(uuid: string) {
   selectedTarget.value = uuid
 }
 
-function chooseVibeCoding() {
-  selectedMode.value = 'vibe_coding'
-  selectedTarget.value = undefined
-}
-
-function chooseCLI() {
-  selectedMode.value = 'cli'
-  selectedTarget.value = props.initialMode === 'cli' ? props.initialCliType || undefined : undefined
-  selectedModelName.value = props.initialMode === 'cli' ? props.initialModelName : ''
-  if (selectedTarget.value) void loadModelOptions(selectedTarget.value)
-}
-
 function chooseCLIType(cliType: string) {
+  selectedMode.value = 'cli'
   selectedTarget.value = cliType
   selectedModelName.value = ''
   void loadModelOptions(cliType)
+}
+
+function vibeCapability(tool: string) {
+  return codexCapability.value.tools?.[tool]
+}
+
+function vibeToolDisabled(tool: string) {
+  if (directModeLocked.value || !isVibeCodingTool(tool)) return true
+  const capability = vibeCapability(tool)
+  if (!capability) return tool !== 'codex' || !codexCapability.value.available
+  if (!capability.available) return true
+  return tool !== 'codex' && capability.installed === false
+}
+
+function vibeToolDisabledReason(tool: string) {
+  if (!vibeToolDisabled(tool)) return ''
+  return vibeCapability(tool)?.message || codexCapability.value.message || t('workflows.task.codex.capabilityUnavailable')
+}
+
+function chooseVibeTool(tool: VibeCodingToolId) {
+  if (vibeToolDisabled(tool)) return
+  selectedMode.value = 'vibe_coding'
+  selectedTarget.value = tool
 }
 
 function chooseCLIModel(model: string) {
@@ -524,11 +552,6 @@ function chooseCLIModel(model: string) {
 function chooseExpertGroup(uuid: string) {
   selectedMode.value = 'expert_group'
   selectedTarget.value = uuid
-}
-
-function chooseCodex() {
-  selectedMode.value = 'vibe_coding'
-  selectedTarget.value = 'codex'
 }
 
 function goToPipelineConfig() {
@@ -541,10 +564,31 @@ function goToExpertGroupConfig() {
   void router.push({ name: 'agents', query: { mode: 'expert_group' } })
 }
 
+function currentSelection(): ExecutionModeSelection | null {
+  if (!selectedMode.value) return null
+  return {
+    mode: selectedMode.value,
+    tool: selectedMode.value === 'cli' || selectedMode.value === 'vibe_coding' ? selectedTarget.value || '' : '',
+    pipelineUuid: selectedMode.value === 'pipeline' ? selectedTarget.value || '' : '',
+    expertGroupUuid: selectedMode.value === 'expert_group' ? selectedTarget.value || '' : '',
+    modelName: selectedMode.value === 'cli' ? selectedModelName.value : '',
+  }
+}
+
 async function confirm() {
-  if (!canConfirm.value || saving.value) return
+  if (!canConfirm.value || saving.value || !selectedMode.value) return
+  if (props.intent === 'create' || props.selectOnly) {
+    if (selectedMode.value === 'vibe_coding' && selectedTarget.value) writeRecentVibeTool(selectedTarget.value)
+    const selection = currentSelection()
+    if (!selection) return
+    if (props.selectOnly) emit('selected', selection)
+    else emit('create', selection)
+    emit('update:open', false)
+    return
+  }
+  if (!props.taskUuid) return
   saving.value = true
-  let shouldOpenCodex = false
+  let shouldOpenVibe = false
   // 需求 2204（评论 5）：指派给 CLI 后跳到对话界面，由对话页自动向 CLI
   // 发送 task.md 引用与起始提示词，不再预填输入框。
   let shouldOpenCliConversation = false
@@ -580,11 +624,12 @@ async function confirm() {
     } else {
       result = await apiClient.put<ExecutionModeAssignmentResult>(`/tasks/${encodeURIComponent(props.taskUuid)}/execution-mode`, {
         mode: 'vibe_coding',
-        tool: 'codex',
+        tool: selectedTarget.value,
         start: props.replaceExisting || props.mode === 'board',
         replace_existing: props.replaceExisting,
       })
-      shouldOpenCodex = true
+      shouldOpenVibe = true
+      if (selectedTarget.value) writeRecentVibeTool(selectedTarget.value)
       successKey = props.replaceExisting ? 'workflows.task.assign.switchSuccess' : 'workflows.task.assign.codexAssigned'
     }
     if (result?.start_status === 'failed') {
@@ -603,15 +648,18 @@ async function confirm() {
     await openCliConversation(props.taskUuid)
     return
   }
-  if (!shouldOpenCodex) return
+  if (!shouldOpenVibe) return
 
-  const openResult = await openTaskInCodex(props.taskUuid)
+  const toolName = t(`workflows.task.assign.vibeTools.${selectedTarget.value || 'codex'}`)
+  const openResult = await openTaskVibeTool(props.taskUuid)
   if (openResult.opened) {
-    message.success(t('workflows.task.assign.codexOpened'))
+    message.success(t('workflows.task.detail.toolOpened', { tool: toolName }))
   } else if (openResult.copied) {
-    message.warning(t('workflows.task.assign.codexCopiedFallback'))
+    message.warning(t('workflows.task.detail.toolCopiedFallback', { tool: toolName }))
+  } else if (openResult.error) {
+    message.error(openResult.error.message)
   } else {
-    message.warning(t('workflows.task.assign.codexUnavailableAfterAssign'))
+    message.warning(t('workflows.task.detail.toolUnavailable', { tool: toolName }))
   }
 }
 
@@ -619,10 +667,14 @@ watch(
   () => props.open,
   async (open) => {
     if (!open) return
+    vibeExpanded.value = false
+    pipelineExpanded.value = false
+    expertExpanded.value = false
+    recentVibeTool.value = readRecentVibeTool()
     selectedMode.value = props.initialMode || undefined
     selectedTarget.value =
       props.initialMode === 'vibe_coding'
-        ? 'codex'
+        ? (isVibeCodingTool(props.initialVibeTool) ? props.initialVibeTool : 'codex')
         : props.initialMode === 'cli'
           ? props.initialCliType || undefined
           : undefined
@@ -639,7 +691,7 @@ watch(
     codexCapability.value = codexResult.status === 'fulfilled'
       ? codexResult.value
       : { available: false, message: t('workflows.task.codex.capabilityUnavailable') }
-    if (!codexCapability.value.available && selectedMode.value === 'vibe_coding') {
+    if (selectedMode.value === 'vibe_coding' && selectedTarget.value && vibeToolDisabled(selectedTarget.value)) {
       selectedTarget.value = undefined
     }
     if (pipelineResult.status === 'fulfilled') {
@@ -659,20 +711,44 @@ watch(
         ? props.preferredExpertGroupUuid
         : expertGroups.value.find((group) => group.ready)?.uuid
     }
+    const vibeIndex = vibeTools.findIndex((tool) => tool.id === selectedTarget.value)
+    if (selectedMode.value === 'vibe_coding' && vibeIndex >= previewCount) vibeExpanded.value = true
+    if (selectedMode.value === 'pipeline') {
+      const pipelineIndex = pipelines.value.findIndex((pipeline) => pipeline.uuid === selectedTarget.value)
+      if (pipelineIndex >= previewCount) pipelineExpanded.value = true
+    }
+    if (selectedMode.value === 'expert_group') {
+      const expertIndex = expertGroups.value.findIndex((group) => group.uuid === selectedTarget.value)
+      if (expertIndex >= previewCount) expertExpanded.value = true
+    }
   },
 )
 </script>
 
 <style scoped>
-/* 需求设计图：说明文案为普通正文，不使用提示条容器 */
-.assign-description {
-  margin: 0 0 16px;
-  color: #262626;
+.assign-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f4f6ff;
+  color: #3a4559;
   font-size: 14px;
   line-height: 22px;
 }
 
-.assign-description strong {
+.assign-banner p {
+  margin: 0;
+}
+
+.assign-banner :deep(.anticon) {
+  margin-top: 3px;
+  color: #3157e2;
+}
+
+.assign-banner strong {
   font-weight: 600;
 }
 
@@ -689,36 +765,6 @@ watch(
   line-height: 20px;
 }
 
-.assign-switch-warning :deep(.anticon) {
-  margin-top: 2px;
-  flex: 0 0 auto;
-}
-
-.assign-section {
-  margin-top: 16px;
-}
-
-.assign-section__label {
-  display: flex;
-  margin: 0 0 8px;
-  align-items: center;
-  gap: 4px;
-  color: #8c8c8c;
-  font-size: 12px;
-  line-height: 20px;
-}
-
-.assign-section__icon {
-  flex: 0 0 auto;
-  color: #8c8c8c;
-  font-size: 12px;
-}
-
-.assign-section__icon--logo {
-  width: 12px;
-  height: 12px;
-}
-
 .assign-mode-fieldset {
   min-width: 0;
   margin: 0;
@@ -726,76 +772,86 @@ watch(
   padding: 0;
 }
 
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  padding: 0;
-  border: 0;
-  margin: -1px;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
+.assign-section + .assign-section {
+  margin-top: 20px;
 }
 
-.pipeline-spin {
-  display: block;
-  min-height: 56px;
-}
-
-/* 需求设计图：所有卡片单列全宽排列 */
-.assign-list {
+.assign-section__head {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.pipeline-list {
-  max-height: 220px;
-  overflow-y: auto;
-  padding: 2px;
-  scrollbar-gutter: stable;
-}
-
-.assign-card {
-  position: relative;
+.assign-section__title {
   display: flex;
-  min-width: 0;
-  min-height: 50px;
   align-items: center;
   gap: 8px;
-  border: 1px solid #e5e5e5;
-  padding: 0 12px;
-  border-radius: 12px;
-  background: #fff;
-  box-sizing: border-box;
+  margin: 0;
+  color: #262626;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
 }
 
-.assign-card--selected {
-  border-color: #3157e2;
-  background: #e5efff;
+.assign-section__logo {
+  width: 20px;
+  height: 20px;
 }
 
-.assign-card--disabled {
-  border-color: #efefef;
-  background: #fff;
+.assign-section__icon {
+  color: #595959;
+  font-size: 16px;
 }
 
-/* 内嵌下拉/工具的卡片：纵向堆叠，行高自适应 */
-.assign-card--stacked {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-  padding: 8px 12px;
+.assign-section__hint {
+  margin: 2px 0 0;
+  color: #8c8c8c;
+  font-size: 12px;
+  line-height: 20px;
 }
 
-.assign-card--stacked .assign-card__choice {
+.assign-section__toggle {
   flex: 0 0 auto;
-  width: 100%;
-  min-height: 34px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #3157e2;
+  font-size: 14px;
+  line-height: 22px;
+  cursor: pointer;
 }
 
-.assign-card__choice {
+.assign-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.assign-grid__cell,
+.assign-choice {
+  min-width: 0;
+}
+
+.assign-grid__cell .assign-choice {
+  width: 100%;
+}
+
+.assign-choice {
+  display: flex;
+  min-width: 0;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #d9d9d9;
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.assign-choice__body {
   display: flex;
   min-width: 0;
   flex: 1;
@@ -804,76 +860,46 @@ watch(
   cursor: pointer;
 }
 
-.assign-card--disabled .assign-card__choice {
-  cursor: not-allowed;
+.assign-choice.is-selected {
+  border-color: #3157e2;
+  background: #f4f7ff;
 }
 
-/* 原生单选保留键盘可达，仅做视觉隐藏 */
-.assign-card__radio {
+.assign-choice.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.assign-choice__input {
   position: absolute;
   width: 1px;
   height: 1px;
   overflow: hidden;
-  clip-path: inset(50%);
+  clip: rect(0, 0, 0, 0);
 }
 
-.assign-card:has(.assign-card__radio:focus-visible) {
-  outline: 2px solid #3157e2;
-  outline-offset: 2px;
-}
-
-label.assign-card {
-  cursor: pointer;
-}
-
-label.assign-card.assign-card--disabled {
-  cursor: not-allowed;
-}
-
-.assign-card__avatar {
-  display: inline-flex;
-  width: 32px;
-  height: 32px;
-  flex: 0 0 32px;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  border-radius: 8px;
-  color: #3157e2;
-  background: #e5efff;
-  font-size: 14px;
-}
-
-.assign-card__avatar--soft {
-  background: #f5f5f5;
-}
-
-.assign-card__avatar img {
-  display: block;
-  width: 100%;
-  height: 100%;
+.assign-choice__logo,
+.assign-choice__avatar,
+.assign-choice__avatar img {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border-radius: 50%;
   object-fit: cover;
 }
 
-.assign-card__avatar .assign-card__logo {
-  width: 18px;
-  height: 18px;
-  object-fit: contain;
+.assign-choice__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #f5f5f5;
+  color: #595959;
+  font-size: 12px;
 }
 
-.assign-card__avatar .assign-card__logo--vibe {
-  width: 15px;
-  height: 15px;
-}
-
-.assign-card__avatar .assign-card__logo--cli {
-  width: 16px;
-  height: 16px;
-}
-
-.assign-card__name {
+.assign-choice__name {
   min-width: 0;
-  flex: 0 1 auto;
   overflow: hidden;
   color: #262626;
   font-size: 14px;
@@ -882,123 +908,114 @@ label.assign-card.assign-card--disabled {
   white-space: nowrap;
 }
 
-.assign-card--disabled .assign-card__name {
-  color: #bfbfbf;
-}
-
-.assign-card__subtitle {
-  min-width: 0;
-  overflow: hidden;
-  color: #8c8c8c;
+.assign-choice__recent {
+  flex: 0 0 auto;
+  border-radius: 4px;
+  padding: 0 6px;
+  background: #f0f0f0;
+  color: #3a4559;
   font-size: 12px;
   line-height: 20px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.assign-card__subtitle--end {
-  flex: 1 1 auto;
-  text-align: right;
-}
-
-.assign-card__check {
-  flex: 0 0 auto;
+.assign-choice__check {
   margin-left: auto;
   color: #3157e2;
-  font-size: 18px;
+  font-size: 16px;
 }
 
-/* 未配置的流水线：红色感叹号 + 去配置入口 */
-.assign-card__config {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 4px;
-  border: 0;
-  padding: 0;
-  color: #3157e2;
-  background: transparent;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 22px;
-}
-
-.assign-card__config--warning {
-  color: #ff7875;
-}
-
-.assign-card__warning {
-  color: #ff7875;
-  font-size: 14px;
-}
-
-/* CLI 调用卡片内的 CLI / 模型下拉，与需求设计图宽度比例一致 */
-.assign-runtime {
-  display: grid;
-  grid-template-columns: minmax(0, 1.44fr) minmax(0, 1fr);
-  gap: 7px;
-  width: 100%;
-}
-
-.assign-runtime__select {
-  width: 100%;
-}
-
-/* Vibe Coding 卡片内的外部编码工具 */
-.assign-tool {
-  display: inline-flex;
-  height: 32px;
-  align-self: flex-start;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid #e5e5e5;
-  padding: 0 12px;
-  border-radius: 8px;
-  color: #262626;
-  background: #fff;
-  cursor: pointer;
-  font-size: 14px;
-}
-
-.assign-tool--selected {
-  border-color: #3157e2;
-  background: #e5efff;
-}
-
-.assign-tool:disabled {
-  color: #bfbfbf;
-  cursor: not-allowed;
-}
-
-.assign-tool__logo {
+.assign-choice__radio {
   width: 16px;
   height: 16px;
-  object-fit: contain;
+  margin-left: auto;
+  flex: 0 0 auto;
+  border: 1px solid #d9d9d9;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.assign-choice__config {
+  flex: 0 0 auto;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #3157e2;
+  cursor: pointer;
+}
+
+.assign-runtime {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.assign-model-option {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .field-help {
   display: flex;
+  margin: 8px 0 0;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  margin-top: 8px;
   color: #8c8c8c;
   font-size: 12px;
   line-height: 20px;
 }
 
-:global(.assign-execution-modal .ant-modal) {
-  max-width: calc(100vw - 32px);
-}
-
-:global(.assign-execution-modal .ant-modal-content) {
-  border-radius: 12px;
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
 }
 
 @media (max-width: 640px) {
-  .pipeline-list {
-    max-height: min(240px, 32vh);
+  .assign-grid,
+  .assign-runtime {
+    grid-template-columns: 1fr;
   }
 }
 </style>
 
+<style>
+.assign-execution-modal .ant-modal {
+  max-width: calc(100vw - 24px);
+}
+
+.assign-execution-modal .ant-modal-content {
+  border-radius: 24px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
+  padding: 0;
+}
+
+.assign-execution-modal .ant-modal-header {
+  margin: 0;
+  border-bottom: 0;
+  padding: 24px 24px 0;
+}
+
+.assign-execution-modal .ant-modal-title {
+  color: #262626;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 32px;
+}
+
+.assign-execution-modal .ant-modal-body {
+  max-height: calc(100vh - 180px);
+  overflow: auto;
+  padding: 16px 24px 24px;
+}
+
+.assign-execution-modal .ant-modal-footer {
+  margin: 0;
+  border-top: 1px solid #d9d9d9;
+  padding: 16px 24px;
+}
+</style>

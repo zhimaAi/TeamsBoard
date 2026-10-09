@@ -79,21 +79,50 @@ markdown.renderer.rules.link_open = (tokens, index, options, env, self) => {
 // 在这里把它解析成行内节点，让历史消息也渲染成文件标签，而不是把内部语法直接摆给用户看。
 const DOC_REFERENCE_RE = /^#\[([^\]\n]{1,200})\]/
 
+// S-UI-13: 知识库选中片段会在文件名前追加「· 选」后缀，聊天记录里沿用相同标记。
+// 历史消息没有运行时引用登记，按 i18n 文本识别「· 选」并区分渲染。
+function splitDocReferenceLabel(label: string) {
+  const fragmentBadge = ' · '
+  const badgeIdx = label.lastIndexOf(fragmentBadge)
+  if (badgeIdx < 0) return { fileName: label, badge: '', hasBadge: false }
+  // 段尾的「 · 选」= 选中片段标记；其余「 · N」= 重复去重序号，归文件名部分
+  const possible = label.slice(badgeIdx + fragmentBadge.length)
+  // 去重序号是纯数字，选中片段 badge 长度很短且不是纯数字
+  const isFragmentBadge = !/^\d+$/.test(possible)
+  return {
+    fileName: label.slice(0, badgeIdx),
+    badge: isFragmentBadge ? `${fragmentBadge}${possible}` : '',
+    hasBadge: isFragmentBadge,
+  }
+}
+
 markdown.inline.ruler.before('emphasis', 'doc_reference', (state, silent) => {
   if (state.src.charCodeAt(state.pos) !== 0x23 /* # */) return false
   const match = DOC_REFERENCE_RE.exec(state.src.slice(state.pos))
   if (!match) return false
   if (!silent) {
     const token = state.push('doc_reference', '', 0)
-    // 同名文件重复引用会带 ` · N` 去重序号，展示时只保留文件名
-    token.content = match[1].split(' · ')[0]
+    // 先存整段标签：渲染时再按当前语言识别「· 选」后缀，避免 locale 切换后渲染与解析错位
+    token.content = match[1]
   }
   state.pos += match[0].length
   return true
 })
 
-markdown.renderer.rules.doc_reference = (tokens, index) =>
-  `<span class="markdown-doc-reference">${markdown.utils.escapeHtml(tokens[index].content)}</span>`
+markdown.renderer.rules.doc_reference = (tokens, index) => {
+  const { fileName, badge, hasBadge } = splitDocReferenceLabel(tokens[index].content)
+  // badge 是从 marker 原始文本里切出的 i18n 后缀（如「 · 选」），直接拼入 HTML 不需要再次转义
+  const className = hasBadge
+    ? 'markdown-doc-reference markdown-doc-reference-fragment'
+    : 'markdown-doc-reference'
+  const titleAttr = hasBadge
+    ? ` title="${markdown.utils.escapeHtml(t('workflows.task.progress.referenceFragmentHint'))}"`
+    : ''
+  const badgeHtml = hasBadge
+    ? `<span class="markdown-doc-reference-badge">${markdown.utils.escapeHtml(badge)}</span>`
+    : ''
+  return `<span class="${className}"${titleAttr}>${markdown.utils.escapeHtml(fileName)}${badgeHtml}</span>`
+}
 
 // 渲染前归一化：统一换行符、折叠连续空行、去行尾空格，避免脏换行产生多余间距
 function normalizeMarkdown(text: string) {
@@ -207,6 +236,24 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/*
+ * S-UI-13: 知识库选中片段引用，与整篇文档引用做视觉区分。
+ * 与 ChatComposer 输入框的 .mention-token-fragment 保持同一套配色（Primary Soft + 主蓝文字），
+ * 避免用户在输入框 / 聊天记录 / 历史消息里看到三种不同的「选中片段」表现。
+ */
+.markdown-preview :deep(.markdown-doc-reference-fragment) {
+  color: #3157e2;
+  background: #e5efff;
+}
+
+/*
+ * S-UI-13: 「· 选」后缀比主文件名淡一些，视觉上不抢主名风头。
+ * 整体胶囊是蓝底，所以 badge 用更浅的蓝或半透明白。
+ */
+.markdown-preview :deep(.markdown-doc-reference-fragment .markdown-doc-reference-badge) {
+  color: rgba(49, 87, 226, 0.6);
 }
 
 .markdown-preview {

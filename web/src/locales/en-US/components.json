@@ -3,10 +3,15 @@
     "copied": "Copied",
     "copyFailed": "Copy failed"
   },
+  "directory": {
+    "manualPlaceholder": "Enter a working directory path",
+    "useManual": "Use path"
+  },
   "errors": {
     "selectDirectoryUnsupported": "Selecting local folders is unavailable here. Use the TeamsBoard desktop app.",
     "openDirectoryUnsupported": "Opening local folders is unavailable here. Use the TeamsBoard desktop app.",
     "openCodexUnsupported": "Opening Codex automatically is unavailable here. Use the TeamsBoard desktop app.",
+    "openVibeToolUnsupported": "Opening a CLI automatically is unavailable here. Use the TeamsBoard desktop app.",
     "desktopSettingsUnsupported": "Desktop app settings are unavailable here.",
     "iconType": "Only PNG, JPEG, and WebP images are supported.",
     "iconSize": "Images cannot exceed 2 MB.",
@@ -23,7 +28,16 @@
     "attachmentDownloadFailed": "Attachment download failed",
     "uploadUnavailable": "Image uploads are not enabled for this editor",
     "uploadFailed": "Failed to paste image",
-    "placeholder": "Add a description…"
+    "placeholder": "Add a description…",
+    "floatingToolbar": "Editing toolbar",
+    "bold": "Bold",
+    "italic": "Italic",
+    "strike": "Strikethrough",
+    "inlineCode": "Inline code",
+    "link": "Link",
+    "quote": "Quote",
+    "unorderedList": "Bullet list",
+    "orderedList": "Numbered list"
   },
   "placeholder": {
     "developing": "{title} is under development"

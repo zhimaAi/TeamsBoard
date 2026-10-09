@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import {
   CheckOutlined,
@@ -7,15 +7,34 @@ import {
   EditOutlined,
   FileTextOutlined,
   FolderAddOutlined,
+  FolderOpenOutlined,
   FolderOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  MoreOutlined,
   PlusOutlined,
   ReloadOutlined,
   RollbackOutlined,
+  RobotOutlined,
   SearchOutlined,
 } from '@ant-design/icons-vue'
-import MarkdownIt from 'markdown-it'
 import apiClient, { ApiError } from '@/api/client'
+import {
+  createKnowledgeDocument,
+  deleteKnowledgeFolder,
+  getKnowledgeRoot,
+  migrateKnowledgeRoot,
+  scanKnowledge,
+  type KnowledgeMigrateConflictItem,
+  type KnowledgeMigrateRollback,
+} from '@/api/knowledge'
+import { isDesktopRuntime, selectDirectory as pickDirectory } from '@/composables/useDesktop'
 import { useAppI18n } from '@/i18n'
+import MarkdownEditor from '@/components/MarkdownEditor.vue'
+import { useKnowledgeReferenceStore } from '@/stores/knowledge-reference'
+import type { KnowledgeReferenceFragment } from '@/types/knowledge-reference'
+import KnowledgeFolderDetail from '@/views/knowledge/components/KnowledgeFolderDetail.vue'
+import KnowledgeAgentReferencePopover from '@/views/knowledge/components/KnowledgeAgentReferencePopover.vue'
 
 const { t, locale } = useAppI18n()
 
@@ -32,6 +51,8 @@ type KnowledgeDocument = {
   uuid: string
   folder_id: number
   title: string
+  file_path: string
+  ext: 'md' | 'txt'
   tags: string[]
   content_hash: string
   word_count: number
@@ -47,8 +68,9 @@ type SearchResult = {
   folder_id: number
 }
 
+// 大纲项：`key` 仅用于列表渲染；跳转按序号交给编辑器定位（S-UI-10）
 type OutlineItem = {
-  id: string
+  key: string
   level: number
   title: string
 }
@@ -62,7 +84,6 @@ type DirectoryNode = {
   folderID: number
   count?: number
   isLeaf?: boolean
-  special?: 'all' | 'uncategorized'
   children?: DirectoryNode[]
 }
 
@@ -77,41 +98,149 @@ type DirectoryDropInfo = {
   dropPosition: number
 }
 
-const markdown = new MarkdownIt({
-  html: false,
-  linkify: true,
-  breaks: true,
-  typographer: true,
-})
-
-markdown.renderer.rules.heading_open = (tokens, index, _options, env) => {
-  const headingIndex = Number(env.headingIndex || 0)
-  env.headingIndex = headingIndex + 1
-  const token = tokens[index]
-  return `<${token.tag} id="knowledge-heading-${headingIndex}">`
+// 与 MarkdownEditor 的 selection-change 事件 / getSelectionInfo() 载荷结构一致
+type EditorSelection = {
+  text: string
+  prefix: string
+  suffix: string
+  rect: DOMRect | null
 }
 
 const loading = ref(false)
 const saving = ref(false)
+// S-AS-01: 自动保存状态机
+//   idle     - 无未保存改动
+//   pending  - 已有改动，等待防抖窗口结束（1500ms）
+//   saving   - PUT 请求进行中
+//   saved    - 最近一次保存成功，提示 2 秒后回到 idle
+//   error    - 最近一次保存失败（保留 dirty，下次再试）
+type AutosaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error'
+const AUTOSAVE_DEBOUNCE_MS = 1500
+const AUTOSAVE_SAVED_HINT_MS = 2000
+const autosaveState = ref<AutosaveState>('idle')
+const autosaveSavedAt = ref(0) // 最近一次保存完成的本地时间戳
+const autosaveErrorMessage = ref('') // 上一次失败的错误信息
+let autosaveTimer: ReturnType<typeof setTimeout> | undefined
+let autosaveSavedHintTimer: ReturnType<typeof setTimeout> | undefined
+// saveSeq 用于守护过期响应：自增计数，进入请求前取 mySeq，响应回来时若 mySeq !== saveSeq 表示已被新请求覆盖
+const saveSeq = ref(0)
+// 标记当前 draft 是否已初始化（刚打开文档/刚创建完时，先不触发自动保存）
+let draftReady = false
 const folders = ref<FolderNode[]>([])
 const documents = ref<KnowledgeDocument[]>([])
 const trashDocuments = ref<KnowledgeDocument[]>([])
 const searchResults = ref<SearchResult[]>([])
-const selectedFolderID = ref<number | 'all'>('all')
+const selectedFolderID = ref<number>(0)
 const selectedDocumentUUID = ref('')
 const selectedTreeKey = ref('')
 const searchKeyword = ref('')
 const searchLoading = ref(false)
-const viewMode = ref<'edit' | 'split' | 'preview'>('edit')
 const rightTab = ref('outline')
 const trashVisible = ref(false)
-const editingTitle = ref(false)
-const folderModalVisible = ref(false)
-const folderParentID = ref(0)
-const folderName = ref('')
+// 重命名弹窗（取代原 editor-header 内的标题就地编辑）
+const renameModalVisible = ref(false)
+const renameInputValue = ref('')
+// 通用「新建文档 / 新建文件夹」弹窗：type 区分两种语义，parentID 区分父级位置
+type CreateModalType = 'document' | 'folder'
+const createModalVisible = ref(false)
+const createModalType = ref<CreateModalType>('folder')
+const createModalName = ref('')
+const createModalParentID = ref(0)
+const createModalLoading = ref(false)
+// 大纲 / 属性抽屉显隐（独立于媒体查询，避免窄屏下点击无响应）
+const inspectorOpen = ref(false)
+
+// 左侧目录栏（knowledge-sidebar）：可折叠、可拖拽改宽度。
+// 默认宽度为当前宽度的一半，向上不超过当前宽度，向下不低于当前宽度的一半。
+const SIDEBAR_MAX_WIDTH = 380
+const SIDEBAR_MIN_WIDTH = 260
+const SIDEBAR_DEFAULT_WIDTH = 260
+const sidebarCollapsed = ref(false)
+const sidebarWidth = ref(SIDEBAR_DEFAULT_WIDTH)
 const directoryOrder = ref<Record<string, string[]>>({})
+// 目录树展开状态：记录当前展开的文件夹 key
+const expandedKeys = ref<string[]>([])
+// 记录之前展开的 keys，用于恢复（当 sidebar 收起时）
+let previousExpandedKeys: string[] = []
 let searchTimer: ReturnType<typeof setTimeout> | undefined
 let searchSequence = 0
+
+function toggleSidebar() {
+  if (sidebarCollapsed.value) {
+    // 从收起状态展开时，恢复之前的展开状态
+    expandedKeys.value = [...previousExpandedKeys]
+  } else {
+    // 收起前保存当前展开状态
+    previousExpandedKeys = [...expandedKeys.value]
+    expandedKeys.value = []
+  }
+  sidebarCollapsed.value = !sidebarCollapsed.value
+}
+
+// 拖拽改宽度：在 mousedown 时记录起始位置和宽度，mousemove 时实时计算并夹紧。
+// 监听挂到 document 上以保证鼠标拖出 sidebar 也能继续调整；mouseup 时统一清理。
+let sidebarResizeCleanup: (() => void) | null = null
+function startSidebarResize(event: MouseEvent) {
+  if (event.button !== 0) return
+  event.preventDefault()
+  const startX = event.clientX
+  const startWidth = sidebarWidth.value
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+
+  const onMove = (moveEvent: MouseEvent) => {
+    const next = startWidth + (moveEvent.clientX - startX)
+    sidebarWidth.value = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, next))
+  }
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+    sidebarResizeCleanup = null
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+  sidebarResizeCleanup = onUp
+}
+
+const isSidebarNarrow = computed(
+  () => !sidebarCollapsed.value && sidebarWidth.value < 240,
+)
+const knowledgePageStyle = computed(() => {
+  const sidebar = sidebarCollapsed.value ? '0px' : `${sidebarWidth.value}px`
+  return { gridTemplateColumns: `${sidebar} minmax(480px, 1fr) 300px` }
+})
+
+// S-UI-01: 知识库根目录（KR）设置相关状态
+const knowledgeRoot = ref('')
+const knowledgeDefaultRoot = ref('')
+const rootModalVisible = ref(false)
+const rootModalLoading = ref(false)
+const pendingRootDir = ref('')
+
+// S-UI-03: 删除文件夹双选项弹窗状态
+const deleteFolderModalVisible = ref(false)
+const deleteFolderModalLoading = ref(false)
+const deleteFolderTarget = ref<FolderNode | null>(null)
+
+// S-UI-14: 文件夹详情列表页（第四个主区工作区）当前文件夹；0 表示根目录视图
+const activeFolderID = ref(0)
+
+// S-UI-09 / S-UI-11: vditor 即时渲染编辑器句柄（供大纲跳转与选区读取）
+const editorRef = ref<{
+  getValue: () => string
+  getSelectionInfo: () => EditorSelection | null
+  scrollToHeading: (index: number) => void
+}>()
+
+// S-UI-13: 编辑器选中内容 → 对话输入区的「添加给 Agent」
+const knowledgeReferenceStore = useKnowledgeReferenceStore()
+const editorSelectionText = ref('')
+const agentReferenceOpen = ref(false)
+const agentReferenceFragment = ref<KnowledgeReferenceFragment | null>(null)
+
+const scanning = ref(false)
 
 const draft = reactive({
   uuid: '',
@@ -119,6 +248,7 @@ const draft = reactive({
   folderID: 0,
   tags: [] as string[],
   content: '',
+  filePath: '',
   contentHash: '',
   wordCount: 0,
   createdAt: 0,
@@ -137,6 +267,182 @@ const flatFolders = computed(() => {
   }
   walk(folders.value, 0)
   return result
+})
+
+// S-UI-07: 知识库为空时不自动创建任何文件夹或文档，只展示引导与创建入口
+const knowledgeEmpty = computed(() => !folders.value.length && !documents.value.length)
+
+// S-UI-14: 当前打开的文件夹（详情页数据源，仅取其直接子项）；null 表示根目录视图
+const activeFolder = computed(
+  () => flatFolders.value.find((folder) => folder.id === activeFolderID.value) || null,
+)
+
+// 根目录视图数据：展示 parent_id=0 的文件夹和 folder_id=0 的文档
+const rootViewFolders = computed(() =>
+  folders.value.filter((folder) => folder.parent_id === 0),
+)
+const rootViewDocuments = computed(() =>
+  documents.value.filter((document) => document.folder_id === 0),
+)
+
+const activeFolderChildren = computed(() => ({
+  folders: activeFolder.value?.children || [],
+  documents: documents.value.filter((document) => document.folder_id === activeFolderID.value),
+}))
+
+// S-UI-14: 聚合视图文档列表：全部文档 或 未分类文档（已移除，根目录视图直接使用 documents）
+
+// 从根到目标文件夹的祖先链（含目标自身）；S-UI-14 的面包屑与 S-UI-13 的引用来源路径共用
+function folderAncestorChain(folderID: number): FolderNode[] {
+  const current = flatFolders.value.find((folder) => folder.id === folderID)
+  if (!current) return []
+  const chain: FolderNode[] = [current]
+  let parentID = current.parent_id
+  // 后端已有环检测（S-BE-04），此处上限仅作死循环兜底
+  let guard = 0
+  while (parentID > 0 && guard < 256) {
+    const parent = flatFolders.value.find((folder) => folder.id === parentID)
+    if (!parent) break
+    chain.unshift(parent)
+    parentID = parent.parent_id
+    guard += 1
+  }
+  return chain
+}
+
+// S-UI-14: 面包屑「上级文件夹 / 当前文件夹」；首项为根节点 teamsboard（id=0），末项为当前文件夹（只读）
+const activeFolderBreadcrumbs = computed(() => {
+  const chain = folderAncestorChain(activeFolderID.value)
+  if (!chain.length) return []
+  return [
+    { id: 0, name: t('knowledge.breadcrumbRoot') },
+    ...chain.map((folder) => ({ id: folder.id, name: folder.name })),
+  ]
+})
+
+// 编辑器头部面包屑：根 → 当前文档所在文件夹链 → 当前文档；超过 3 层显示 .../ + 末两段
+const BREADCRUMB_MAX_LENGTH = 20
+const BREADCRUMB_OVERFLOW_THRESHOLD = 3
+
+type BreadcrumbLeaf = { id: number | string; kind: 'root' | 'folder' | 'document'; name: string }
+
+const documentBreadcrumbs = computed<BreadcrumbLeaf[]>(() => {
+  if (!draft.uuid) return []
+  const chain = folderAncestorChain(draft.folderID)
+  const fallbackName = draft.title || draft.filePath.split(/[\\/]+/).pop() || ''
+  const currentDoc = documents.value.find((item) => item.uuid === draft.uuid)
+  const ext = currentDoc?.ext
+  const displayName = ext ? `${fallbackName}.${ext}` : fallbackName
+  return [
+    { id: 0, kind: 'root', name: t('knowledge.breadcrumbRoot') },
+    ...chain.map((folder) => ({ id: folder.id, kind: 'folder' as const, name: folder.name })),
+    { id: draft.uuid, kind: 'document' as const, name: displayName },
+  ]
+})
+
+function truncateBreadcrumbName(rawName: string): string {
+  const name = rawName || ''
+  if (name.length <= BREADCRUMB_MAX_LENGTH) return name
+  return `${name.slice(0, BREADCRUMB_MAX_LENGTH)}…`
+}
+
+// 文件名特殊处理：保留 .md/.txt 扩展名，仅截断主名部分
+function truncateBreadcrumbDocumentName(rawName: string): string {
+  const name = rawName || ''
+  const lastDot = name.lastIndexOf('.')
+  const slashIndex = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'))
+  if (lastDot > slashIndex && lastDot > 0 && lastDot < name.length - 1) {
+    const ext = name.slice(lastDot)
+    const stem = name.slice(0, lastDot)
+    if (stem.length <= BREADCRUMB_MAX_LENGTH) return name
+    return `${stem.slice(0, BREADCRUMB_MAX_LENGTH)}…${ext}`
+  }
+  return truncateBreadcrumbName(name)
+}
+
+function breadcrumbDisplayName(item: BreadcrumbLeaf): string {
+  return item.kind === 'document'
+    ? truncateBreadcrumbDocumentName(item.name)
+    : truncateBreadcrumbName(item.name)
+}
+
+function fullBreadcrumbName(item: BreadcrumbLeaf): string {
+  return item.name
+}
+
+// 通用面包屑点击：folder/root 跳转到对应目录（编辑态先确认放弃）
+async function navigateBreadcrumb(item: BreadcrumbLeaf) {
+  if (item.kind === 'document') return
+  if (item.kind === 'root') {
+    if (!(await confirmDiscardChanges())) return
+    clearDraft()
+    selectedFolderID.value = 0
+    selectedTreeKey.value = 'root'
+    activeFolderID.value = 0
+    return
+  }
+  if (!(await confirmDiscardChanges())) return
+  selectedFolderID.value = item.id as number
+  selectedTreeKey.value = `folder:${item.id}`
+  activeFolderID.value = item.id as number
+  clearDraft()
+}
+
+// 弹窗中根据输入预览完整路径（文件名无后缀则默认 .md）
+function previewCreateName(raw: string, type: CreateModalType): string {
+  if (!raw.trim()) return ''
+  if (type === 'folder') return raw.trim()
+  const { title, ext } = normalizedDocumentTitle(raw)
+  return `${title}.${ext}`
+}
+
+const createModalParentPath = computed(() => {
+  if (createModalParentID.value === 0) {
+    return [t('knowledge.breadcrumbRoot')]
+  }
+  const chain = folderAncestorChain(createModalParentID.value)
+  return [t('knowledge.breadcrumbRoot'), ...chain.map((folder) => folder.name)]
+})
+
+const createModalTargetPath = computed(() => {
+  const name = previewCreateName(createModalName.value, createModalType.value)
+  if (!name) return createModalParentPath.value.join(' / ')
+  return [...createModalParentPath.value, name].join(' / ')
+})
+
+function toggleInspector() {
+  inspectorOpen.value = !inspectorOpen.value
+}
+
+// 面包屑省略状态：默认折叠（超过3层时），点击 "…" 按钮展开全部
+const breadcrumbExpanded = ref(false)
+
+const visibleBreadcrumbs = computed(() => {
+  const items = documentBreadcrumbs.value
+  if (items.length <= BREADCRUMB_OVERFLOW_THRESHOLD || breadcrumbExpanded.value) return items
+  return [
+    { id: 'overflow' as const, kind: 'overflow' as const, name: t('knowledge.breadcrumbOverflow') },
+    ...items.slice(items.length - 2),
+  ]
+})
+
+function showFullBreadcrumb() {
+  breadcrumbExpanded.value = true
+}
+
+// S-UI-01: 面包屑取 KR 路径最后一段作为当前目录名，根节点用固定标签
+const rootBreadcrumbSegments = computed(() => {
+  const segments = knowledgeRoot.value.split(/[\\/]+/).filter(Boolean)
+  const leaf = segments.pop() || ''
+  return [t('knowledge.rootBreadcrumbRoot'), leaf].filter(Boolean)
+})
+
+// S-UI-01: 设置弹窗内显示待确认的目录路径
+const modalRootBreadcrumbSegments = computed(() => {
+  const path = pendingRootDir.value || knowledgeRoot.value
+  const segments = path.split(/[\\/]+/).filter(Boolean)
+  const leaf = segments.pop() || ''
+  return [t('knowledge.rootBreadcrumbRoot'), leaf].filter(Boolean)
 })
 
 const directoryDocuments = computed(() => {
@@ -170,7 +476,7 @@ const directoryTreeData = computed<DirectoryNode[]>(() => {
     keyPrefix = 'doc',
   ): DirectoryNode => ({
     key: `${keyPrefix}:${document.uuid}`,
-    title: document.title,
+    title: document.ext ? `${document.title}.${document.ext}` : document.title,
     kind: 'document',
     entityId: document.uuid,
     parentKey,
@@ -205,48 +511,17 @@ const directoryTreeData = computed<DirectoryNode[]>(() => {
     }
   }
 
-  const allDocuments = orderDirectoryNodes(
-    'special:all',
-    directoryDocuments.value.map((document) =>
-      documentNode(document, 'special:all', 'all-doc'),
-    ),
-  )
-  const uncategorizedDocuments = orderDirectoryNodes(
-    'special:uncategorized',
-    directoryDocuments.value
-      .filter((document) => document.folder_id === 0)
-      .map((document) => documentNode(document, 'special:uncategorized')),
-  )
-  const allNode: DirectoryNode = {
-    key: 'special:all',
-    title: t('knowledge.allDocuments'),
-    kind: 'folder',
-    entityId: 'all',
-    parentKey: 'root',
-    folderID: 0,
-    special: 'all',
-    count: documents.value.length,
-    children: allDocuments,
-  }
-  const defaultFolderNode: DirectoryNode = {
-    key: 'special:uncategorized',
-    title: t('knowledge.defaultFolder'),
-    kind: 'folder',
-    entityId: 0,
-    parentKey: 'root',
-    folderID: 0,
-    special: 'uncategorized',
-    count: documents.value.filter((document) => document.folder_id === 0).length,
-    children: uncategorizedDocuments,
-  }
   const sortableRootNodes = orderDirectoryNodes('root', [
-    defaultFolderNode,
     ...folders.value
       .map((folder) => mapFolder(folder, 'root'))
       .filter((folder): folder is DirectoryNode => Boolean(folder)),
+    // 根目录文件（folder_id === 0）与根目录同级展示，支持搜索过滤、选中、拖拽到文件夹等已有交互
+    ...directoryDocuments.value
+      .filter((document) => document.folder_id === 0)
+      .map((document) => documentNode(document, 'root')),
   ])
 
-  return [allNode, ...sortableRootNodes]
+  return sortableRootNodes
 })
 
 const snapshot = computed(() =>
@@ -260,17 +535,13 @@ const snapshot = computed(() =>
 
 const dirty = computed(() => Boolean(draft.uuid) && snapshot.value !== savedSnapshot.value)
 
-const renderedMarkdown = computed(() =>
-  markdown.render(draft.content || '', { headingIndex: 0 }),
-)
-
 const outline = computed<OutlineItem[]>(() => {
   const items: OutlineItem[] = []
   for (const line of draft.content.split(/\r?\n/)) {
     const match = /^(#{1,6})\s+(.+?)\s*#*$/.exec(line)
     if (!match) continue
     items.push({
-      id: `knowledge-heading-${items.length}`,
+      key: `${items.length}:${match[2].trim()}`,
       level: match[1].length,
       title: match[2].trim(),
     })
@@ -278,9 +549,64 @@ const outline = computed<OutlineItem[]>(() => {
   return items
 })
 
+// 自动保存指示器文案：根据状态机返回不同模板；initial drafts 不显示
+const autosaveHint = computed(() => {
+  if (!draft.uuid || !draftReady) return ''
+  if (autosaveState.value === 'pending') return t('knowledge.autosavePending')
+  if (autosaveState.value === 'saving') return t('knowledge.autosaveSaving')
+  if (autosaveState.value === 'saved' && autosaveSavedAt.value) {
+    const time = new Date(autosaveSavedAt.value).toLocaleTimeString(locale.value, {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+    return t('knowledge.autosaveSavedAt', { time })
+  }
+  if (autosaveState.value === 'error') return t('knowledge.autosaveFailed')
+  return ''
+})
+
+// 切换文档或新建/清空时，重置自动保存相关的本地状态（在 openDocument / clearDraft 内统一调用）
+function resetAutosaveStateOnDraftChange() {
+  draftReady = false
+  autosaveState.value = 'idle'
+  autosaveSavedAt.value = 0
+  autosaveErrorMessage.value = ''
+  if (autosaveTimer) {
+    clearTimeout(autosaveTimer)
+    autosaveTimer = undefined
+  }
+  if (autosaveSavedHintTimer) {
+    clearTimeout(autosaveSavedHintTimer)
+    autosaveSavedHintTimer = undefined
+  }
+  // 提序列号，避免上一次文档的 in-flight 请求响应被错误地应用到当前状态
+  saveSeq.value++
+}
+
 function currentSnapshot() {
   savedSnapshot.value = snapshot.value
 }
+
+// S-AS-03: 防抖自动保存核心
+// 1. 监听 snapshot（已包含 title/folderID/tags/content）；变化时把状态打到 pending 并重置防抖定时器
+// 2. draftReady 守护：避免打开文档/新建文档时立刻触发一次保存（首屏的 dirty=true 是历史遗留而非用户改动）
+// 3. dirty 守护：仅在确有未保存改动时启动定时器；保存成功后 currentSnapshot() 会让 dirty 回 false，
+//    之后 savedSnapshot 变回匹配值，watch 会再次触发但被 dirty=false 过滤掉
+// 4. 右上的「保存失败，点击重试」走 retryAutosave() 重新发起一次
+watch(
+  () => snapshot.value,
+  () => {
+    if (!draftReady || !draft.uuid) return
+    if (!dirty.value) return
+    autosaveState.value = 'pending'
+    if (autosaveTimer) clearTimeout(autosaveTimer)
+    autosaveTimer = setTimeout(() => {
+      autosaveTimer = undefined
+      void performSave('auto')
+    }, AUTOSAVE_DEBOUNCE_MS)
+  },
+)
 
 function clearDraft() {
   Object.assign(draft, {
@@ -289,6 +615,7 @@ function clearDraft() {
     folderID: 0,
     tags: [],
     content: '',
+    filePath: '',
     contentHash: '',
     wordCount: 0,
     createdAt: 0,
@@ -297,7 +624,9 @@ function clearDraft() {
   savedSnapshot.value = ''
   selectedDocumentUUID.value = ''
   selectedTreeKey.value = ''
-  editingTitle.value = false
+  renameModalVisible.value = false
+  editorSelectionText.value = ''
+  resetAutosaveStateOnDraftChange()
 }
 
 function formatTime(value: number) {
@@ -328,10 +657,13 @@ async function refreshTrash() {
   }
 }
 
-async function loadWorkspace(selectFirst = false) {
+async function loadWorkspace(selectFirst = false, scan = false) {
   loading.value = true
   try {
     await Promise.all([loadFolders(), loadDocuments(), loadTrash()])
+    if (scan) {
+      await scanKnowledgeBase()
+    }
     if (selectFirst && !draft.uuid && documents.value.length) {
       await openDocument(documents.value[0].uuid, true)
     }
@@ -340,6 +672,189 @@ async function loadWorkspace(selectFirst = false) {
   } finally {
     loading.value = false
   }
+}
+
+// S-UI-05: 进入页面与手动刷新时扫描 KR，索引外部 .md/.txt
+async function scanKnowledgeBase() {
+  scanning.value = true
+  try {
+    const result = await scanKnowledge()
+    if (result.added_folders || result.added_documents) {
+      await Promise.all([loadFolders(), loadDocuments()])
+    }
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('knowledge.scanFailed'))
+  } finally {
+    scanning.value = false
+  }
+}
+
+async function refreshWorkspace() {
+  if (loading.value || scanning.value) return
+  await loadWorkspace(false, true)
+}
+
+// S-UI-01: 加载当前 KR 与默认 KR
+async function loadKnowledgeRoot() {
+  try {
+    const result = await getKnowledgeRoot()
+    knowledgeRoot.value = result.root
+    knowledgeDefaultRoot.value = result.default
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('knowledge.rootLoadFailed'))
+  }
+}
+
+function openRootModal() {
+  pendingRootDir.value = knowledgeRoot.value
+  rootModalVisible.value = true
+}
+
+async function chooseRootDirectory() {
+  if (!isDesktopRuntime()) return
+  const defaultPath = pendingRootDir.value || knowledgeDefaultRoot.value
+  try {
+    const selected = await pickDirectory(defaultPath)
+    if (selected) {
+      pendingRootDir.value = selected
+    }
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('knowledge.selectDirectoryFailed'))
+  }
+}
+
+// S-UI-17: 迁移属破坏性操作，确认前先二次确认，迁移期间锁定弹窗防重复提交
+async function confirmSetKnowledgeRoot() {
+  const dir = pendingRootDir.value.trim()
+  if (!dir || rootModalLoading.value) return
+
+  const confirmed = await new Promise<boolean>((resolve) => {
+    Modal.confirm({
+      title: t('knowledge.migrateConfirmTitle'),
+      content: t('knowledge.migrateConfirmDescription'),
+      okText: t('knowledge.confirm'),
+      okType: 'danger',
+      cancelText: t('knowledge.cancel'),
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    })
+  })
+  if (!confirmed) return
+
+  rootModalLoading.value = true
+  try {
+    const result = await migrateKnowledgeRoot(dir)
+    knowledgeRoot.value = result.root
+    // 迁移后旧 draft 的上下文已失效，回到根目录视图并整体刷新目录树与文档列表
+    clearDraft()
+    activeFolderID.value = 0
+    await loadKnowledgeRoot()
+    await loadWorkspace(false, false)
+    rootModalVisible.value = false
+    pendingRootDir.value = ''
+    message.success(
+      t('knowledge.migrateSuccess', {
+        folders: result.migrated.folders,
+        documents: result.migrated.documents,
+      }),
+    )
+  } catch (error) {
+    handleMigrateFailure(error)
+  } finally {
+    rootModalLoading.value = false
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function isMigrateConflictItem(value: unknown): value is KnowledgeMigrateConflictItem {
+  return (
+    isRecord(value) &&
+    typeof value.path === 'string' &&
+    (value.type === 'file' || value.type === 'dir')
+  )
+}
+
+function readMigrateConflicts(payload: unknown): KnowledgeMigrateConflictItem[] {
+  if (!isRecord(payload) || !Array.isArray(payload.conflicts)) return []
+  return payload.conflicts.filter(isMigrateConflictItem)
+}
+
+function readMigrateRollback(payload: unknown): KnowledgeMigrateRollback | null {
+  if (!isRecord(payload) || !isRecord(payload.rollback)) return null
+  const { completed, failed } = payload.rollback
+  if (typeof completed !== 'boolean') return null
+  return {
+    completed,
+    failed: Array.isArray(failed)
+      ? failed.filter((item): item is string => typeof item === 'string')
+      : [],
+  }
+}
+
+function migrateFailureFallback(code: unknown) {
+  if (code === 'knowledge_root_target_invalid') return t('knowledge.migrateTargetInvalid')
+  if (code === 'knowledge_root_migrate_conflict') return t('knowledge.migrateConflictTitle')
+  if (code === 'knowledge_root_migrate_failed') return t('knowledge.migrateFailed')
+  return t('knowledge.knowledgeRootSetFailed')
+}
+
+// S-IN-07: 冲突清单直接渲染后端返回的 path/type，配置与目录树保持不变
+function showMigrateConflicts(conflicts: KnowledgeMigrateConflictItem[]) {
+  Modal.error({
+    title: t('knowledge.migrateConflictTitle'),
+    okText: t('knowledge.confirm'),
+    content: () =>
+      h('div', [
+        h(
+          'p',
+          { style: { margin: '0 0 8px', color: '#8C8C8C', fontSize: '13px' } },
+          t('knowledge.migrateConflictListTitle'),
+        ),
+        h(
+          'ul',
+          { style: { margin: 0, paddingLeft: '18px', maxHeight: '240px', overflowY: 'auto' } },
+          conflicts.map((item) =>
+            h(
+              'li',
+              { key: item.path },
+              `${item.type === 'dir' ? t('knowledge.migrateConflictDir') : t('knowledge.migrateConflictFile')}：${item.path}`,
+            ),
+          ),
+        ),
+      ]),
+  })
+}
+
+function handleMigrateFailure(error: unknown) {
+  const apiError = error instanceof ApiError ? error : null
+  const code = apiError?.code
+  const conflicts = readMigrateConflicts(apiError?.payload)
+  if (apiError?.status === 409 && conflicts.length) {
+    showMigrateConflicts(conflicts)
+    return
+  }
+  // 优先展示后端真实文案，缺失时按错误码回退到词条
+  const detail = error instanceof Error && error.message ? error.message : ''
+  message.error(detail || migrateFailureFallback(code))
+
+  if (code === 'knowledge_root_migrate_failed') {
+    const rollback = readMigrateRollback(apiError?.payload)
+    if (rollback && !rollback.completed && rollback.failed.length) {
+      message.error(t('knowledge.migrateRollbackFailed', { items: rollback.failed.join('、') }))
+    }
+  }
+}
+
+function cancelRootModal() {
+  if (rootModalLoading.value) {
+    message.info(t('knowledge.migrateBlocked'))
+    return
+  }
+  rootModalVisible.value = false
+  pendingRootDir.value = ''
 }
 
 function confirmDiscardChanges() {
@@ -369,6 +884,7 @@ async function openDocument(uuid: string, force = false, treeKey = '') {
       folderID: document.folder_id,
       tags: [...(document.tags || [])],
       content: document.content || '',
+      filePath: document.file_path,
       contentHash: document.content_hash,
       wordCount: document.word_count,
       createdAt: document.created_at,
@@ -377,25 +893,79 @@ async function openDocument(uuid: string, force = false, treeKey = '') {
     selectedDocumentUUID.value = uuid
     selectedTreeKey.value = treeKey || `doc:${uuid}`
     trashVisible.value = false
+    editorSelectionText.value = ''
     currentSnapshot()
+    // 切到新文档：清掉上一文档的自动保存状态/错误信息；序列号提升到下一次，避免过期 in-flight 响应污染
+    resetAutosaveStateOnDraftChange()
+    // 文档已加载好，可以开始自动保存；任何修改都会触发 snapshot watcher
+    draftReady = true
   } catch (error) {
     message.error(error instanceof Error ? error.message : t('knowledge.documentLoadFailed'))
   }
 }
 
-async function createDocument() {
+// S-UI-14: 详情页「快速添加」传入目标文件夹；不传则落在当前选中目录（左侧面板「+」号）
+async function createDocument(targetFolderId?: number) {
   if (!(await confirmDiscardChanges())) return
+  const folderId = targetFolderId ?? selectedFolderID.value
   try {
+    // 默认「未命名文档」也预判重名 (n)，避免同一文件夹下出现同名文件；正文首行同步保持一致
+    const title = uniqueTitleInFolder(folderId, t('knowledge.untitled'))
     const created = await apiClient.post<KnowledgeDocument>('/knowledge/documents', {
-      title: t('knowledge.untitled'),
-      folder_id: selectedFolderID.value === 'all' ? 0 : selectedFolderID.value,
-      content: t('knowledge.newContent'),
+      title,
+      folder_id: folderId,
+      content: buildNewDocumentContent(title),
       tags: [],
+      ext: 'md',
     })
     await loadDocuments()
+    // 创建完成后自动展开目标目录
+    if (folderId > 0) {
+      const folderKey = `folder:${folderId}`
+      if (!expandedKeys.value.includes(folderKey)) {
+        expandedKeys.value = [...expandedKeys.value, folderKey]
+      }
+    }
+    if (targetFolderId !== undefined) {
+      // 保留在详情页，列表随 loadDocuments 实时刷新
+      selectedFolderID.value = folderId
+      message.success(t('knowledge.documentCreated'))
+      return
+    }
     await openDocument(created.uuid, true)
-    viewMode.value = 'edit'
     message.success(t('knowledge.documentCreated'))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('knowledge.documentCreateFailed'))
+  }
+}
+
+// S-UI-02: 新建 txt 文档（能力保留，入口在「更多」子菜单 —— S-UI-08）
+async function createTxtDocument(targetFolderId?: number) {
+  if (!(await confirmDiscardChanges())) return
+  const folderId = targetFolderId ?? selectedFolderID.value
+  try {
+    const created = await createKnowledgeDocument({
+      title: t('knowledge.untitled'),
+      folder_id: folderId,
+      content: '',
+      tags: [],
+      ext: 'txt',
+    })
+    await loadDocuments()
+    // 创建完成后自动展开目标目录
+    if (folderId > 0) {
+      const folderKey = `folder:${folderId}`
+      if (!expandedKeys.value.includes(folderKey)) {
+        expandedKeys.value = [...expandedKeys.value, folderKey]
+      }
+    }
+    if (targetFolderId !== undefined) {
+      selectedFolderID.value = folderId
+      message.success(t('knowledge.txtDocumentCreated'))
+      return
+    }
+    await openDocument(created.uuid, true)
+    message.success(t('knowledge.txtDocumentCreated'))
   } catch (error) {
     message.error(error instanceof Error ? error.message : t('knowledge.documentCreateFailed'))
   }
@@ -412,10 +982,15 @@ function updateDocumentInList(document: KnowledgeDocument) {
 
 async function saveAsCopy() {
   try {
+    const copyTitle = t('knowledge.conflictCopy', { title: draft.title.trim() || t('knowledge.untitled') })
+    // 同目录预判重名 (n)，正文首行同步换成副本标题，保持首行与文件名一致
+    const finalTitle = uniqueTitleInFolder(draft.folderID, copyTitle)
+    const heading = extractFirstHeading(draft.content)
+    const finalContent = heading !== null ? replaceFirstHeading(draft.content, finalTitle) : draft.content
     const created = await apiClient.post<KnowledgeDocument>('/knowledge/documents', {
-      title: t('knowledge.conflictCopy', { title: draft.title.trim() || t('knowledge.untitled') }),
+      title: finalTitle,
       folder_id: draft.folderID,
-      content: draft.content,
+      content: finalContent,
       tags: draft.tags,
     })
     await loadDocuments()
@@ -441,45 +1016,100 @@ function handleSaveConflict() {
   })
 }
 
-async function saveDocument() {
+// S-AS-02: 共享保存逻辑，拆分手动（Ctrl+S / 保留旧调用）与自动（防抖触发）两条路径。
+// 区别仅在反馈：手动保存弹「文档已保存」toast，自动保存只更新右上指示器，409 仍走原冲突弹窗。
+async function performSave(source: 'manual' | 'auto') {
   if (!draft.uuid || saving.value) return
-  if (!draft.title.trim()) {
-    message.error(t('knowledge.titleRequired'))
+  // 正文首行是 `# xxx` 时，文件名取首行；否则沿用 draft.title；并预判同目录下重名，提前追加 (n) 同步正文首行
+  const heading = extractFirstHeading(draft.content)
+  const titleSource = heading ?? draft.title.trim()
+  const unique = uniqueTitleInFolder(draft.folderID, titleSource, draft.uuid)
+  const nextTitle = unique
+  const nextContent = heading !== null && unique !== heading
+    ? replaceFirstHeading(draft.content, unique)
+    : draft.content
+  if (!nextTitle.trim()) {
+    if (source === 'manual') {
+      message.error(t('knowledge.titleRequired'))
+    } else {
+      autosaveState.value = 'idle'
+    }
     return
   }
+  // 同步到 draft：仅在变化时写回，避免无谓触发 watcher 再次排自动保存
+  if (nextTitle !== draft.title) draft.title = nextTitle
+  if (nextContent !== draft.content) draft.content = nextContent
+  // 手动保存时取消挂起的自动保存定时器，避免在手动保存完成后再被自动保存覆盖
+  if (source === 'manual' && autosaveTimer) {
+    clearTimeout(autosaveTimer)
+    autosaveTimer = undefined
+  }
+  const mySeq = ++saveSeq.value
+  autosaveState.value = 'saving'
   saving.value = true
   try {
     const updated = await apiClient.put<KnowledgeDocument>(
       `/knowledge/documents/${draft.uuid}`,
       {
-        title: draft.title.trim(),
+        title: nextTitle,
         folder_id: draft.folderID,
-        content: draft.content,
+        content: nextContent,
         tags: draft.tags.map((tag) => tag.trim()).filter(Boolean),
         base_hash: draft.contentHash,
       },
     )
+    // 已被更新的请求覆盖，本响应丢弃
+    if (mySeq !== saveSeq.value) return
     Object.assign(draft, {
       title: updated.title,
       folderID: updated.folder_id,
       tags: [...updated.tags],
       content: updated.content || '',
+      filePath: updated.file_path,
       contentHash: updated.content_hash,
       wordCount: updated.word_count,
       updatedAt: updated.updated_at,
     })
     currentSnapshot()
     updateDocumentInList(updated)
-    message.success(t('knowledge.documentSaved'))
+    autosaveSavedAt.value = Date.now()
+    autosaveErrorMessage.value = ''
+    autosaveState.value = 'saved'
+    if (autosaveSavedHintTimer) clearTimeout(autosaveSavedHintTimer)
+    autosaveSavedHintTimer = setTimeout(() => {
+      if (autosaveState.value === 'saved') autosaveState.value = 'idle'
+    }, AUTOSAVE_SAVED_HINT_MS)
+    if (source === 'manual') {
+      message.success(t('knowledge.documentSaved'))
+    }
   } catch (error) {
+    if (mySeq !== saveSeq.value) return
+    autosaveErrorMessage.value =
+      error instanceof Error ? error.message : t('knowledge.saveFailed')
+    autosaveState.value = 'error'
     if (error instanceof ApiError && error.status === 409) {
       handleSaveConflict()
-    } else {
-      message.error(error instanceof Error ? error.message : t('knowledge.saveFailed'))
+    } else if (source === 'manual') {
+      message.error(autosaveErrorMessage.value)
     }
+    // 自动保存失败时仅显示右上错误指示器，不弹 toast，避免频繁打扰
   } finally {
-    saving.value = false
+    if (mySeq === saveSeq.value) saving.value = false
   }
+}
+
+function saveDocument() {
+  return performSave('manual')
+}
+
+// 用户点击「保存失败」提示时，由自动保存路径立即重试一次（不重置防抖）
+async function retryAutosave() {
+  if (saving.value || !draft.uuid || !draft.title.trim()) return
+  if (autosaveTimer) {
+    clearTimeout(autosaveTimer)
+    autosaveTimer = undefined
+  }
+  await performSave('auto')
 }
 
 function deleteDocument() {
@@ -503,9 +1133,74 @@ function deleteDocument() {
   })
 }
 
+// 目录树文档节点三点菜单「重命名」→ 打开顶部重命名弹窗
+function handleRenameDocument(uuid: string) {
+  if (selectedDocumentUUID.value !== uuid) return
+  startRename()
+}
+
+// 重命名入口：把当前标题作为弹窗初值。弹窗提交后只更新 draft.title，由自动保存负责落盘
+function startRename() {
+  if (!draft.uuid) return
+  renameInputValue.value = draft.title
+  renameModalVisible.value = true
+}
+
+function cancelRename() {
+  renameModalVisible.value = false
+}
+
+async function submitRename() {
+  const next = renameInputValue.value.trim()
+  if (!next) {
+    message.error(t('knowledge.titleRequired'))
+    return
+  }
+  // 提前按文件名规则清洗，避免标题里含非法字符导致后端落盘失败
+  const sanitized = sanitizeTitle(next)
+  if (sanitized === draft.title.trim()) {
+    renameModalVisible.value = false
+    return
+  }
+  renameModalVisible.value = false
+  // 直接改 draft.title，watch 到 snapshot 变化后会自动保存；触发表单 → dirty 的过渡
+  draft.title = sanitized
+  // 正文首行是文件名的体现，同步更新首行保持一致，避免被 performSave 的「首行为准」逻辑覆盖回旧值
+  if (extractFirstHeading(draft.content) !== null) {
+    draft.content = replaceFirstHeading(draft.content, sanitized)
+  }
+}
+
+// 目录树文档节点三点菜单「移到回收站」
+function handleDeleteDocument(uuid: string) {
+  if (selectedDocumentUUID.value !== uuid) {
+    // 如果不是当前打开的文档，直接调接口
+    Modal.confirm({
+      title: t('knowledge.deleteTitle', { title: documents.value.find((d) => d.uuid === uuid)?.title || '' }),
+      content: t('knowledge.deleteDescription'),
+      okText: t('knowledge.moveToTrash'),
+      okType: 'danger',
+      cancelText: t('knowledge.cancel'),
+      async onOk() {
+        try {
+          await apiClient.delete(`/knowledge/documents/${uuid}`)
+          await Promise.all([loadDocuments(), loadTrash()])
+          if (draft.uuid === uuid) clearDraft()
+          message.success(t('knowledge.movedToTrash'))
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : t('knowledge.deleteFailed'))
+        }
+      },
+    })
+    return
+  }
+  deleteDocument()
+}
+
 async function openTrash() {
   if (!(await confirmDiscardChanges())) return
   clearDraft()
+  activeFolderID.value = 0
   trashVisible.value = true
   await refreshTrash()
 }
@@ -550,29 +1245,26 @@ async function selectDirectory(keys: Array<string | number>, info: DirectorySele
   if (!(await confirmDiscardChanges())) return
   clearDraft()
   selectedTreeKey.value = node.key
-  selectedFolderID.value = node.special === 'all' ? 'all' : node.folderID
   trashVisible.value = false
-}
 
-function canDragDirectoryNode(node: DirectoryNode) {
-  return node.special !== 'all'
+  // 点击文件夹时：如果 sidebar 收起则自动展开，并展开该目录节点
+  if (sidebarCollapsed.value) {
+    previousExpandedKeys = [...expandedKeys.value]
+    sidebarCollapsed.value = false
+  }
+
+  // 文件夹进入详情页
+  selectedFolderID.value = node.folderID
+  activeFolderID.value = node.folderID
+  // 自动展开该目录节点
+  if (!expandedKeys.value.includes(node.key)) {
+    expandedKeys.value = [...expandedKeys.value, node.key]
+  }
 }
 
 async function moveDirectoryNode(info: DirectoryDropInfo) {
   const dragged = info.dragNode
   const target = info.node
-  if (dragged.special === 'all') {
-    message.info(t('knowledge.allFixed'))
-    return
-  }
-  if (dragged.special === 'uncategorized' && !info.dropToGap) {
-    message.info(t('knowledge.defaultTopLevel'))
-    return
-  }
-  if (target.special === 'all') {
-    message.info(t('knowledge.allAggregate'))
-    return
-  }
   if (!info.dropToGap && target.kind !== 'folder') return
 
   const findTreeNode = (nodes: DirectoryNode[], key: string): DirectoryNode | undefined => {
@@ -585,7 +1277,7 @@ async function moveDirectoryNode(info: DirectoryDropInfo) {
   }
   const childrenOf = (parentKey: string) => {
     if (parentKey === 'root') {
-      return directoryTreeData.value.filter((node) => node.special !== 'all')
+      return directoryTreeData.value
     }
     return findTreeNode(directoryTreeData.value, parentKey)?.children || []
   }
@@ -601,18 +1293,11 @@ async function moveDirectoryNode(info: DirectoryDropInfo) {
   const dropDocumentIntoFolder = dragged.kind === 'document' && target.kind === 'folder'
   let targetParentKey: string
   if (dropDocumentIntoFolder) {
-    targetParentKey = target.special === 'uncategorized' ? 'special:uncategorized' : target.key
+    targetParentKey = target.key
   } else if (info.dropToGap) {
     targetParentKey = target.parentKey
-  } else if (target.special === 'uncategorized') {
-    targetParentKey = dragged.kind === 'folder' ? 'root' : 'special:uncategorized'
   } else {
     targetParentKey = target.key
-  }
-
-  if (dragged.kind === 'document' && targetParentKey === 'special:all') {
-    message.info(t('knowledge.allAggregate'))
-    return
   }
 
   if (dragged.kind === 'document' && targetParentKey === 'root') {
@@ -684,7 +1369,7 @@ async function moveDirectoryNode(info: DirectoryDropInfo) {
       ...directoryOrder.value,
       [targetParentKey]: targetSiblingKeys,
     }
-    if (dragged.parentKey !== 'special:all' && dragged.parentKey !== targetParentKey) {
+    if (dragged.parentKey !== targetParentKey) {
       nextDirectoryOrder[dragged.parentKey] = (
         directoryOrder.value[dragged.parentKey] ||
         childrenOf(dragged.parentKey).map((node) => node.key)
@@ -703,30 +1388,170 @@ async function moveDirectoryNode(info: DirectoryDropInfo) {
   }
 }
 
-function openFolderModal() {
-  folderName.value = ''
-  folderParentID.value = typeof selectedFolderID.value === 'number' ? selectedFolderID.value : 0
-  folderModalVisible.value = true
+// 通用「新建文档 / 新建文件夹」弹窗：编辑态先做放弃/保存确认，再弹出名称输入框
+async function openCreateModal(type: CreateModalType, parentId?: number) {
+  if (!(await confirmDiscardChanges())) return
+  const resolvedParent = parentId ?? selectedFolderID.value
+  createModalType.value = type
+  createModalParentID.value = resolvedParent
+  createModalName.value = ''
+  createModalVisible.value = true
 }
 
-async function createFolder() {
-  const name = folderName.value.trim()
-  if (!name) return
+function cancelCreateModal() {
+  if (createModalLoading.value) return
+  createModalVisible.value = false
+  createModalName.value = ''
+}
+
+// 文件名无扩展名时默认补 .md，避免后端校验拒绝
+function normalizedDocumentTitle(raw: string): { title: string; ext: 'md' | 'txt' } {
+  const title = raw.trim()
+  const lastDot = title.lastIndexOf('.')
+  const slashIndex = Math.max(title.lastIndexOf('/'), title.lastIndexOf('\\'))
+  if (lastDot > slashIndex && lastDot > 0 && lastDot < title.length - 1) {
+    const ext = title.slice(lastDot + 1).toLowerCase()
+    if (ext === 'md' || ext === 'txt') {
+      return { title: title.slice(0, lastDot), ext }
+    }
+  }
+  return { title, ext: 'md' }
+}
+
+// 提取正文首行的 `# xxx` 标题；首行必须是 `# ` 开头（单 #）才返回；返回值为去掉两端空白与可选结尾 # 的标题文本
+function extractFirstHeading(content: string): string | null {
+  if (!content) return null
+  const firstLine = content.split(/\r?\n/, 1)[0]
+  const match = /^#\s+(.+?)\s*#*\s*$/.exec(firstLine)
+  if (!match) return null
+  const heading = match[1].trim()
+  return heading || null
+}
+
+// 把标题清洗为合法文件名，与后端 internal/knowledge/store.go 的 SanitizeFileName 保持一致：
+// 替换控制字符与 / \ : * ? " < > | 为下划线；去掉首尾 . 与空白；空结果回退到「未命名文档」。
+// 创建/保存前调用一次，避免标题里含这些字符导致后端文件落盘失败。
+function sanitizeTitle(title: string): string {
+  const trimmed = (title || '').trim()
+  let result = ''
+  for (const ch of trimmed) {
+    const code = ch.codePointAt(0) ?? 0
+    const isControl = (code >= 0x00 && code <= 0x1f) || (code >= 0x7f && code <= 0x9f)
+    if (
+      isControl ||
+      ch === '/' || ch === '\\' || ch === ':' || ch === '*' ||
+      ch === '?' || ch === '"' || ch === '<' || ch === '>' || ch === '|'
+    ) {
+      result += '_'
+    } else {
+      result += ch
+    }
+  }
+  result = result.replace(/^[. ]+|[. ]+$/g, '')
+  return result || t('knowledge.untitled')
+}
+
+// 用新标题替换正文首行；保留其余内容；如果首行后没有空行则补一行，与默认 newContent 模板结构保持一致
+function replaceFirstHeading(content: string, heading: string): string {
+  const lines = content.split(/\r?\n/)
+  if (!lines.length) return `# ${heading}\n`
+  lines[0] = `# ${heading}`
+  if (lines.length === 1 || lines[1].trim() !== '') {
+    lines.splice(1, 0, '')
+  }
+  return lines.join('\n')
+}
+
+// 同目录下不冲突的标题：与后端 uniqueNewRelPath 的 (n) 后缀行为一致；
+// 用于在创建/保存前预判重名，把 (n) 同步反映到正文首行，避免后端改 file_path 而前端 title/content 不一致。
+// 同时对输入和已有文档 title 做 sanitize，确保含非法字符的脏数据不会漏判冲突。
+function uniqueTitleInFolder(folderId: number, baseTitle: string, excludeUUID = ''): string {
+  const normalized = sanitizeTitle(baseTitle)
+  const exists = (candidate: string) =>
+    documents.value.some(
+      (doc) =>
+        doc.folder_id === folderId &&
+        doc.uuid !== excludeUUID &&
+        sanitizeTitle(doc.title) === candidate,
+    )
+  if (!exists(normalized)) return normalized
+  for (let i = 1; i < 10000; i++) {
+    const candidate = `${normalized}(${i})`
+    if (!exists(candidate)) return candidate
+  }
+  return normalized
+}
+
+// 用默认 newContent 模板构造新文档正文，只把首行标题换成传入的 title，保留「首行 + 空行 + 正文提示」结构
+function buildNewDocumentContent(title: string): string {
+  const template = t('knowledge.newContent')
+  const lines = template.split(/\r?\n/)
+  lines[0] = `# ${title}`
+  return lines.join('\n')
+}
+
+async function submitCreateModal() {
+  const raw = createModalName.value.trim()
+  if (!raw || createModalLoading.value) return
+  createModalLoading.value = true
+  const folderId = createModalParentID.value
   try {
-    await apiClient.post('/knowledge/folders', {
-      name,
-      parent_id: folderParentID.value,
+    if (createModalType.value === 'folder') {
+      await apiClient.post('/knowledge/folders', {
+        name: raw,
+        parent_id: folderId,
+      })
+      createModalVisible.value = false
+      createModalName.value = ''
+      await loadFolders()
+      // 创建完成后自动展开父目录
+      if (folderId > 0) {
+        const folderKey = `folder:${folderId}`
+        if (!expandedKeys.value.includes(folderKey)) {
+          expandedKeys.value = [...expandedKeys.value, folderKey]
+        }
+      }
+      message.success(t('knowledge.folderCreated'))
+      return
+    }
+    const { title, ext } = normalizedDocumentTitle(raw)
+    // md 文档：标题在同目录下预判重名并追加 (n)，正文首行同步换成同一标题，避免后端再加 (n) 造成 title 与内容不一致
+    const finalTitle = ext === 'md' ? uniqueTitleInFolder(folderId, title) : title
+    const finalContent = ext === 'md' ? buildNewDocumentContent(finalTitle) : ''
+    const created = await apiClient.post<KnowledgeDocument>('/knowledge/documents', {
+      title: finalTitle,
+      folder_id: folderId,
+      content: finalContent,
+      tags: [],
+      ext,
     })
-    folderModalVisible.value = false
-    await loadFolders()
-    message.success(t('knowledge.folderCreated'))
+    createModalVisible.value = false
+    createModalName.value = ''
+    await loadDocuments()
+    // 创建完成后自动展开目标目录
+    if (folderId > 0) {
+      const folderKey = `folder:${folderId}`
+      if (!expandedKeys.value.includes(folderKey)) {
+        expandedKeys.value = [...expandedKeys.value, folderKey]
+      }
+    }
+    await openDocument(created.uuid, true)
+    message.success(t('knowledge.documentCreatedInPath', { path: created.file_path }))
   } catch (error) {
-    message.error(error instanceof Error ? error.message : t('knowledge.folderCreateFailed'))
+    message.error(
+      error instanceof Error
+        ? error.message
+        : createModalType.value === 'folder'
+          ? t('knowledge.folderCreateFailed')
+          : t('knowledge.documentCreateFailed'),
+    )
+  } finally {
+    createModalLoading.value = false
   }
 }
 
 async function renameSelectedFolder() {
-  if (typeof selectedFolderID.value !== 'number' || selectedFolderID.value === 0) return
+  if (!selectedFolderID.value || selectedFolderID.value === 0) return
   const folder = flatFolders.value.find((item) => item.id === selectedFolderID.value)
   if (!folder) return
   const name = window.prompt(t('knowledge.folderName'), folder.name)?.trim()
@@ -740,27 +1565,77 @@ async function renameSelectedFolder() {
   }
 }
 
+// S-UI-03: 删除文件夹双选项弹窗
 function deleteSelectedFolder() {
-  if (typeof selectedFolderID.value !== 'number' || selectedFolderID.value === 0) return
+  if (!selectedFolderID.value || selectedFolderID.value === 0) return
   const folder = flatFolders.value.find((item) => item.id === selectedFolderID.value)
   if (!folder) return
-  Modal.confirm({
-    title: t('knowledge.deleteFolderTitle', { name: folder.name }),
-    content: t('knowledge.deleteFolderDescription'),
-    okText: t('knowledge.deleteFolder'),
-    okType: 'danger',
-    cancelText: t('knowledge.cancel'),
-    async onOk() {
-      try {
-        await apiClient.delete(`/knowledge/folders/${folder.id}`)
-        selectedFolderID.value = 'all'
-        await Promise.all([loadFolders(), loadDocuments()])
-        message.success(t('knowledge.folderDeleted'))
-      } catch (error) {
-        message.error(error instanceof Error ? error.message : t('knowledge.folderDeleteFailed'))
-      }
-    },
-  })
+  deleteFolderTarget.value = folder
+  deleteFolderModalVisible.value = true
+}
+
+async function confirmDeleteFolder(mode: 'keep' | 'purge') {
+  const folder = deleteFolderTarget.value
+  if (!folder) return
+  deleteFolderModalLoading.value = true
+  try {
+    await deleteKnowledgeFolder(folder.id, mode)
+    deleteFolderModalVisible.value = false
+    deleteFolderTarget.value = null
+    // S-UI-14: 删除成功后回到上级文件夹详情页（有上级）或根目录视图（folder_id=0）
+    const parentID = folder.parent_id
+    selectedFolderID.value = parentID
+    selectedTreeKey.value = parentID > 0 ? `folder:${parentID}` : 'root'
+    activeFolderID.value = parentID
+    if (mode === 'purge') {
+      await Promise.all([loadFolders(), loadDocuments(), loadTrash()])
+    } else {
+      await Promise.all([loadFolders(), loadDocuments()])
+    }
+    message.success(mode === 'purge' ? t('knowledge.folderDeleted') : t('knowledge.folderKept'))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('knowledge.folderDeleteFailed'))
+  } finally {
+    deleteFolderModalLoading.value = false
+  }
+}
+
+// S-UI-14: 详情页逐层下钻与面包屑返回
+function handleDetailOpenFolder(folderId: number) {
+  activeFolderID.value = folderId
+  selectedFolderID.value = folderId
+  selectedTreeKey.value = `folder:${folderId}`
+  trashVisible.value = false
+}
+
+function handleDetailNavigate(folderId: number) {
+  activeFolderID.value = folderId
+  selectedFolderID.value = folderId
+  selectedTreeKey.value = folderId > 0 ? `folder:${folderId}` : 'root'
+}
+
+async function handleDetailOpenDocument(uuid: string) {
+  await openDocument(uuid)
+}
+
+// 详情页「快速添加 → 新建文件夹」：直接创建，不需要弹窗（与 createDocument 语义一致）
+async function createFolderFromDetail(folderId: number) {
+  try {
+    await apiClient.post('/knowledge/folders', {
+      name: t('knowledge.untitled'),
+      parent_id: folderId,
+    })
+    await loadFolders()
+    message.success(t('knowledge.folderCreated'))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('knowledge.folderCreateFailed'))
+  }
+}
+
+// 详情页删除当前文件夹：复用既有 keep/purge 双选项弹窗（S-UI-14 / CK-3）
+function handleDetailDeleteFolder(folderId: number) {
+  selectedFolderID.value = folderId
+  deleteSelectedFolder()
 }
 
 async function performSearch() {
@@ -792,10 +1667,69 @@ function scheduleSearch() {
   searchTimer = setTimeout(() => void performSearch(), 260)
 }
 
-function scrollToHeading(item: OutlineItem) {
-  nextTick(() => {
-    document.getElementById(item.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+// S-UI-10: 大纲跳转改由编辑器定位第 index 个标题元素（vditor 即时渲染 DOM）
+function scrollToHeading(index: number) {
+  editorRef.value?.scrollToHeading(index)
+}
+
+// S-UI-13: 编辑器选区变化（空文本表示选区已离开编辑器或已折叠）
+function handleEditorSelection(info: EditorSelection) {
+  editorSelectionText.value = info.text
+}
+
+// S-UI-13: 打开「添加给 Agent」，以点击瞬间的选区快照作为引用片段（含前后文定位）
+function openAgentReference() {
+  const info = editorRef.value?.getSelectionInfo() ?? null
+  const text = (info?.text || editorSelectionText.value).trim()
+  if (!text) return
+  agentReferenceFragment.value = {
+    text,
+    prefix: info?.prefix ?? '',
+    suffix: info?.suffix ?? '',
+  }
+  agentReferenceOpen.value = true
+}
+
+// S-UI-13: 发送到对话输入区（跨页投递，由 ChatComposer 消费；T5 实现消费端）
+function handleAgentReferenceSend(instruction: string) {
+  const fragment = agentReferenceFragment.value
+  if (!fragment || !draft.uuid) return
+  knowledgeReferenceStore.enqueue({
+    uuid: draft.uuid,
+    title: documentFileName(),
+    filePath: draft.filePath,
+    folderPath: folderPathOf(draft.folderID),
+    fragment,
+    instruction,
   })
+  agentReferenceOpen.value = false
+  agentReferenceFragment.value = null
+  message.success(t('knowledge.agentReferenceSent'))
+}
+
+// 引用标题取真实文件名（统一补 .md/.txt 扩展名），与 file_path 保持一致；
+// 当 file_path 已含 md/txt 后缀时直接复用，否则回退到当前文档的 ext
+function documentFileName() {
+  const segments = draft.filePath.split(/[\\/]+/).filter(Boolean)
+  const baseName = segments.pop() || draft.title
+  const lastDot = baseName.lastIndexOf('.')
+  const slashIndex = Math.max(baseName.lastIndexOf('/'), baseName.lastIndexOf('\\'))
+  if (lastDot > slashIndex && lastDot > 0 && lastDot < baseName.length - 1) {
+    const ext = baseName.slice(lastDot + 1).toLowerCase()
+    if (ext === 'md' || ext === 'txt') return baseName
+  }
+  const currentDoc = documents.value.find((item) => item.uuid === draft.uuid)
+  const docExt = currentDoc?.ext
+  return docExt ? `${baseName}.${docExt}` : baseName
+}
+
+// 引用来源路径：根为 teamsboard；folder_id = 0 视为「根目录」
+function folderPathOf(folderID: number) {
+  const root = t('knowledge.breadcrumbRoot')
+  if (!folderID) return `${root} / `
+  const chain = folderAncestorChain(folderID)
+  if (!chain.length) return root
+  return [root, ...chain.map((folder) => folder.name)].join(' / ')
 }
 
 function handleKeyboard(event: KeyboardEvent) {
@@ -814,12 +1748,24 @@ onMounted(async () => {
   } catch {
     directoryOrder.value = {}
   }
-  await loadWorkspace(false)
+  await loadKnowledgeRoot()
+  await loadWorkspace(false, true)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeyboard)
   if (searchTimer) clearTimeout(searchTimer)
+  // 防止组件卸载时仍残留拖拽监听与光标样式
+  sidebarResizeCleanup?.()
+  // 清掉自动保存相关的残余定时器，避免在 setup 之外跑逻辑
+  if (autosaveTimer) {
+    clearTimeout(autosaveTimer)
+    autosaveTimer = undefined
+  }
+  if (autosaveSavedHintTimer) {
+    clearTimeout(autosaveSavedHintTimer)
+    autosaveSavedHintTimer = undefined
+  }
 })
 </script>
 
@@ -827,32 +1773,69 @@ onBeforeUnmount(() => {
   <div class="knowledge-shell">
     <header class="knowledge-titlebar">{{ t('knowledge.title') }}</header>
 
-    <div class="knowledge-page" :class="{ 'is-loading': loading }">
-      <aside class="knowledge-sidebar">
+    <div
+      class="knowledge-page"
+      :class="{ 'is-loading': loading, 'is-sidebar-collapsed': sidebarCollapsed, 'is-sidebar-narrow': isSidebarNarrow }"
+      :style="knowledgePageStyle"
+    >
+      <aside v-show="!sidebarCollapsed" class="knowledge-sidebar">
+        <!-- 目录栏右侧的可拖拽改宽度把手（仅在展开时可见，折叠后自动隐藏） -->
+        <button
+          v-show="!sidebarCollapsed"
+          class="sidebar-resize-handle"
+          type="button"
+          :aria-label="t('knowledge.resizeSidebar')"
+          :title="t('knowledge.resizeSidebar')"
+          @mousedown="startSidebarResize"
+        />
         <div class="directory-heading">
           <div class="directory-title">
             <strong>{{ t('knowledge.catalog') }}</strong>
             <span class="directory-divider" />
-            <span>{{ t('knowledge.dragHint') }}</span>
           </div>
-          <a-dropdown :trigger="['click']">
-            <button class="icon-button add-button" type="button" :aria-label="t('knowledge.new')">
-              <PlusOutlined />
-            </button>
-            <template #overlay>
-              <a-menu>
-                <a-menu-item key="document" @click="createDocument">
-                  <FileTextOutlined /> {{ t('knowledge.newDocument') }}
-                </a-menu-item>
-                <a-menu-item key="folder" @click="openFolderModal">
-                  <FolderAddOutlined /> {{ t('knowledge.newFolder') }}
-                </a-menu-item>
-              </a-menu>
-            </template>
-          </a-dropdown>
+          <div class="directory-actions">
+            <a-tooltip :title="t('knowledge.refreshDirectory')">
+              <button
+                class="icon-button refresh-button"
+                type="button"
+                :aria-label="t('knowledge.refreshDirectory')"
+                :disabled="scanning"
+                @click="refreshWorkspace"
+              >
+                <ReloadOutlined :class="{ spinning: scanning }" />
+              </button>
+            </a-tooltip>
+            <a-tooltip :title="t('knowledge.new')">
+              <button
+                class="icon-button"
+                type="button"
+                :aria-label="t('knowledge.new')"
+                @click="openCreateModal('document',0)"
+              >
+                <FileTextOutlined />
+              </button>
+            </a-tooltip>
+            <a-tooltip :title="t('knowledge.newFolder')">
+              <button
+                class="icon-button"
+                type="button"
+                :aria-label="t('knowledge.newFolder')"
+                @click="openCreateModal('folder',0)"
+              >
+                <FolderAddOutlined />
+              </button>
+            </a-tooltip>
+          </div>
         </div>
 
-        <div class="sidebar-search">
+        <!-- S-UI-07: 空知识库不自动创建内容，仅给创建入口与引导提示 -->
+        <div v-if="knowledgeEmpty && !searchKeyword.trim()" class="sidebar-empty-action">
+          <button class="create-first-button" type="button" @click="createDocument()">
+            <PlusOutlined />
+            <span>{{ t('knowledge.emptyCreateFirst') }}</span>
+          </button>
+        </div>
+        <div v-else class="sidebar-search">
           <a-input
             v-model:value="searchKeyword"
             allow-clear
@@ -869,11 +1852,13 @@ onBeforeUnmount(() => {
             <div class="directory-scroll">
               <a-tree
                 block-node
-                :draggable="canDragDirectoryNode"
+                :draggable="true"
                 :tree-data="directoryTreeData"
                 :selected-keys="trashVisible || !selectedTreeKey ? [] : [selectedTreeKey]"
+                :expanded-keys="expandedKeys"
                 @select="selectDirectory"
                 @drop="moveDirectoryNode"
+                @expand="(keys: string[]) => { expandedKeys = keys }"
               >
                 <template #title="{ title, key, kind, entityId, count }">
                   <div class="directory-node" :class="`node-${kind}`">
@@ -881,29 +1866,69 @@ onBeforeUnmount(() => {
                     <FileTextOutlined v-else class="node-icon document-icon" />
                     <span class="node-title">{{ title }}</span>
                     <span v-if="kind === 'folder'" class="node-count">{{ count }}</span>
-                    <span
-                      v-if="kind === 'folder' && String(key).startsWith('folder:')"
-                      class="node-actions"
+                    <!-- 文件夹 / 文档 hover 弹出三点按钮：所有操作统一收纳到 dropdown -->
+                    <a-dropdown
+                      v-if="kind === 'folder' || kind === 'document'"
+                      :trigger="['click']"
+                      placement="bottomRight"
                     >
-                      <a-tooltip :title="t('knowledge.rename')">
-                        <button
-                          type="button"
-                          :aria-label="t('knowledge.renameFolder')"
-                          @click.stop="selectedFolderID = Number(entityId); renameSelectedFolder()"
-                        >
-                          <EditOutlined />
-                        </button>
-                      </a-tooltip>
-                      <a-tooltip :title="t('knowledge.deleteFolder')">
-                        <button
-                          type="button"
-                          :aria-label="t('knowledge.deleteFolder')"
-                          @click.stop="selectedFolderID = Number(entityId); deleteSelectedFolder()"
-                        >
-                          <DeleteOutlined />
-                        </button>
-                      </a-tooltip>
-                    </span>
+                      <span
+                        class="node-actions"
+                        role="button"
+                        tabindex="0"
+                        :aria-label="t('knowledge.moreActionsTip')"
+                        @click.stop
+                      >
+                        <MoreOutlined />
+                      </span>
+                      <template #overlay>
+                        <a-menu @click.stop>
+                          <template v-if="kind === 'folder'">
+                            <a-menu-item
+                              key="new-doc"
+                              @click="openCreateModal('document', Number(entityId))"
+                            >
+                              <FileTextOutlined /> {{ t('knowledge.createDocumentIn') }}
+                            </a-menu-item>
+                            <a-menu-item
+                              key="new-folder"
+                              @click="openCreateModal('folder', Number(entityId))"
+                            >
+                              <FolderAddOutlined /> {{ t('knowledge.createFolderIn') }}
+                            </a-menu-item>
+                            <a-menu-item
+                              key="rename"
+                              @click="selectedFolderID = Number(entityId); renameSelectedFolder()"
+                            >
+                              <EditOutlined /> {{ t('knowledge.rename') }}
+                            </a-menu-item>
+                            <a-menu-item
+                              v-if="String(key).startsWith('folder:')"
+                              key="delete"
+                              danger
+                              @click="selectedFolderID = Number(entityId); deleteSelectedFolder()"
+                            >
+                              <DeleteOutlined /> {{ t('knowledge.deleteFolder') }}
+                            </a-menu-item>
+                          </template>
+                          <template v-else>
+                            <a-menu-item
+                              key="rename-doc"
+                              @click="handleRenameDocument(String(entityId))"
+                            >
+                              <EditOutlined /> {{ t('knowledge.rename') }}
+                            </a-menu-item>
+                            <a-menu-item
+                              key="delete-doc"
+                              danger
+                              @click="handleDeleteDocument(String(entityId))"
+                            >
+                              <DeleteOutlined /> {{ t('knowledge.moveToTrash') }}
+                            </a-menu-item>
+                          </template>
+                        </a-menu>
+                      </template>
+                    </a-dropdown>
                   </div>
                 </template>
               </a-tree>
@@ -913,6 +1938,24 @@ onBeforeUnmount(() => {
             </div>
           </a-spin>
         </div>
+
+        <button
+          class="root-entry"
+          type="button"
+          :aria-label="t('knowledge.knowledgeRootLabel')"
+          @click="openRootModal"
+        >
+          <span class="root-entry-label">{{ t('knowledge.knowledgeRootLabel') }}：</span>
+          <span class="root-breadcrumb">
+            <template v-for="(segment, index) in rootBreadcrumbSegments" :key="index">
+              <span class="root-breadcrumb-segment">{{ segment }}</span>
+              <span
+                v-if="index < rootBreadcrumbSegments.length - 1"
+                class="root-breadcrumb-separator"
+              > > </span>
+            </template>
+          </span>
+        </button>
 
         <button
           class="trash-entry"
@@ -969,78 +2012,183 @@ onBeforeUnmount(() => {
         <div v-else class="trash-empty">{{ t('knowledge.trashEmpty') }}</div>
       </main>
 
-      <main v-else-if="draft.uuid" class="editor-workspace">
-        <header class="editor-header">
-          <div class="editor-title-row">
-            <div class="editor-document-title">
-              <FileTextOutlined />
-              <a-input
-                v-if="editingTitle"
-                v-model:value="draft.title"
-                class="title-input"
-                :placeholder="t('knowledge.documentTitle')"
-                autofocus
-                @press-enter="editingTitle = false"
-                @blur="editingTitle = false"
-              />
-              <h2 v-else>{{ draft.title }}</h2>
-            </div>
-            <div class="editor-actions">
-              <a-tooltip :title="t('knowledge.rename')">
-                <button class="icon-button" type="button" :aria-label="t('knowledge.rename')" @click="editingTitle = true">
-                  <EditOutlined />
-                </button>
-              </a-tooltip>
-              <a-tooltip :title="t('knowledge.moveToTrash')">
-                <button class="icon-button" type="button" :aria-label="t('knowledge.moveToTrash')" @click="deleteDocument">
-                  <DeleteOutlined />
-                </button>
-              </a-tooltip>
-              <a-tooltip :title="t('common.actions.save')">
+      <main v-else-if="draft.uuid" class="editor-workspace" :class="{ 'is-inspector-collapsed': !inspectorOpen }">
+        <!-- 面包屑导航行 -->
+        <nav class="editor-breadcrumb-row" aria-label="文件路径导航">
+          <div class="editor-breadcrumb-leading">
+            <!-- 左侧目录栏折叠 / 展开切换（固定在 nav 最左侧） -->
+            <a-tooltip
+              :title="sidebarCollapsed ? t('knowledge.expandSidebar') : t('knowledge.collapseSidebar')"
+            >
+              <button
+                class="icon-button sidebar-nav-toggle"
+                type="button"
+                :aria-label="sidebarCollapsed ? t('knowledge.expandSidebar') : t('knowledge.collapseSidebar')"
+                @click="toggleSidebar"
+              >
+                <component :is="sidebarCollapsed ? MenuUnfoldOutlined : MenuFoldOutlined" />
+              </button>
+            </a-tooltip>
+            <div class="editor-breadcrumb">
+              <template v-for="(item, index) in visibleBreadcrumbs" :key="item.id">
+                <!-- 溢出省略号：显示省略号按钮，点击展开全部路径 -->
+                <span v-if="item.kind === 'overflow'" class="breadcrumb-overflow">
+                    <a-tooltip :title="documentBreadcrumbs.map(i => fullBreadcrumbName(i)).join(' / ')">
+                      <button
+                        type="button"
+                        class="crumb-overflow-btn"
+                        :aria-label="t('knowledge.breadcrumbOverflow')"
+                        @click="showFullBreadcrumb"
+                      >{{ t('knowledge.breadcrumbOverflow') }}</button>
+                    </a-tooltip>
+                  </span>
                 <button
-                  class="icon-button save-button"
+                  v-else-if="item.kind !== 'document'"
                   type="button"
-                  :aria-label="t('knowledge.saveDocument')"
-                  :disabled="saving"
-                  @click="saveDocument"
-                >
-                  <CheckOutlined />
-                </button>
-              </a-tooltip>
+                  class="crumb crumb-link"
+                  :title="fullBreadcrumbName(item)"
+                  @click="navigateBreadcrumb(item)"
+                >{{ breadcrumbDisplayName(item) }}</button>
+                <span v-else class="crumb crumb-current" :title="fullBreadcrumbName(item)">{{ breadcrumbDisplayName(item) }}</span>
+                <span v-if="index < visibleBreadcrumbs.length - 1" class="crumb-separator"> / </span>
+              </template>
             </div>
           </div>
-          <div class="editor-meta-row">
-            <div class="save-state" :class="{ dirty }">
-              {{ dirty ? t('knowledge.unsaved') : t('knowledge.saved') }}
-            </div>
-            <span class="meta-divider" />
-            <span class="markdown-support">{{ t('knowledge.markdown') }}</span>
-            <a-segmented
-              v-model:value="viewMode"
-              class="view-switcher"
-              :options="[
-                { value: 'edit', label: t('knowledge.edit') },
-                { value: 'split', label: t('knowledge.split') },
-                { value: 'preview', label: t('knowledge.preview') },
-              ]"
-            />
-          </div>
-        </header>
 
-        <section class="editor-body" :class="`mode-${viewMode}`">
-          <div v-if="viewMode !== 'preview'" class="source-pane">
-            <a-textarea
-              v-model:value="draft.content"
-              class="markdown-input"
-              :placeholder="t('knowledge.editorPlaceholder')"
-              :spellcheck="false"
-            />
+          <div class="editor-header-actions">
+            <!-- 自动保存状态指示：pending/saving 时短暂展示文案，saved 后 2 秒回 idle，error 时点击重试 -->
+            <button
+              v-if="autosaveState === 'error'"
+              type="button"
+              class="autosave-indicator autosave-indicator--error"
+              :title="autosaveErrorMessage"
+              :aria-label="t('knowledge.autosaveFailed')"
+              @click="retryAutosave"
+            >
+              <ReloadOutlined />
+              <span>{{ t('knowledge.autosaveFailed') }}</span>
+            </button>
+            <span
+              v-else-if="autosaveHint"
+              class="autosave-indicator"
+              :class="{
+                'autosave-indicator--pending': autosaveState === 'pending',
+                'autosave-indicator--saving': autosaveState === 'saving',
+                'autosave-indicator--saved': autosaveState === 'saved',
+              }"
+              aria-live="polite"
+            >
+              <span
+                v-if="autosaveState === 'saving'"
+                class="autosave-spinner"
+                aria-hidden="true"
+              />
+              <span>{{ autosaveHint }}</span>
+            </span>
+            <!-- 更多操作：重命名 / 移到回收站（替代原 editor-header 中的入口） -->
+            <a-dropdown :trigger="['click']" placement="bottomRight">
+              <button class="icon-button" type="button" :aria-label="t('knowledge.moreActions')">
+                <MoreOutlined />
+              </button>
+              <template #overlay>
+                <a-menu>
+                  <a-menu-item key="rename" @click="startRename">
+                    <EditOutlined /> {{ t('knowledge.rename') }}
+                  </a-menu-item>
+                  <a-menu-item key="delete" danger @click="deleteDocument">
+                    <DeleteOutlined /> {{ t('knowledge.moveToTrash') }}
+                  </a-menu-item>
+                </a-menu>
+              </template>
+            </a-dropdown>
+            <!-- 抽屉展开 / 折叠切换 -->
+            <a-tooltip :title="inspectorOpen ? t('knowledge.inspectorCollapse') : t('knowledge.inspectorExpand')">
+              <button
+                class="icon-button"
+                type="button"
+                :aria-label="inspectorOpen ? t('knowledge.inspectorCollapse') : t('knowledge.inspectorExpand')"
+                @click="toggleInspector"
+              >
+                <component :is="inspectorOpen ? MenuFoldOutlined : MenuUnfoldOutlined" />
+              </button>
+            </a-tooltip>
           </div>
-          <div v-if="viewMode !== 'edit'" class="preview-pane">
-            <article class="markdown-preview" v-html="renderedMarkdown"></article>
-          </div>
+        </nav>
+
+
+        <!--
+          S-UI-09: md 与 txt 统一使用 vditor 即时渲染（边写边渲染），移除原「编辑/分栏/预览」三态；
+          S-UI-11/S-UI-13: 浮动工具栏由编辑器内部维护，此处注入「添加给 Agent」入口。
+        -->
+        <section class="editor-body">
+          <MarkdownEditor
+            ref="editorRef"
+            v-model="draft.content"
+            floating-toolbar
+            :placeholder="t('knowledge.editorPlaceholder')"
+            @selection-change="handleEditorSelection"
+          >
+            <template #floating-actions>
+              <!-- mousedown.prevent 保留编辑器选区；Enter/Space 覆盖键盘触发（S-UI-13） -->
+              <button
+                v-if="editorSelectionText"
+                type="button"
+                class="floating-agent-button"
+                @mousedown.prevent="openAgentReference"
+                @keydown.enter.prevent="openAgentReference"
+                @keydown.space.prevent="openAgentReference"
+              >
+                <RobotOutlined />
+                <span>{{ t('knowledge.agentReferenceAdd') }}</span>
+              </button>
+            </template>
+          </MarkdownEditor>
         </section>
       </main>
+
+      <!-- 根目录视图：展示 folder_id=0 的文档和 parent_id=0 的文件夹 -->
+      <KnowledgeFolderDetail
+        v-else-if="activeFolderID === 0"
+        :folder-id="0"
+        :folder-name="t('knowledge.breadcrumbRoot')"
+        :breadcrumbs="[{ id: 0, name: t('knowledge.breadcrumbRoot') }]"
+        :child-folders="rootViewFolders"
+        :child-documents="rootViewDocuments"
+        :loading="loading"
+        :sidebar-collapsed="sidebarCollapsed"
+        @open-folder="handleDetailOpenFolder"
+        @open-document="handleDetailOpenDocument"
+        @create-document="createDocument"
+        @create-txt-document="createTxtDocument"
+        @create-folder="createFolderFromDetail"
+        @open-create-modal="(type, folderId) => openCreateModal(type, folderId)"
+        @toggle-inspector="toggleInspector"
+        @toggle-sidebar="toggleSidebar"
+        @delete-folder="handleDetailDeleteFolder"
+        @navigate="handleDetailNavigate"
+      />
+
+      <!-- S-UI-14: 文件夹详情列表页（独立工作区，仅直接子项、逐层下钻） -->
+      <KnowledgeFolderDetail
+        v-else-if="activeFolder"
+        :folder-id="activeFolderID"
+        :folder-name="activeFolder.name"
+        :breadcrumbs="activeFolderBreadcrumbs"
+        :child-folders="activeFolderChildren.folders"
+        :child-documents="activeFolderChildren.documents"
+        :loading="loading"
+        :sidebar-collapsed="sidebarCollapsed"
+        @open-folder="handleDetailOpenFolder"
+        @open-document="handleDetailOpenDocument"
+        @create-document="createDocument"
+        @create-txt-document="createTxtDocument"
+        @create-folder="createFolderFromDetail"
+        @open-create-modal="(type, folderId) => openCreateModal(type, folderId)"
+        @toggle-inspector="toggleInspector"
+        @toggle-sidebar="toggleSidebar"
+        @delete-folder="handleDetailDeleteFolder"
+        @navigate="handleDetailNavigate"
+      />
 
       <main v-else class="knowledge-empty">
         <div class="empty-state">
@@ -1049,12 +2197,12 @@ onBeforeUnmount(() => {
             <FileTextOutlined class="empty-document" />
             <span class="empty-check"><CheckOutlined /></span>
           </div>
-          <h2>{{ t('knowledge.emptyTitle') }}</h2>
-          <p>{{ t('knowledge.emptyDescription') }}</p>
+          <h2>{{ knowledgeEmpty ? t('knowledge.emptyNoContent') : t('knowledge.emptyTitle') }}</h2>
+          <p v-if="!knowledgeEmpty">{{ t('knowledge.emptyDescription') }}</p>
         </div>
       </main>
 
-      <aside v-if="!trashVisible && draft.uuid" class="knowledge-inspector">
+      <aside v-if="!trashVisible && draft.uuid && inspectorOpen" class="knowledge-inspector">
         <a-segmented
           v-model:value="rightTab"
           class="inspector-switcher"
@@ -1067,11 +2215,11 @@ onBeforeUnmount(() => {
         <div v-if="rightTab === 'outline'" class="inspector-content">
           <div v-if="outline.length" class="outline-list">
             <button
-              v-for="item in outline"
-              :key="item.id"
+              v-for="(item, index) in outline"
+              :key="item.key"
               class="outline-item"
               :style="{ paddingLeft: `${12 + (item.level - 1) * 12}px` }"
-              @click="scrollToHeading(item)"
+              @click="scrollToHeading(index)"
             >
               {{ item.title }}
             </button>
@@ -1097,25 +2245,162 @@ onBeforeUnmount(() => {
         </div>
       </aside>
 
+    <!-- 通用「新建文档 / 新建文件夹」弹窗：输入名称（无后缀默认 .md），显示完整路径，Enter 确认 -->
     <a-modal
-      v-model:open="folderModalVisible"
-      :title="t('knowledge.newFolder')"
+      v-model:open="createModalVisible"
+      :title="createModalType === 'folder'
+        ? t('knowledge.createFolderDialogTitle')
+        : t('knowledge.createDocumentDialogTitle')"
       :ok-text="t('knowledge.create')"
       :cancel-text="t('knowledge.cancel')"
-      :ok-button-props="{ disabled: !folderName.trim() }"
-      @ok="createFolder"
+      :confirm-loading="createModalLoading"
+      :ok-button-props="{ disabled: !createModalName.trim() || createModalLoading }"
+      :cancel-button-props="{ disabled: createModalLoading }"
+      @ok="submitCreateModal"
+      @cancel="cancelCreateModal"
     >
       <a-form layout="vertical">
-        <a-form-item :label="t('knowledge.folderName')">
-          <a-input v-model:value="folderName" autofocus :placeholder="t('knowledge.folderExample')" @press-enter="createFolder" />
+        <a-form-item
+          :label="createModalType === 'folder'
+            ? t('knowledge.folderName')
+            : t('knowledge.documentName')"
+        >
+          <a-input
+            v-model:value="createModalName"
+            autofocus
+            :placeholder="createModalType === 'folder'
+              ? t('knowledge.folderNamePlaceholder')
+              : t('knowledge.documentNamePlaceholder')"
+            @press-enter="submitCreateModal"
+          />
         </a-form-item>
-        <a-form-item :label="t('knowledge.parentFolder')">
-          <a-select v-model:value="folderParentID" class="modal-select">
-            <a-select-option :value="0">{{ t('knowledge.root') }}</a-select-option>
-            <a-select-option v-for="folder in flatFolders" :key="folder.id" :value="folder.id">
-              {{ `${'　'.repeat(folder.depth)}${folder.name}` }}
-            </a-select-option>
-          </a-select>
+        <a-form-item
+          v-if="createModalType === 'document'"
+          :style="{ marginBottom: '8px' }"
+        >
+          <span class="create-modal-ext-hint">{{ t('knowledge.defaultExtensionHint') }}</span>
+        </a-form-item>
+        <a-form-item :label="t('knowledge.targetPathLabel')">
+          <div class="create-modal-path-preview">
+            {{ createModalTargetPath }}
+          </div>
+        </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <!-- S-UI-01: 设置知识库目录弹窗（S-UI-17: 迁移语义 + 二次确认 + 全流程反馈） -->
+    <a-modal
+      v-model:open="rootModalVisible"
+      :title="t('knowledge.knowledgeRootDialogTitle')"
+      :confirm-loading="rootModalLoading"
+      :closable="!rootModalLoading"
+      :mask-closable="false"
+      :keyboard="!rootModalLoading"
+      :ok-text="t('knowledge.confirm')"
+      :cancel-text="t('knowledge.cancel')"
+      :ok-button-props="{ disabled: !pendingRootDir.trim() || rootModalLoading }"
+      :cancel-button-props="{ disabled: rootModalLoading }"
+      @ok="confirmSetKnowledgeRoot"
+      @cancel="cancelRootModal"
+    >
+      <p class="root-modal-description">{{ t('knowledge.knowledgeRootDialogDescription') }}</p>
+      <div class="root-current-path">
+        <div class="root-current-path-label">{{ t('knowledge.knowledgeRootCurrent') }}</div>
+        <div class="root-breadcrumb root-breadcrumb-modal">
+          <template v-for="(segment, index) in modalRootBreadcrumbSegments" :key="index">
+            <span class="root-breadcrumb-segment">{{ segment }}</span>
+            <span
+              v-if="index < modalRootBreadcrumbSegments.length - 1"
+              class="root-breadcrumb-separator"
+            >></span>
+          </template>
+        </div>
+      </div>
+      <div v-if="rootModalLoading" class="root-migrate-state">
+        <a-spin size="small" />
+        <span>{{ t('knowledge.migrateRunning') }}</span>
+      </div>
+      <button
+        v-if="isDesktopRuntime()"
+        class="root-select-button"
+        type="button"
+        :disabled="rootModalLoading"
+        @click="chooseRootDirectory"
+      >
+        <FolderOpenOutlined /> {{ t('knowledge.knowledgeRootSelectFolder') }}
+      </button>
+      <a-form v-else layout="vertical">
+        <a-form-item :label="t('knowledge.knowledgeRootManualPath')">
+          <a-input
+            v-model:value="pendingRootDir"
+            :placeholder="t('knowledge.knowledgeRootPathPlaceholder')"
+          />
+        </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <!-- S-UI-03: 删除文件夹双选项弹窗 -->
+    <a-modal
+      v-model:open="deleteFolderModalVisible"
+      :title="t('knowledge.deleteFolderTitle', { name: deleteFolderTarget?.name || '' })"
+      :confirm-loading="deleteFolderModalLoading"
+      :footer="null"
+      @cancel="deleteFolderModalVisible = false"
+    >
+      <div class="delete-folder-options">
+        <button
+          class="delete-folder-option keep"
+          type="button"
+          :disabled="deleteFolderModalLoading"
+          @click="confirmDeleteFolder('keep')"
+        >
+          <strong>{{ t('knowledge.deleteFolderKeep') }}</strong>
+          <span>{{ t('knowledge.deleteFolderKeepDescription') }}</span>
+        </button>
+        <button
+          class="delete-folder-option purge"
+          type="button"
+          :disabled="deleteFolderModalLoading"
+          @click="confirmDeleteFolder('purge')"
+        >
+          <strong>{{ t('knowledge.deleteFolderPurge') }}</strong>
+          <span>{{ t('knowledge.deleteFolderPurgeDescription') }}</span>
+        </button>
+      </div>
+      <div class="delete-folder-modal-footer">
+        <a-button :disabled="deleteFolderModalLoading" @click="deleteFolderModalVisible = false">
+          {{ t('knowledge.cancel') }}
+        </a-button>
+      </div>
+    </a-modal>
+
+    <!-- S-UI-13: 选中内容 → 「添加给 Agent」→ 投递到对话输入区 -->
+    <KnowledgeAgentReferencePopover
+      v-model:open="agentReferenceOpen"
+      :source-name="documentFileName()"
+      :fragment="agentReferenceFragment"
+      @confirm="handleAgentReferenceSend"
+    />
+
+    <!-- 文档重命名弹窗（取代原 editor-header 内的标题就地编辑）。提交只更新 draft.title，
+         由 snapshot 防抖自动保存落盘；与新建/编辑文档共用 title 校验。 -->
+    <a-modal
+      v-model:open="renameModalVisible"
+      :title="t('knowledge.renameDialogTitle')"
+      :ok-text="t('knowledge.renameConfirm')"
+      :cancel-text="t('knowledge.cancel')"
+      :mask-closable="false"
+      @ok="submitRename"
+      @cancel="cancelRename"
+    >
+      <a-form layout="vertical">
+        <a-form-item>
+          <a-input
+            v-model:value="renameInputValue"
+            :placeholder="t('knowledge.renameDialogPlaceholder')"
+            autofocus
+            @press-enter="submitRename"
+          />
         </a-form-item>
       </a-form>
     </a-modal>
@@ -1153,6 +2438,7 @@ onBeforeUnmount(() => {
 }
 
 .knowledge-sidebar {
+  position: relative;
   display: flex;
   min-width: 0;
   min-height: 0;
@@ -1160,6 +2446,30 @@ onBeforeUnmount(() => {
   padding: 0 24px 20px;
   border-right: 1px solid #e6e8eb;
   background: #fff;
+}
+
+/* 可拖拽调整宽度的把手 */
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  width: 4px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  z-index: 10;
+  transition: background 0.18s ease;
+}
+
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle:focus-visible {
+  background: rgba(49, 87, 226, 0.35);
+}
+
+.sidebar-resize-handle:focus-visible {
+  outline: none;
 }
 
 .directory-heading {
@@ -1242,6 +2552,39 @@ onBeforeUnmount(() => {
 .sidebar-search :deep(.ant-input-suffix) {
   color: #555a61;
   font-size: 16px;
+}
+
+.sidebar-empty-action {
+  flex: 0 0 auto;
+  padding-bottom: 14px;
+}
+
+/* S-UI-07: 空知识库的创建入口（不自动创建任何内容，仅给按钮与引导） */
+.create-first-button {
+  display: flex;
+  width: 100%;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #d9d9d9;
+  border-radius: 12px;
+  color: #595959;
+  background: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  transition: color 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
+.create-first-button:hover {
+  border-color: #3157e2;
+  color: #3157e2;
+  background: #f9fafb;
+}
+
+.create-first-button:focus-visible {
+  outline: 2px solid #3157e2;
+  outline-offset: 2px;
 }
 
 .directory-tree-area {
@@ -1360,37 +2703,6 @@ onBeforeUnmount(() => {
   font-size: 11px;
 }
 
-.node-actions {
-  display: none;
-  flex: 0 0 auto;
-  align-items: center;
-}
-
-.directory-node:hover .node-actions {
-  display: flex;
-}
-
-.directory-node:hover .node-count {
-  display: none;
-}
-
-.node-actions button {
-  display: inline-flex;
-  width: 25px;
-  height: 25px;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 0;
-  color: #797e87;
-  background: transparent;
-  cursor: pointer;
-}
-
-.node-actions button:hover {
-  color: #3157e2;
-}
-
 .directory-empty {
   padding: 24px 12px;
   color: #999da4;
@@ -1426,244 +2738,136 @@ onBeforeUnmount(() => {
 
 .editor-workspace,
 .trash-workspace,
+.folder-detail,
 .knowledge-empty {
   min-width: 0;
   min-height: 0;
+}
+
+/* S-UI-14: 详情页与回收站一致占满主区与右侧列（属性面板仅编辑器工作区展示） */
+.folder-detail,
+.aggregate-view {
+  grid-column: 2 / 4;
 }
 
 .editor-workspace {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* 明确占据中间列，由 inspectorOpen 控制 inspector aside 是否显示 */
+  grid-column: 2;
 }
 
-.editor-header {
+/* S-UI-14: 右侧属性面板收起时，让编辑器工作区横跨中间与右侧两列，
+   避免出现 300px 的空白列。展开属性面板时恢复到默认单列宽度。 */
+.editor-workspace.is-inspector-collapsed {
+  grid-column: 2 / 4;
+}
+
+/* S-AS-04: 顶部 nav 右侧的自动保存指示器 */
+.autosave-indicator {
+  display: inline-flex;
   flex: 0 0 auto;
-  padding: 28px 30px 18px;
-}
-
-.editor-title-row {
-  display: flex;
-  min-width: 0;
   align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-.editor-document-title {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  align-items: center;
-  gap: 12px;
-}
-
-.editor-document-title > .anticon {
-  color: #4c5159;
-  font-size: 16px;
-}
-
-.editor-document-title h2 {
-  overflow: hidden;
-  margin: 0;
-  color: #292b2f;
-  font-size: 18px;
-  font-weight: 650;
-  text-overflow: ellipsis;
+  gap: 6px;
+  max-width: 220px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  color: #8e939b;
+  font-size: 12px;
+  line-height: 26px;
   white-space: nowrap;
 }
 
-.title-input {
-  max-width: 520px;
-  border: 0;
-  border-bottom: 1px solid #8aa7ff;
-  border-radius: 0;
-  box-shadow: none !important;
-  font-size: 18px;
-  font-weight: 650;
+.autosave-indicator > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.editor-actions {
-  display: flex;
+.autosave-indicator--pending {
+  color: #6c7178;
+}
+
+.autosave-indicator--saving {
+  color: #3157e2;
+}
+
+.autosave-indicator--saved {
+  color: #5d6573;
+}
+
+.autosave-indicator--error {
+  display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 12px;
+  gap: 6px;
+  max-width: 220px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  color: #ff6b4a;
+  background: transparent;
+  font-size: 12px;
+  line-height: 26px;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
-.save-button {
+.autosave-indicator--error:hover {
+  color: #d9482b;
+  background: #fff1ec;
+}
+
+.autosave-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: autosave-spin 0.8s linear infinite;
+}
+
+@keyframes autosave-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* S-UI-09: 编辑器工作区由 vditor 即时渲染承载（移除原「编辑/分栏/预览」三态与对应样式） */
+.editor-body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+/* S-UI-13: 浮动工具栏右端的「添加给 Agent」入口 */
+.floating-agent-button {
+  display: inline-flex;
+  height: 24px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  color: #3157e2;
+  background: #e5efff;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  transition: color 0.18s ease, background 0.18s ease;
+}
+
+.floating-agent-button:hover {
   color: #fff;
   background: #3157e2;
 }
 
-.save-button:hover {
-  color: #fff;
-  background: #2448c8;
-}
-
-.editor-meta-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 28px;
-  color: #95999f;
-  font-size: 13px;
-}
-
-.save-state {
-  color: #8e939b;
-}
-
-.save-state.dirty {
-  color: #ff6b4a;
-}
-
-.markdown-support {
-  white-space: nowrap;
-}
-
-.view-switcher {
-  margin-left: auto;
-}
-
-.view-switcher :deep(.ant-segmented) {
-  background: #f4f5f7;
-}
-
-.view-switcher :deep(.ant-segmented-item-selected) {
-  color: #2f6bff;
-}
-
-.editor-body {
-  display: grid;
-  min-height: 0;
-  flex: 1;
-}
-
-.editor-body.mode-split {
-  grid-template-columns: 1fr 1fr;
-  border-top: 1px solid #eceef1;
-}
-
-.editor-body.mode-edit,
-.editor-body.mode-preview {
-  grid-template-columns: 1fr;
-}
-
-.source-pane,
-.preview-pane {
-  display: flex;
-  min-width: 0;
-  min-height: 0;
-  flex-direction: column;
-}
-
-.source-pane {
-  border-right: 1px solid #e6e8eb;
-}
-
-.markdown-input {
-  min-height: 0;
-  flex: 1;
-  height: 100% !important;
-  padding: 22px 30px 56px;
-  resize: none;
-  border: 0;
-  border-radius: 0;
-  outline: none;
-  box-shadow: none !important;
-  color: #4b4f55;
-  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
-  font-size: 14px;
-  line-height: 1.8;
-}
-
-.markdown-preview {
-  overflow-wrap: anywhere;
-  color: #555a61;
-  font-size: 14px;
-  line-height: 1.8;
-}
-
-.preview-pane > .markdown-preview {
-  min-height: 0;
-  flex: 1;
-  overflow-y: auto;
-  padding: 22px 30px 56px;
-}
-
-.markdown-preview :deep(h1),
-.markdown-preview :deep(h2),
-.markdown-preview :deep(h3),
-.markdown-preview :deep(h4) {
-  scroll-margin-top: 20px;
-  color: #1f2430;
-  font-weight: 650;
-  line-height: 1.35;
-}
-
-.markdown-preview :deep(h1) {
-  font-size: 2em;
-}
-
-.markdown-preview :deep(h2) {
-  font-size: 1.5em;
-}
-
-.markdown-preview :deep(h3) {
-  font-size: 1.24em;
-}
-
-.markdown-preview :deep(p),
-.markdown-preview :deep(ul),
-.markdown-preview :deep(ol),
-.markdown-preview :deep(blockquote),
-.markdown-preview :deep(pre),
-.markdown-preview :deep(table) {
-  margin: 0.8em 0;
-}
-
-.markdown-preview :deep(code) {
-  padding: 0.15em 0.35em;
-  border-radius: 4px;
-  color: #c7254e;
-  background: #f6f7f9;
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 0.88em;
-}
-
-.markdown-preview :deep(pre) {
-  overflow-x: auto;
-  padding: 14px 16px;
-  border-radius: 7px;
-  background: #1f2430;
-}
-
-.markdown-preview :deep(pre code) {
-  padding: 0;
-  color: #e8eaf0;
-  background: transparent;
-}
-
-.markdown-preview :deep(blockquote) {
-  margin-left: 0;
-  padding-left: 14px;
-  border-left: 3px solid #aebcff;
-  color: #686f7c;
-}
-
-.markdown-preview :deep(table) {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.markdown-preview :deep(th),
-.markdown-preview :deep(td) {
-  padding: 7px 10px;
-  border: 1px solid #dfe3ea;
-  text-align: left;
-}
-
-.markdown-preview :deep(img) {
-  max-width: 100%;
+.floating-agent-button:focus-visible {
+  outline: 2px solid #3157e2;
+  outline-offset: 2px;
 }
 
 .knowledge-inspector {
@@ -1921,6 +3125,342 @@ onBeforeUnmount(() => {
   width: 100%;
 }
 
+/* 通用创建弹窗 */
+.create-modal-ext-hint {
+  color: #8c8c8c;
+  font-size: 12px;
+}
+
+.create-modal-path-preview {
+  padding: 8px 12px;
+  border-radius: 6px;
+  color: #555a61;
+  background: #f5f6f8;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+/* 编辑器头部面包屑行：与 .detail-breadcrumb 排版保持一致，避免点击文件/文件夹切换时高度跳动 */
+.editor-breadcrumb-row {
+  display: flex;
+  height: 48px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 24px;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 14px;
+}
+
+/* 面包屑行左侧容器：包含 sidebar 折叠按钮 + 路径导航 */
+.editor-breadcrumb-leading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.sidebar-nav-toggle {
+  flex: 0 0 auto;
+}
+
+/* 路径部分样式：参考 detail-breadcrumb-path */
+.editor-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+}
+
+/* crumb 基础样式：参考 .crumb，颜色与字号集中到基础类 */
+.editor-breadcrumb .crumb {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  white-space: nowrap;
+  color: #8c8c8c;
+}
+
+/* 溢出省略号按钮：编辑器特有，用于长路径折叠 */
+.editor-breadcrumb .crumb-overflow-btn {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  color: #8c8c8c;
+  background: #f0f1f3;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.editor-breadcrumb .crumb-overflow-btn:hover {
+  color: #3157e2;
+  background: #e5efff;
+}
+
+/* 链接样式：参考 .crumb-link，光标和颜色变体由链接单独提供 */
+.editor-breadcrumb .crumb-link {
+  cursor: pointer;
+}
+
+.editor-breadcrumb .crumb-link:hover {
+  color: #3157e2;
+}
+
+.editor-breadcrumb .crumb-link:focus-visible {
+  outline: 2px solid #3157e2;
+  outline-offset: 2px;
+}
+
+/* 当前页样式：参考 .crumb-current，使用更深的强调色和加粗 */
+.editor-breadcrumb .crumb-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #262626;
+  font-weight: 600;
+}
+
+/* 分隔符样式：参考 .crumb-separator，保留 flex 防止溢出时被压缩 */
+.editor-breadcrumb .crumb-separator {
+  color: #bfbfbf;
+  flex: 0 0 auto;
+}
+
+.breadcrumb-overflow {
+  flex: 0 0 auto;
+}
+
+.editor-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* 目录树三点按钮 */
+.directory-node .node-actions {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  color: #797e87;
+  cursor: pointer;
+  font-size: 14px;
+  user-select: none;
+}
+
+.directory-node:hover .node-actions {
+  display: flex;
+}
+
+.directory-node:hover .node-count {
+  display: none;
+}
+
+.directory-node .node-actions:hover {
+  color: #3157e2;
+  background: #f1f4fa;
+}
+
+.directory-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.refresh-button {
+  width: 28px;
+  height: 28px;
+  color: #5f6368;
+  font-size: 15px;
+}
+
+.refresh-button:disabled {
+  opacity: 0.5;
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.root-entry {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  color: #595959;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+  transition: background 0.16s ease;
+}
+
+.root-entry:hover {
+  background: #f3f6fb;
+}
+
+.root-entry-label {
+  flex: 0 0 auto;
+  color: #8c8c8c;
+}
+
+.root-breadcrumb {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.root-breadcrumb-segment {
+  color: #3157e2;
+  white-space: nowrap;
+}
+
+.root-breadcrumb-segment:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.root-breadcrumb-separator {
+  flex: 0 0 auto;
+  color: #bfbfbf;
+}
+
+.root-modal-description {
+  margin: 0 0 16px;
+  color: #595959;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.root-current-path {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f5f6f8;
+}
+
+.root-current-path-label {
+  margin-bottom: 6px;
+  color: #8c8c8c;
+  font-size: 12px;
+}
+
+/* S-UI-17: 迁移进行中的加载反馈（同时由确认按钮 loading 与弹窗禁用兜底防重复提交） */
+.root-migrate-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: #8c8c8c;
+  font-size: 13px;
+}
+
+.root-breadcrumb-modal .root-breadcrumb-segment {
+  color: #262626;
+  font-size: 14px;
+}
+
+.root-select-button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px dashed #d9d9d9;
+  border-radius: 8px;
+  color: #3157e2;
+  background: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.root-select-button:hover {
+  border-color: #3157e2;
+  background: #f5f6f8;
+}
+
+.root-select-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.delete-folder-options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.delete-folder-option {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid #d9d9d9;
+  border-radius: 8px;
+  color: #262626;
+  background: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  text-align: left;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+
+.delete-folder-option:hover {
+  border-color: #3157e2;
+  background: #f5f6f8;
+}
+
+.delete-folder-option:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.delete-folder-option strong {
+  font-weight: 600;
+}
+
+.delete-folder-option span {
+  color: #8c8c8c;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.delete-folder-option.purge:hover {
+  border-color: #ff4d4f;
+  background: #fff2f0;
+}
+
+.delete-folder-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
 @media (max-width: 1320px) {
   .knowledge-page {
     grid-template-columns: 320px minmax(420px, 1fr);
@@ -1931,6 +3471,7 @@ onBeforeUnmount(() => {
   }
 
   .trash-workspace,
+  .folder-detail,
   .knowledge-empty {
     grid-column: 2;
   }
@@ -1948,5 +3489,15 @@ onBeforeUnmount(() => {
   .directory-title span:not(.directory-divider) {
     display: none;
   }
+}
+
+/* 窄屏时（宽度 < 240px）隐藏目录标题文字，仅保留图标区 */
+.knowledge-page.is-sidebar-narrow .directory-title span:not(.directory-divider) {
+  display: none;
+}
+
+/* 折叠状态：移除 sidebar 可见边框，防止 0px 时仍有边框线残留 */
+.knowledge-page.is-sidebar-collapsed .knowledge-sidebar {
+  border-right-color: transparent;
 }
 </style>

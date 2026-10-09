@@ -1,5 +1,6 @@
 <template>
-  <div class="task-page">
+  <NewConversation v-if="isNewConversation" />
+  <div v-else class="task-page">
     <header class="page-titlebar">
       <div class="page-titlebar-copy">
         <strong>{{ t('workflows.task.common.conversation') }}</strong>
@@ -48,56 +49,13 @@
     </header>
 
     <section
-	  v-if="selectedConversation || newConversationPipeline || newConversationExpertGroup || newConversationCodex || newConversationCLI"
+      v-if="selectedConversation"
       v-show="pipelineExpanded"
       id="task-overview"
       class="task-overview"
       :aria-busy="taskLoading"
     >
-      <template v-if="newConversationPipeline">
-        <div class="task-overview-head">
-          <div class="task-overview-title">
-            <h2 :title="t('workflows.task.common.newTask')">
-              {{ t('workflows.task.common.newTask') }}
-            </h2>
-            <span class="task-status">{{ t('workflows.task.common.pendingCreation') }}</span>
-          </div>
-        </div>
-        <div class="task-step-region">
-          <AgentStepStrip
-            v-if="newConversationSteps.length"
-            :steps="newConversationSteps"
-            :current-step-index="-1"
-            current-step-uuid=""
-            selected-step-uuid=""
-            read-only
-          />
-          <div
-            v-else
-            class="step-region-empty"
-          >
-            {{ t('workflows.task.notifications.noSteps') }}
-          </div>
-        </div>
-      </template>
-	  <template v-else-if="newConversationExpertGroup">
-		<div class="task-overview-head"><div class="task-overview-title"><h2>{{ t('workflows.task.common.newTask') }}</h2><span class="task-status">{{ t('workflows.task.common.pendingCreation') }}</span></div></div>
-		<div class="task-step-region"><div class="expert-overview"><strong>{{ newConversationExpertGroup.name }}</strong><span>{{ `${t('expertGroups.leader')}：${newConversationExpertGroup.leader?.name || ''}` }}</span><span>{{ t('expertGroups.members', { count: newConversationExpertGroup.members.length }) }}</span></div></div>
-	  </template>
-	  <template v-else-if="newConversationCodex">
-		<div class="task-overview-head">
-		  <div class="task-overview-title">
-			<h2>{{ t('workflows.task.common.newTask') }}</h2>
-			<span class="task-status">{{ t('workflows.task.common.pendingCreation') }}</span>
-		  </div>
-		</div>
-		<div class="task-step-region">
-		  <div class="expert-overview">
-			<strong>{{ t('workflows.task.assign.vibeCodex') }}</strong>
-		  </div>
-		</div>
-	  </template>
-      <template v-else-if="task">
+      <template v-if="task">
         <div class="task-overview-head">
           <div class="task-overview-title">
             <h2 :title="task.title">{{ task.title }}</h2>
@@ -161,32 +119,6 @@
           </div>
         </div>
       </template>
-      <!-- 新建 CLI 对话此时还没有 task，必须单独成支：否则会落到下面的加载骨架屏，
-           页面明明没在加载却一直显示灰块 -->
-      <template v-else-if="newConversationCLI">
-        <div class="task-overview-head">
-          <div class="task-overview-title">
-            <h2 :title="t('workflows.task.common.newTask')">
-              {{ t('workflows.task.common.newTask') }}
-            </h2>
-            <span class="task-status">{{ t('workflows.task.common.pendingCreation') }}</span>
-          </div>
-        </div>
-        <div class="task-step-region">
-          <div class="direct-execution-summary">
-            <img
-              class="direct-execution-summary__logo"
-              :src="cliExecutionLogo"
-              alt=""
-              aria-hidden="true"
-            />
-            <span class="direct-execution-summary__label">{{
-              t('workflows.task.common.directExecution')
-            }}</span>
-            <strong>{{ cliRuntimeSummary || t('workflows.task.assign.cliMode') }}</strong>
-          </div>
-        </div>
-      </template>
       <div
         v-else
         class="task-overview-skeleton"
@@ -207,369 +139,30 @@
     <div
       ref="taskLayoutRef"
       class="task-layout"
-      :class="{ 'is-resizing-sidebar': sidebarDragging }"
     >
-      <aside
-        ref="conversationSidebarRef"
-        class="conversation-sidebar"
-        :style="
-          sidebarResized
-            ? { width: `${sidebarWidth}px`, flexBasis: `${sidebarWidth}px` }
-            : undefined
-        "
-      >
-        <div class="sidebar-heading">
-          <span>{{ t('workflows.task.common.conversation') }}</span>
-          <small>{{ displayedConversationCount }}</small>
-          <a-dropdown
-            v-model:open="pipelineMenuOpen"
-            :trigger="['click']"
-            placement="bottomRight"
-            :get-popup-container="getPipelinePopupContainer"
-            @open-change="handlePipelineMenuOpenChange"
-          >
-            <button
-              type="button"
-              class="sidebar-add-button"
-              :aria-label="t('workflows.task.notifications.viewPipeline')"
-              :aria-expanded="pipelineMenuOpen"
-            >
-              <PlusOutlined />
-            </button>
-            <template #overlay>
-              <div
-                class="pipeline-menu"
-                role="menu"
-                :aria-label="t('workflows.task.common.pipeline')"
-              >
-                <div class="pipeline-menu-heading">
-                  <PipelineFlowIcon />
-                  <span>{{ t('workflows.task.common.pipeline') }}</span>
-                </div>
-                <div
-                  v-if="pipelinesLoading"
-                  class="pipeline-menu-state"
-                >
-                  <a-spin size="small" />
-                </div>
-                <div
-                  v-else-if="pipelinesError"
-                  class="pipeline-menu-state pipeline-menu-error"
-                >
-                  <span>{{ pipelinesError }}</span>
-                  <button
-                    type="button"
-                    @click.stop="loadPipelines(true)"
-                  >
-                    <ReloadOutlined />{{ t('common.actions.retry') }}
-                  </button>
-                </div>
-                <div
-                  v-else-if="!pipelines.length"
-                  class="pipeline-menu-state"
-                >
-                  {{ t('workflows.task.common.noPipeline') }}
-                </div>
-                <div
-                  v-else
-                  class="pipeline-menu-list"
-                >
-                  <button
-                    v-for="pipeline in pipelines"
-                    :key="pipeline.uuid"
-                    type="button"
-                    role="menuitem"
-                    class="pipeline-menu-item"
-                    :title="pipeline.name"
-                    @click="startNewConversation(pipeline)"
-                  >
-                    <img
-                      v-if="pipeline.avatar"
-                      :src="pipeline.avatar"
-                      alt=""
-                    />
-                    <span
-                      v-else
-                      class="pipeline-avatar-fallback"
-                      >{{ pipelineInitials(pipeline.name) }}</span
-                    >
-                    <span class="pipeline-menu-name">{{ pipeline.name }}</span>
-                  </button>
-                </div>
-				<div class="pipeline-menu-heading">
-				  <TeamOutlined />
-				  <span>{{ t('agents.expertTeam') }}</span>
-				</div>
-				<div v-if="expertGroupsLoading" class="pipeline-menu-state"><a-spin size="small" /></div>
-				<div v-else-if="expertGroupsError" class="pipeline-menu-state pipeline-menu-error">{{ expertGroupsError }}</div>
-				<div v-else class="pipeline-menu-list">
-				  <button v-for="group in expertGroups" :key="`expert-${group.uuid}`" type="button" role="menuitem" class="pipeline-menu-item" :disabled="!group.ready" @click="startNewExpertConversation(group)"><img v-if="group.avatar" :src="group.avatar" alt="" /><span v-else class="pipeline-avatar-fallback">{{ pipelineInitials(group.name) }}</span><span class="pipeline-menu-name">{{ group.name }}</span></button>
-				</div>
-				<div class="pipeline-menu-heading">
-				  <img
-					class="pipeline-menu-heading-logo"
-					:src="vibeCodingLogo"
-					alt=""
-				  />
-				  <span>{{ t('workflows.task.create.vibeCodingMode') }}</span>
-				</div>
-				<a-tooltip
-				  :title="
-					codexCapability.available
-					  ? ''
-					  : codexCapability.message || t('workflows.task.codex.capabilityUnavailable')
-				  "
-				  placement="right"
-				>
-				  <span class="pipeline-menu-tooltip">
-					<button
-					  type="button"
-					  role="menuitem"
-					  class="pipeline-menu-item"
-					  :disabled="!codexCapability.available"
-					  @click="startNewCodexConversation"
-					>
-					  <img :src="codexLogo" alt="" />
-					  <span class="pipeline-menu-name">{{ t('workflows.task.notifications.createCodexConversation') }}</span>
-					</button>
-				  </span>
-				</a-tooltip>
-				<!-- 直接执行：CLI 与模型下拉内嵌在菜单内，与需求设计图一致 -->
-				<div class="pipeline-menu-heading">
-				  <img
-					class="pipeline-menu-heading-logo"
-					:src="cliExecutionLogo"
-					alt=""
-				  />
-				  <span>{{ t('workflows.task.common.directExecution') }}</span>
-				</div>
-				<div
-				  class="direct-cli"
-				  @click.stop
-				>
-				  <a-select
-					class="direct-cli__select"
-					:value="newConversationCliType || undefined"
-					:placeholder="t('workflows.task.assign.chooseCli')"
-					:options="cliSelectOptions"
-					:loading="cliLoading"
-					@change="chooseNewConversationCLIType"
-				  />
-				  <a-select
-					class="direct-cli__select"
-					:value="newConversationCliModel || undefined"
-					:placeholder="
-					  newConversationCliType
-						? t('workflows.task.assign.chooseModel')
-						: t('workflows.task.assign.chooseCliFirst')
-					"
-					:options="modelSelectOptions"
-					:loading="modelLoading"
-					:disabled="!newConversationCliType"
-					@change="chooseNewConversationCLIModel"
-				  />
-				  <a-button
-					type="primary"
-					block
-					class="direct-cli__submit"
-					:disabled="!canCreateNewCLIConversation"
-					@click="createNewCLIConversation"
-				  >
-					{{ t('workflows.task.notifications.createConversation') }}
-				  </a-button>
-				  <p
-					v-if="!cliLoading && !cliSelectOptions.some((item) => !item.disabled)"
-					class="cli-runtime-hint"
-				  >
-					{{ t('workflows.task.assign.noCli') }}
-				  </p>
-				</div>
-              </div>
-            </template>
-          </a-dropdown>
-        </div>
-
-        <div class="conversation-list scrollbar--subtle">
-          <div
-			v-if="newConversationPipeline || newConversationExpertGroup || newConversationCodex || newConversationCLI"
-            class="conversation-item active new-conversation-item"
-            aria-current="true"
-          >
-            <span class="conversation-title">
-              <strong :title="t('workflows.task.common.newTask')">{{
-                t('workflows.task.common.newTask')
-              }}</strong>
-            </span>
-            <span
-			  v-if="newConversationSteps[0] || newConversationExpertGroup?.leader || newConversationCodex || newConversationCLI"
-              class="conversation-subtitle"
-			  :title="conversationStatusLabel(newConversationActorName, t('workflows.task.execution.created'))"
-			>
-			  {{ conversationStatusLabel(newConversationActorName, t('workflows.task.execution.created')) }}
-            </span>
-          </div>
-          <div
-            v-if="notificationsLoading && !conversations.length"
-            class="sidebar-loading"
-          >
-            <a-spin size="small" />
-          </div>
-          <div
-            v-else-if="notificationsError && !conversations.length"
-            class="sidebar-error"
-          >
-            <span>{{ notificationsError }}</span>
-            <button
-              type="button"
-              @click="loadNotifications(false)"
-            >
-              <ReloadOutlined />{{ t('common.actions.retry') }}
-            </button>
-          </div>
-          <div
-            v-for="conversation in conversations"
-            :key="conversation.task_uuid"
-            class="conversation-item"
-            :class="{ active: selectedTaskUuid === conversation.task_uuid }"
-            @contextmenu="openContextMenu($event, conversation)"
-          >
-            <button
-              type="button"
-              class="conversation-select-button"
-              @click="selectConversation(conversation)"
-            >
-              <span class="conversation-title">
-                <strong :title="conversation.title">{{ conversation.title }}</strong>
-                <i
-                  v-if="conversation.unread"
-                  :title="t('workflows.task.common.unread')"
-                />
-              </span>
-              <span class="conversation-subtitle">
-				{{ conversationStatusLabel(conversationActorName(conversation.latest), terminalLabel(conversation.latest.status || conversation.latest.terminal_status)) }}
-              </span>
-            </button>
-            <button
-              type="button"
-              class="conversation-menu-button"
-              :aria-label="t('workflows.task.common.moreActions')"
-              aria-haspopup="menu"
-              aria-controls="conversation-context-menu"
-              :aria-expanded="contextTaskUuid === conversation.task_uuid"
-              @click.stop="toggleConversationMenu($event, conversation)"
-            >
-              <img
-                :src="conversationMenuIcon"
-                alt=""
-                aria-hidden="true"
-              />
-            </button>
-          </div>
-          <div
-            v-if="
-			  !newConversationPipeline && !newConversationExpertGroup && !newConversationCodex && !newConversationCLI &&
-              !conversations.length &&
-              !notificationsLoading &&
-              !notificationsError
-            "
-            class="sidebar-empty"
-          >
-            <FolderOutlined />
-            <span>{{ t('workflows.task.notifications.noConversations') }}</span>
-          </div>
-        </div>
-        <div
-          class="sidebar-resize-handle"
-          role="separator"
-          tabindex="0"
-          :aria-label="t('workflows.task.notifications.resize')"
-          aria-orientation="vertical"
-          :aria-valuemin="MIN_SIDEBAR_WIDTH"
-          :aria-valuemax="sidebarMaxWidth"
-          :aria-valuenow="Math.round(sidebarWidth)"
-          :aria-valuetext="
-            t('workflows.task.notifications.pixels', { count: Math.round(sidebarWidth) })
-          "
-          @pointerdown="startSidebarResize"
-          @pointermove="handleSidebarResize"
-          @pointerup="finishSidebarResize"
-          @pointercancel="finishSidebarResize"
-          @lostpointercapture="finishSidebarResize"
-          @keydown="handleSidebarResizeKeydown"
-        />
-      </aside>
-
       <main
         class="conversation-main"
         :aria-busy="initialTaskLoading || taskRefreshing"
       >
-        <template v-if="newConversationPipeline">
-          <div class="main-state new-conversation-state">
-            <PipelineFlowIcon />
-            <h3>
-              {{
-                t('workflows.task.notifications.startTitle', {
-                  pipeline: newConversationPipeline.name,
-                })
-              }}
-            </h3>
-            <p>{{ t('workflows.task.notifications.startDescription') }}</p>
+        <!-- 已归档任务提示条 -->
+        <div
+          v-if="selectedConversation?.is_archived"
+          class="archived-banner"
+        >
+          <div class="archived-banner-text">
+            <span class="archived-badge">{{ t('layout.sidebar.archived') || '已归档' }}</span>
+            <span>{{ t('workflows.task.notifications.archivedTip') || '可继续发送消息，发送后自动取消归档。' }}</span>
           </div>
-          <ChatComposer
-            ref="newConversationComposerRef"
-            v-model="newConversationQuestion"
-            :can-ask="true"
-            :submitting="submitting"
-            :placeholder="t('workflows.task.notifications.inputPlaceholder')"
-            :context-text="
-              t('workflows.task.notifications.createContext', {
-                pipeline: newConversationPipeline.name,
-              })
-            "
-            task-uuid=""
-            show-work-directory
-            :work-directory="newConversationWorkDir"
-            @submit="submitNewConversation"
-            @select-work-directory="chooseNewConversationDirectory"
-          />
-        </template>
-		<template v-else-if="newConversationExpertGroup">
-		  <div class="main-state new-conversation-state">
-			<h3>{{ t('workflows.task.notifications.startTitle', { pipeline: newConversationExpertGroup.name }) }}</h3>
-			<p>{{ t('expertGroups.copyIndependent') }}</p>
-		  </div>
-		  <ChatComposer ref="newConversationComposerRef" v-model="newConversationQuestion" :can-ask="true" :submitting="submitting" :placeholder="t('workflows.task.notifications.inputPlaceholder')" :context-text="newConversationExpertGroup.name" task-uuid="" show-work-directory :work-directory="newConversationWorkDir" @submit="submitNewExpertConversation" @select-work-directory="chooseNewConversationDirectory" />
-		</template>
-		<template v-else-if="newConversationCodex">
-		  <div class="main-state new-conversation-state" aria-hidden="true" />
-		  <ChatComposer
-			ref="newConversationComposerRef"
-			v-model="newConversationQuestion"
-			:can-ask="true"
-			:submitting="submitting"
-			:placeholder="t('workflows.task.notifications.codexInputPlaceholder')"
-			:context-text="t('workflows.task.assign.vibeCodex')"
-			task-uuid=""
-			show-work-directory
-			:work-directory="newConversationWorkDir"
-			:submit-button-label="t('workflows.task.notifications.openCodex')"
-			@submit="submitNewCodexConversation"
-			@select-work-directory="chooseNewConversationDirectory"
-		  />
-		</template>
-		<template v-else-if="newConversationCLI">
-		  <div class="main-state new-conversation-state">
-			<h3>{{ t('workflows.task.notifications.startTitle', { pipeline: t('workflows.task.assign.cliMode') }) }}</h3>
-			<p>{{ t('workflows.task.assign.cliCardHint') }}</p>
-			<!-- CLI 与模型在「新建对话」菜单内选定，这里只回显已选执行目标 -->
-			<p
-			  v-if="cliRuntimeSummary"
-			  class="cli-runtime-hint cli-runtime-hint--selected"
-			>{{ cliRuntimeSummary }}</p>
-		  </div>
-		  <ChatComposer ref="newConversationComposerRef" v-model="newConversationQuestion" :can-ask="canSubmitNewCLIConversation" :submitting="submitting" :placeholder="t('workflows.task.notifications.inputPlaceholder')" :context-text="t('workflows.task.assign.cliMode')" task-uuid="" :hide-agent-prompt="true" show-work-directory :work-directory="newConversationWorkDir" @submit="submitNewCLIConversation" @select-work-directory="chooseNewConversationDirectory" />
-		</template>
-        <template v-else-if="selectedConversation || selectedTaskUuid">
+          <button
+            type="button"
+            class="unarchive-action-btn"
+            @click="unarchiveCurrentTask"
+          >
+            {{ t('layout.sidebar.unarchive') || '取消归档' }}
+          </button>
+        </div>
+
+        <template v-if="selectedConversation || selectedTaskUuid">
           <div
             v-if="taskError && !task"
             class="main-state main-error"
@@ -623,6 +216,10 @@
                   size="small"
                 />
               </div>
+              <TaskExecutionHistory
+                :task-uuid="selectedTaskUuid"
+                :revision="task.updated_at"
+              />
               <StepMessageList
 				:items="isVibeCoding ? progress : selectedProgress"
 				:steps="isVibeCoding ? [] : sortedSteps"
@@ -637,9 +234,10 @@
             <VibeCodingConversationNotice
               v-if="isVibeCoding"
               :tool-name="vibeCodingToolName"
-              :show-open-button="task?.execution_tool === 'codex'"
+              show-open-button
+              :open-label="t('workflows.task.detail.openInTool', { tool: vibeCodingToolName })"
               :opening="codexBusy"
-              @open="handleOpenCodex"
+              @open="handleOpenVibeTool"
             />
             <ChatComposer
 			  v-else
@@ -764,64 +362,48 @@
       v-model:open="previewImageVisible"
       :image-url="previewImageUrl"
     />
-    <AssignPipelineModal
-      v-model:open="pipelineConfigModalOpen"
-      :preferred-pipeline-uuid="newConversationPipeline?.uuid || ''"
-      mode="create"
-      @selected="handleCreationPipelineSelected"
-    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRaw, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { storeToRefs } from 'pinia'
 import { message } from 'ant-design-vue'
+import NewConversation from './NewConversation.vue'
+import { useConversationStore } from '@/stores/conversation'
 import {
   CheckCircleOutlined,
   CodeOutlined,
   FolderOutlined,
-  PlusOutlined,
   ReloadOutlined,
-  TeamOutlined,
 } from '@ant-design/icons-vue'
 import MarkdownIt from 'markdown-it'
-import apiClient, { ApiError } from '@/api/client'
+import apiClient from '@/api/client'
 import cliExecutionLogo from '@/assets/icons/task-composer-cli.svg'
 import vibeCodingLogo from '@/assets/icons/vibe-coding-logo.svg'
-import conversationMenuIcon from '@/assets/icons/common-more-actions.svg'
 import contextArchiveIcon from '@/assets/icons/task-context-archive.svg'
 import contextDetailIcon from '@/assets/icons/task-context-detail.svg'
 import contextReadIcon from '@/assets/icons/task-context-read.svg'
 import taskOverviewToggleIcon from '@/assets/icons/task-overview-toggle.svg'
-import codexLogo from '@/assets/icons/codex-logo.svg'
-import AssignPipelineModal from '@/components/AssignPipelineModal.vue'
+import { vibeToolLabelKey, vibeToolLogo } from '@/composables/useVibeCoding'
 import AgentStepStrip from '@/components/task-progress/AgentStepStrip.vue'
 import ChatComposer from '@/components/task-progress/ChatComposer.vue'
 import NextStepButton from '@/components/task-progress/NextStepButton.vue'
-import PipelineFlowIcon from '@/components/task-progress/PipelineFlowIcon.vue'
 import StepMessageList from '@/components/task-progress/StepMessageList.vue'
 import StopExecutionConfirmModal from '@/components/task-progress/StopExecutionConfirmModal.vue'
+import TaskExecutionHistory from '@/components/task-progress/TaskExecutionHistory.vue'
 import VibeCodingConversationNotice from '@/components/task-progress/VibeCodingConversationNotice.vue'
 import { copyText } from '@/utils/clipboard'
 import { isStopConfirmSuppressed, suppressStopConfirm } from '@/utils/stopConfirm'
-import { selectDirectory, openTerminal } from '@/composables/useDesktop'
+import { openTerminal } from '@/composables/useDesktop'
 import {
-  loadCodexCapability,
   openTaskInCodex,
-  type CodexCapability,
 } from '@/composables/useTaskCodex'
 import { useLocalWS, useLocalWSStatus } from '@/composables/useLocalWebSocket'
-import { usePipelineStore } from '@/stores/pipeline'
-import { useExpertGroupStore } from '@/stores/expert-group'
-import { useCliModelOptions } from '@/composables/useCliModelOptions'
 import { buildCliKickoffPrompt, pendingCliKickoffUuid } from '@/composables/useCliKickoff'
 import { useAppStore } from '@/stores/app'
 import type {
   CompleteStepResponse,
-	ExpertGroup,
-  Pipeline,
   TaskNotification,
   TaskProgress,
 } from '@/types/pipeline'
@@ -846,30 +428,20 @@ interface TaskConversation {
   items: TaskNotification[]
   latest: TaskNotification
   unread: boolean
-}
-
-interface CreateTaskNotification {
-  task_uuid: string
-  task_title: string
-  step_name: string
-  session_uuid: string
-  status: 'created'
-  summary: string
-  created_at: number
+  is_archived: boolean
 }
 
 const appStore = useAppStore()
-const pipelineStore = usePipelineStore()
-const { pipelines, loading: pipelinesLoading, error: pipelinesError } = storeToRefs(pipelineStore)
-const expertGroupStore = useExpertGroupStore()
-const { items: expertGroups, loading: expertGroupsLoading, error: expertGroupsError } = storeToRefs(expertGroupStore)
 const route = useRoute()
 const router = useRouter()
 const { t } = useAppI18n()
-
-type CreatedTaskResponse = TaskWithDetails & {
-  notification?: CreateTaskNotification
-}
+const conversationStore = useConversationStore()
+const isNewConversation = computed(() => {
+  return route.name === 'tasks-new' || !route.query.taskUuid
+})
+watch(isNewConversation, (isNew, wasNew) => {
+  if (wasNew && !isNew) void initialize()
+})
 
 interface TaskViewCache {
   task: TaskWithDetails
@@ -904,77 +476,6 @@ const pipelineExpanded = ref(true)
 const openingTerminal = ref(false)
 const codexBusy = ref(false)
 const taskLayoutRef = ref<HTMLElement>()
-const conversationSidebarRef = ref<HTMLElement>()
-const sidebarWidth = ref(300)
-const sidebarMaxWidth = ref(300)
-const sidebarResized = ref(false)
-const sidebarDragging = ref(false)
-
-const pipelineMenuOpen = ref(false)
-const newConversationPipeline = ref<Pipeline>()
-const newConversationExpertGroup = ref<ExpertGroup>()
-const newConversationCodex = ref(false)
-const newConversationCLI = ref(false)
-const newConversationCliType = ref('')
-const newConversationCliModel = ref('')
-const newConversationQuestion = ref('')
-const newConversationWorkDir = ref('')
-const newConversationComposerRef = ref<InstanceType<typeof ChatComposer>>()
-const newConversationSubmission = ref<ChatComposerSubmission>()
-const codexCapability = ref<CodexCapability>({ available: false })
-const codexCapabilityLoaded = ref(false)
-
-// CLI 直接执行：CLI 与模型都由用户当场选定后才能发起对话。
-const {
-  cliLoading,
-  cliOptions,
-  loadCliOptions,
-  loadModelOptions,
-  modelLoading,
-  modelOptions,
-} = useCliModelOptions()
-const cliSelectOptions = computed(() =>
-  cliOptions.value.map((cli) => ({ value: cli.type, label: cli.name, disabled: !cli.installed })),
-)
-const modelSelectOptions = computed(() =>
-  modelOptions.value.map((model) => ({ value: model, label: model })),
-)
-const canSubmitNewCLIConversation = computed(
-  () => Boolean(newConversationCliType.value && newConversationCliModel.value),
-)
-// 菜单内「创建对话」按钮与首条消息提交共用同一份 CLI/模型校验。
-const canCreateNewCLIConversation = computed(() => canSubmitNewCLIConversation.value)
-const cliRuntimeSummary = computed(() => {
-  if (!newConversationCliType.value || !newConversationCliModel.value) return ''
-  const cli = cliOptions.value.find((item) => item.type === newConversationCliType.value)
-  return `${cli?.name || newConversationCliType.value} · ${newConversationCliModel.value}`
-})
-const pipelineConfigModalOpen = ref(false)
-
-// 评论 4：对话-新建对话记住上次选择的 CLI 与模型，下次默认填入。
-const CLI_PREFERENCE_KEY = 'goteams.conversation.cliPreference'
-
-function readCliPreference(): { cliType: string; model: string } {
-  try {
-    const raw = localStorage.getItem(CLI_PREFERENCE_KEY)
-    if (!raw) return { cliType: '', model: '' }
-    const parsed = JSON.parse(raw) as { cliType?: unknown; model?: unknown }
-    return {
-      cliType: typeof parsed.cliType === 'string' ? parsed.cliType : '',
-      model: typeof parsed.model === 'string' ? parsed.model : '',
-    }
-  } catch {
-    return { cliType: '', model: '' }
-  }
-}
-
-function writeCliPreference(cliType: string, model: string) {
-  try {
-    localStorage.setItem(CLI_PREFERENCE_KEY, JSON.stringify({ cliType, model }))
-  } catch {
-    // 存储不可用时静默降级：记忆只是体验增强，不影响功能。
-  }
-}
 
 const contextTaskUuid = ref('')
 const contextX = ref(0)
@@ -990,18 +491,6 @@ let notificationsLoadVersion = 0
 let persistentCacheAvailable = true
 let notificationsHydrated = false
 let lastNotifiedTaskUuids = new Set<string>()
-let sidebarResizeState:
-  | {
-      pointerId: number
-      pointerX: number
-      width: number
-    }
-  | undefined
-
-const MIN_SIDEBAR_WIDTH = 140
-const MAX_SIDEBAR_WIDTH = 500
-const SIDEBAR_KEYBOARD_STEP = 10
-const SIDEBAR_WIDTH_STORAGE_KEY = 'goteams.tasks.conversationSidebarWidth'
 
 const wsConnected = useLocalWSStatus()
 
@@ -1016,14 +505,6 @@ const taskPriorityLabels = computed<Record<string, string>>(() => ({
   high: t('workflows.task.priority.high'),
   medium: t('workflows.task.priority.medium'),
   low: t('workflows.task.priority.low'),
-}))
-const terminalLabels = computed<Record<string, string>>(() => ({
-  created: t('workflows.task.execution.created'),
-  running: t('workflows.task.execution.running'),
-  success: t('workflows.task.execution.success'),
-  failed: t('workflows.task.execution.failed'),
-  stopped: t('workflows.task.execution.stopped'),
-  interrupted: t('workflows.task.execution.interrupted'),
 }))
 
 const conversations = computed<TaskConversation[]>(() => {
@@ -1046,26 +527,23 @@ const conversations = computed<TaskConversation[]>(() => {
         items,
         latest,
         unread: items.some((item) => !item.is_read),
+        is_archived: items.some((item) => item.is_archived),
       }
     })
     .sort((a, b) => b.latest.created_at - a.latest.created_at)
 })
-const displayedConversationCount = computed(
-	() => conversations.value.length + (newConversationPipeline.value || newConversationExpertGroup.value || newConversationCodex.value || newConversationCLI.value ? 1 : 0),
-)
-const newConversationSteps = computed(() =>
-  [...(newConversationPipeline.value?.steps || [])].sort((a, b) => a.sort_order - b.sort_order),
-)
-const newConversationActorName = computed(() => {
-  if (newConversationSteps.value[0]?.name) return newConversationSteps.value[0].name
-  if (newConversationExpertGroup.value?.leader?.name) return newConversationExpertGroup.value.leader.name
-  if (newConversationCodex.value) return t('workflows.task.assign.vibeCodex')
-  return t('workflows.task.assign.cliMode')
-})
 
-const selectedConversation = computed(() =>
-  conversations.value.find((item) => item.task_uuid === selectedTaskUuid.value),
-)
+const selectedConversation = computed(() => {
+  const conversation = conversations.value.find((item) => item.task_uuid === selectedTaskUuid.value)
+  if (!conversation) return undefined
+  const sharedConversation = conversationStore.allConversations.find(
+    (item) => item.task_uuid === conversation.task_uuid,
+  )
+  return {
+    ...conversation,
+    is_archived: conversation.is_archived || sharedConversation?.is_archived || false,
+  }
+})
 const contextConversation = computed(() =>
   conversations.value.find((item) => item.task_uuid === contextTaskUuid.value),
 )
@@ -1079,13 +557,9 @@ const isVibeCoding = computed(
   () => task.value?.execution_mode === 'vibe_coding',
 )
 const vibeCodingToolName = computed(() =>
-  task.value?.execution_tool === 'codex'
-    ? t('workflows.task.assign.codex')
-    : task.value?.execution_tool || t('workflows.task.create.vibeCodingMode'),
+  t(vibeToolLabelKey(task.value?.execution_tool || '')),
 )
-const vibeCodingActorLogo = computed(() =>
-  task.value?.execution_tool === 'codex' ? codexLogo : vibeCodingLogo,
-)
+const vibeCodingActorLogo = computed(() => vibeToolLogo(task.value?.execution_tool || ''))
 const isExpertGroup = computed(() => task.value?.execution_mode === 'expert_group')
 // 需求 2204：CLI 直接执行没有流水线与多 Agent，对话页也要能展示该任务的动态与输入框。
 // 需求 2202 评论 4：直接执行 CLI 时输入框不展示「Agent 提示词」入口。
@@ -1093,9 +567,8 @@ const isCLI = computed(() => task.value?.execution_mode === 'cli')
 // CLI 任务的执行目标固定展示为「CLI · 模型」。
 const cliRuntimeLabel = computed(() => {
   const tool = task.value?.execution_tool || ''
-  const cli = cliOptions.value.find((item) => item.type === tool)
   const model = task.value?.execution_model || sortedSteps.value[0]?.model_name || ''
-  return [cli?.name || tool, model].filter(Boolean).join(' · ')
+  return [tool, model].filter(Boolean).join(' · ')
 })
 const effectiveCurrentStepUuid = computed(
   () =>
@@ -1234,10 +707,6 @@ function statusValue(status?: string) {
   return status || 'pending'
 }
 
-function terminalLabel(status?: string) {
-  return terminalLabels.value[status || ''] || t('workflows.task.execution.waiting')
-}
-
 function routeQueryValue(value: unknown) {
   return typeof value === 'string' ? value : ''
 }
@@ -1318,9 +787,26 @@ async function syncConversationRoute(taskUuid: string, stepUuid = '') {
 
 async function selectConversationFromRoute() {
   const routeTaskUuid = routeQueryValue(route.query.taskUuid)
-  if (!routeTaskUuid) return
+  if (!routeTaskUuid) {
+    selectedTaskUuid.value = ''
+    selectedStepUuid.value = ''
+    selectedProgressUuid.value = ''
+    clearSelectedTask()
+    return
+  }
+  // 切换执行方式后会清掉旧动态再跳进对话。此时内存和本地缓存里仍是上一次
+  // 已完成的会话；若因为任务和步骤都没变就直接返回，头部会变成「进行中」，
+  // 列表和消息却继续显示上一次「执行完成」。
+  const kickoffThisTask = pendingCliKickoffUuid.value === routeTaskUuid
+  if (kickoffThisTask) {
+    taskViewCache.delete(routeTaskUuid)
+    if (task.value?.uuid === routeTaskUuid) progress.value = []
+    selectedProgressUuid.value = ''
+    selectedStepUuid.value = routeQueryValue(route.query.stepUuid)
+    await loadNotifications(true)
+  }
   let conversation = conversations.value.find((item) => item.task_uuid === routeTaskUuid)
-  if (!conversation) {
+  if (!conversation && !kickoffThisTask) {
     await loadNotifications(true)
     conversation = conversations.value.find((item) => item.task_uuid === routeTaskUuid)
   }
@@ -1328,8 +814,7 @@ async function selectConversationFromRoute() {
   // 指派给 CLI 后跳转过来的任务可能还没有通知记录：直接按路由选中，
   // 否则详情区会停在空白态。
   if (!conversation) {
-    if (selectedTaskUuid.value === routeTaskUuid) return
-    clearNewConversation()
+    if (!kickoffThisTask && selectedTaskUuid.value === routeTaskUuid) return
     selectedTaskUuid.value = routeTaskUuid
     selectedStepUuid.value = routeStepUuid
     selectedProgressUuid.value = ''
@@ -1338,18 +823,17 @@ async function selectConversationFromRoute() {
     await loadSelectedTask()
     return
   }
-  const nextStepUuid = routeStepUuid || conversation.latest.task_step_uuid
+  const nextStepUuid = routeStepUuid || (kickoffThisTask ? '' : conversation.latest.task_step_uuid)
   if (
-	!newConversationPipeline.value && !newConversationExpertGroup.value && !newConversationCodex.value && !newConversationCLI.value &&
+    !kickoffThisTask &&
     selectedTaskUuid.value === conversation.task_uuid &&
     selectedStepUuid.value === nextStepUuid
   ) {
     return
   }
-  clearNewConversation()
   selectedTaskUuid.value = conversation.task_uuid
   selectedStepUuid.value = nextStepUuid
-  selectedProgressUuid.value = routeStepUuid ? '' : conversation.latest.progress_uuid || ''
+  selectedProgressUuid.value = kickoffThisTask || routeStepUuid ? '' : conversation.latest.progress_uuid || ''
   closeContextMenu()
   void persistViewState()
   await loadSelectedTask()
@@ -1382,13 +866,6 @@ async function ensureNotificationPermission() {
   } catch {
     // 通知权限申请失败不影响任务页面主流程
   }
-}
-
-function pipelineInitials(name?: string) {
-  return (name || t('workflows.task.notifications.pipelineInitial'))
-    .trim()
-    .slice(0, 1)
-    .toUpperCase()
 }
 
 function clearRefreshTimer() {
@@ -1562,7 +1039,9 @@ async function loadNotifications(preserveSelection = true) {
   notificationsLoading.value = true
   notificationsError.value = ''
   try {
-    const result = await apiClient.get<{ items: TaskNotification[] }>('/notifications')
+    const result = await apiClient.get<{ items: TaskNotification[] }>('/notifications', {
+      include_archived: 1,
+    })
     if (requestVersion !== notificationsLoadVersion) return
     const loadedNotifications = result.items || []
     // 读取列表可能与点击消红点并发，只覆盖本次操作时已存在的通知，
@@ -1595,19 +1074,24 @@ async function loadNotifications(preserveSelection = true) {
     const routeTaskUuid = routeQueryValue(route.query.taskUuid)
     const routeStepUuid = routeQueryValue(route.query.stepUuid)
     const routeConversation = conversations.value.find((item) => item.task_uuid === routeTaskUuid)
-	if (!newConversationPipeline.value && !newConversationExpertGroup.value && !newConversationCodex.value && !newConversationCLI.value && routeConversation) {
+	if (routeConversation) {
       selectedTaskUuid.value = routeConversation.task_uuid
       selectedStepUuid.value = routeStepUuid || routeConversation.latest.task_step_uuid
       selectedProgressUuid.value = routeStepUuid ? '' : routeConversation.latest.progress_uuid || ''
     } else if (
-	  !newConversationPipeline.value && !newConversationExpertGroup.value && !newConversationCodex.value && !newConversationCLI.value &&
       (!preserveSelection ||
         !conversations.value.some((item) => item.task_uuid === selectedTaskUuid.value))
     ) {
-      const first = conversations.value[0]
-      selectedTaskUuid.value = first?.task_uuid || ''
-      selectedStepUuid.value = first?.latest.task_step_uuid || ''
-      selectedProgressUuid.value = first?.latest.progress_uuid || ''
+      if (routeTaskUuid) {
+        const first = conversations.value[0]
+        selectedTaskUuid.value = first?.task_uuid || ''
+        selectedStepUuid.value = first?.latest.task_step_uuid || ''
+        selectedProgressUuid.value = first?.latest.progress_uuid || ''
+      } else {
+        selectedTaskUuid.value = ''
+        selectedStepUuid.value = ''
+        selectedProgressUuid.value = ''
+      }
     }
     const selectionChanged = previousSelectedTaskUuid !== selectedTaskUuid.value
     const selectedStepChanged = previousSelectedStepUuid !== selectedStepUuid.value
@@ -1722,7 +1206,7 @@ async function setTaskRead(taskUuid: string, isRead: boolean) {
   pendingReadTasks.set(taskUuid, { isRead, notificationUuids: new Set(previous.keys()) })
   conversation.items.forEach((item) => { item.is_read = isRead })
   try {
-    await apiClient.put(`/notifications/tasks/${encodeURIComponent(taskUuid)}/read`, { is_read: isRead })
+    await conversationStore.setTaskRead(taskUuid, isRead)
   } catch (error) {
     for (const item of [...notifications.value, ...temporaryNotifications.value]) {
       if (previous.has(item.uuid)) item.is_read = previous.get(item.uuid)!
@@ -1737,7 +1221,6 @@ async function setTaskRead(taskUuid: string, isRead: boolean) {
 
 async function selectConversation(conversation: TaskConversation, markRead = true) {
   if (markRead && conversation.unread) void setTaskRead(conversation.task_uuid, true)
-  clearNewConversation()
   selectedTaskUuid.value = conversation.task_uuid
   selectedStepUuid.value = conversation.latest.task_step_uuid
   selectedProgressUuid.value = conversation.latest.progress_uuid || ''
@@ -1847,6 +1330,7 @@ async function submitQuestion(submission: ChatComposerSubmission) {
         ? t('workflows.task.feedback.agentStarted')
         : t('workflows.task.feedback.messageSent'),
     )
+    await unarchiveConversationIfNeeded(selectedTaskUuid.value)
     await setTaskRead(selectedTaskUuid.value, true)
     await Promise.all([loadNotifications(true), loadSelectedTask()])
   } catch (error) {
@@ -1904,26 +1388,6 @@ async function copyResult(item: TaskProgress) {
   }
 }
 
-function openContextMenu(event: MouseEvent, conversation: TaskConversation) {
-  event.preventDefault()
-  showContextMenu(conversation, event.clientX, event.clientY)
-}
-
-function showContextMenu(conversation: TaskConversation, x: number, y: number) {
-  contextTaskUuid.value = conversation.task_uuid
-  contextX.value = Math.min(x, window.innerWidth - 190)
-  contextY.value = Math.min(y, window.innerHeight - 150)
-}
-
-function toggleConversationMenu(event: MouseEvent, conversation: TaskConversation) {
-  if (contextTaskUuid.value === conversation.task_uuid) {
-    closeContextMenu()
-    return
-  }
-  const triggerRect = (event.currentTarget as HTMLElement).getBoundingClientRect()
-  showContextMenu(conversation, triggerRect.right - 174, triggerRect.bottom + 4)
-}
-
 function closeContextMenu() {
   contextTaskUuid.value = ''
 }
@@ -1940,27 +1404,24 @@ async function openSelectedTerminal() {
   try { await openTerminal(workDir) } catch (error) { message.error(error instanceof Error ? error.message : t('workflows.task.progress.openTerminalFailed')) } finally { openingTerminal.value = false }
 }
 
-async function handleOpenCodex() {
-  if (
-    !selectedTaskUuid.value ||
-    task.value?.execution_mode !== 'vibe_coding' ||
-    task.value.execution_tool !== 'codex' ||
-    codexBusy.value
-  ) {
-    return
-  }
+async function handleOpenVibeTool() {
+  if (!selectedTaskUuid.value || !isVibeCoding.value || codexBusy.value) return
+  const toolName = vibeCodingToolName.value
   codexBusy.value = true
   try {
+    await unarchiveConversationIfNeeded(selectedTaskUuid.value)
     const openResult = await openTaskInCodex(selectedTaskUuid.value)
     if (openResult.opened) {
-      message.success(t('workflows.task.detail.codexOpened'))
+      message.success(t('workflows.task.detail.toolOpened', { tool: toolName }))
     } else if (openResult.copied) {
-      message.warning(t('workflows.task.detail.codexCopiedFallback'))
+      message.warning(t('workflows.task.detail.toolCopiedFallback', { tool: toolName }))
+    } else if (openResult.error) {
+      message.error(openResult.error.message)
     } else {
-      message.warning(t('workflows.task.detail.codexUnavailableAfterAssign'))
+      message.warning(t('workflows.task.detail.toolUnavailable', { tool: toolName }))
     }
   } catch (error) {
-    message.error(error instanceof Error ? error.message : t('workflows.task.detail.codexOpenFailed'))
+    message.error(error instanceof Error ? error.message : t('workflows.task.detail.toolOpenFailed', { tool: toolName }))
   } finally {
     codexBusy.value = false
   }
@@ -1985,27 +1446,46 @@ async function toggleRead() {
   closeContextMenu()
 }
 
+async function unarchiveConversationIfNeeded(taskUuid: string) {
+  const isArchived = selectedConversation.value?.task_uuid === taskUuid
+    ? selectedConversation.value.is_archived
+    : conversationStore.allConversations.find((item) => item.task_uuid === taskUuid)?.is_archived
+  if (!isArchived) return
+  await conversationStore.archiveTask(taskUuid, false)
+  for (const item of [...notifications.value, ...temporaryNotifications.value]) {
+    if (item.task_uuid === taskUuid) item.is_archived = false
+  }
+}
+
+async function unarchiveCurrentTask() {
+  if (!selectedTaskUuid.value) return
+  try {
+    await unarchiveConversationIfNeeded(selectedTaskUuid.value)
+    message.success(t('layout.sidebar.unarchive') || '已取消归档')
+    await Promise.all([conversationStore.loadConversations(true), loadNotifications(true), loadSelectedTask()])
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : '操作失败')
+  }
+}
+
 async function archiveConversation() {
   const conversation = contextConversation.value
   if (!conversation) return
   const taskUuid = conversation.task_uuid
   try {
-    await apiClient.put(`/notifications/tasks/${taskUuid}/archive`, { is_archived: true })
+    await conversationStore.archiveTask(taskUuid, true)
     taskViewCache.delete(taskUuid)
-    notifications.value = notifications.value.filter((item) => item.task_uuid !== taskUuid)
-    temporaryNotifications.value = temporaryNotifications.value.filter(
-      (item) => item.task_uuid !== taskUuid,
-    )
-    await Promise.all([removePersistentTaskView(taskUuid), persistNotificationSnapshot()])
+    await Promise.all([
+      conversationStore.loadConversations(true),
+      loadNotifications(true),
+      removePersistentTaskView(taskUuid),
+      persistNotificationSnapshot(),
+    ])
     if (selectedTaskUuid.value === taskUuid) {
-      const next = conversations.value[0]
-      if (next) await selectConversation(next, false)
-      else {
-        selectedTaskUuid.value = ''
-        clearSelectedTask()
-        await syncConversationRoute('')
-        await persistViewState()
-      }
+      selectedTaskUuid.value = ''
+      clearSelectedTask()
+      await syncConversationRoute('')
+      await persistViewState()
     }
     message.success(t('workflows.task.feedback.archived'))
   } catch (error) {
@@ -2015,444 +1495,6 @@ async function archiveConversation() {
   } finally {
     closeContextMenu()
   }
-}
-
-async function loadPipelines(force = false) {
-  try {
-    await pipelineStore.loadPipelines(force)
-  } catch {
-    // 请求错误由 Store 统一转换为菜单内的错误状态
-  }
-}
-
-function conversationStatusLabel(name: string | undefined, status: string) {
-  return `${name || t('workflows.task.common.agentOrchestration')} · ${status}`
-}
-
-function conversationActorName(notification: TaskNotification) {
-  if (notification.execution_mode === 'vibe_coding') {
-    return notification.execution_tool === 'codex'
-      ? t('workflows.task.assign.codex')
-      : notification.execution_tool || t('workflows.task.create.vibeCodingMode')
-  }
-  return notification.step_name || t('workflows.task.common.agentOrchestration')
-}
-
-async function loadExpertGroups(force = false) {
-  try { await expertGroupStore.load(force) } catch { /* Store owns the visible error. */ }
-}
-
-async function loadConversationCodexCapability(force = false) {
-  if (codexCapabilityLoaded.value && !force) return
-  try {
-    codexCapability.value = await loadCodexCapability()
-    codexCapabilityLoaded.value = true
-  } catch (error) {
-    codexCapability.value = {
-      available: false,
-      message:
-        error instanceof Error
-          ? error.message
-          : t('workflows.task.codex.capabilityUnavailable'),
-    }
-  }
-}
-
-function handlePipelineMenuOpenChange(open: boolean) {
-  pipelineMenuOpen.value = open
-	if (open) {
-	  void loadPipelines()
-	  void loadExpertGroups()
-	  void loadCliOptions()
-	  void loadConversationCodexCapability()
-	}
-}
-
-function clearNewConversation() {
-  newConversationPipeline.value = undefined
-	newConversationExpertGroup.value = undefined
-  newConversationCodex.value = false
-  newConversationCLI.value = false
-  // CLI 与模型的记忆值保留：评论 4 要求下次打开新建对话时默认填入。
-  newConversationQuestion.value = ''
-  newConversationWorkDir.value = ''
-  newConversationSubmission.value = undefined
-  newConversationComposerRef.value?.resetAfterSubmit()
-  pipelineConfigModalOpen.value = false
-}
-
-function startNewConversation(pipeline: Pipeline) {
-  closeContextMenu()
-  pipelineMenuOpen.value = false
-  selectedTaskUuid.value = ''
-  clearSelectedTask()
-  newConversationSubmission.value = undefined
-  newConversationComposerRef.value?.resetAfterSubmit()
-  newConversationPipeline.value = pipeline
-	newConversationExpertGroup.value = undefined
-  newConversationCodex.value = false
-  newConversationCLI.value = false
-  newConversationQuestion.value = ''
-  newConversationWorkDir.value = ''
-  void syncConversationRoute('')
-}
-
-function startNewExpertConversation(group: ExpertGroup) {
-  if (!group.ready) return
-  closeContextMenu(); pipelineMenuOpen.value = false; selectedTaskUuid.value = ''; clearSelectedTask()
-  newConversationPipeline.value = undefined; newConversationExpertGroup.value = group
-  newConversationCodex.value = false
-  newConversationCLI.value = false
-  newConversationQuestion.value = ''; newConversationWorkDir.value = ''; void syncConversationRoute('')
-}
-
-function startNewCLIConversation() {
-  closeContextMenu(); pipelineMenuOpen.value = false; selectedTaskUuid.value = ''; clearSelectedTask()
-  newConversationPipeline.value = undefined; newConversationExpertGroup.value = undefined
-  newConversationCodex.value = false
-  newConversationCLI.value = true
-  newConversationQuestion.value = ''; newConversationWorkDir.value = ''; void syncConversationRoute('')
-  if (!cliOptions.value.length) void loadCliOptions()
-  // 评论 4：回填上次成功使用的 CLI 与模型作为默认值；
-  // 模型要等该 CLI 的模型列表加载完后校验存在才填，避免残留失效选项。
-  const preference = readCliPreference()
-  if (preference.cliType) {
-    newConversationCliType.value = preference.cliType
-    void loadModelOptions(preference.cliType).then(() => {
-      if (
-        preference.model &&
-        newConversationCliType.value === preference.cliType &&
-        modelOptions.value.includes(preference.model)
-      ) {
-        newConversationCliModel.value = preference.model
-      }
-    })
-  }
-}
-
-function startNewCodexConversation() {
-  if (!codexCapability.value.available) return
-  closeContextMenu()
-  pipelineMenuOpen.value = false
-  selectedTaskUuid.value = ''
-  clearSelectedTask()
-  newConversationSubmission.value = undefined
-  newConversationComposerRef.value?.resetAfterSubmit()
-  newConversationPipeline.value = undefined
-  newConversationExpertGroup.value = undefined
-  newConversationCodex.value = true
-  newConversationCLI.value = false
-  newConversationQuestion.value = ''
-  newConversationWorkDir.value = ''
-  void syncConversationRoute('')
-}
-
-function chooseNewConversationCLIType(cliType: string) {
-  newConversationCliType.value = cliType
-  newConversationCliModel.value = ''
-  writeCliPreference(cliType, '')
-  void loadModelOptions(cliType)
-}
-
-// 需求设计图：CLI 与模型在「新建对话」菜单内选完，点「创建对话」进入待创建状态。
-function createNewCLIConversation() {
-  if (!canCreateNewCLIConversation.value) return
-  startNewCLIConversation()
-}
-
-function chooseNewConversationCLIModel(model: string) {
-  newConversationCliModel.value = model
-  if (newConversationCliType.value) {
-    writeCliPreference(newConversationCliType.value, model)
-  }
-}
-
-async function chooseNewConversationDirectory() {
-  try {
-    const selected = await selectDirectory(newConversationWorkDir.value)
-    if (selected) newConversationWorkDir.value = selected
-  } catch (error) {
-    message.error(
-      error instanceof Error ? error.message : t('workflows.task.feedback.chooseDirectoryFailed'),
-    )
-  }
-}
-
-function createTaskTitle(text: string) {
-  return text.replace(/\s+/g, ' ').trim().slice(0, 50)
-}
-
-function createStepConfigs(pipeline: Pipeline) {
-  return (pipeline.steps || []).map((step) => ({
-    step_uuid: step.uuid,
-    source_step_id: step.source_step_id,
-    cloud_step_id: step.cloud_step_id,
-    cli_type: step.cli_type,
-    model: step.model,
-    model_name: step.model_name,
-  }))
-}
-
-async function submitNewConversation(
-  submission?: ChatComposerSubmission,
-  pipelineOverride?: Pipeline,
-) {
-  if (submission) newConversationSubmission.value = submission
-  const currentSubmission = submission || newConversationSubmission.value
-  const promptText = currentSubmission?.content.trim() || ''
-  const displayText = currentSubmission?.display_content?.trim() || promptText
-  const pipeline = pipelineOverride || newConversationPipeline.value
-  if (!displayText || !pipeline || submitting.value) return
-  if (!newConversationWorkDir.value.trim()) {
-    message.warning(t('workflows.task.feedback.chooseDirectory'))
-    return
-  }
-  submitting.value = true
-  try {
-    const createdTask = await apiClient.post<CreatedTaskResponse>('/tasks', {
-      title: createTaskTitle(displayText) || t('workflows.task.feedback.imageTask'),
-      description: promptText,
-      pipeline_uuid: pipeline.uuid,
-      step_configs: createStepConfigs(pipeline),
-      work_dir: newConversationWorkDir.value.trim(),
-      work_dirs: [newConversationWorkDir.value.trim()],
-      create_notification: true,
-    })
-    const notification =
-      createdTask.notification ||
-      ({
-        task_uuid: createdTask.uuid,
-        task_title:
-          createdTask.title ||
-          createTaskTitle(displayText) ||
-          t('workflows.task.feedback.imageTask'),
-        step_name:
-          createdTask.steps?.[0]?.name ||
-          pipeline.steps?.[0]?.name ||
-          t('workflows.task.common.agentOrchestration'),
-        session_uuid: '',
-        status: 'created',
-        summary: t('workflows.task.feedback.taskCreated'),
-        created_at: Date.now(),
-      } satisfies CreateTaskNotification)
-    const currentStepUuid = createdTask.current_step_uuid || createdTask.steps?.[0]?.uuid || ''
-    temporaryNotifications.value = [
-      {
-        uuid: `created-${notification.task_uuid}-${notification.created_at}`,
-        task_uuid: notification.task_uuid,
-        task_title: notification.task_title,
-        task_step_uuid: currentStepUuid,
-        step_name: notification.step_name,
-        status: notification.status,
-        summary: notification.summary,
-        is_read: true,
-        created_at: notification.created_at,
-      },
-      ...temporaryNotifications.value.filter((item) => item.task_uuid !== notification.task_uuid),
-    ]
-    selectedTaskUuid.value = createdTask.uuid
-    selectedStepUuid.value = currentStepUuid
-    selectedProgressUuid.value = ''
-    task.value = createdTask
-    progress.value = []
-    taskViewCache.set(createdTask.uuid, { task: createdTask, progress: [] })
-    newConversationPipeline.value = undefined
-    newConversationCLI.value = false
-    newConversationQuestion.value = ''
-    newConversationWorkDir.value = ''
-    newConversationSubmission.value = undefined
-    newConversationComposerRef.value?.resetAfterSubmit()
-    await syncConversationRoute(createdTask.uuid, currentStepUuid)
-    await Promise.all([
-      persistNotificationSnapshot(),
-      persistViewState(),
-      persistTaskView(createdTask.uuid, createdTask, []),
-    ])
-    message.success(notification.summary)
-    await loadSelectedTask()
-  } catch (error) {
-    if (error instanceof ApiError && error.code === 'pipeline_incomplete') {
-      pipelineConfigModalOpen.value = true
-      message.warning(error.message)
-    } else {
-      message.error(
-        error instanceof Error ? error.message : t('workflows.task.feedback.taskCreateFailed'),
-      )
-    }
-  } finally {
-    submitting.value = false
-  }
-}
-
-async function submitNewExpertConversation(submission: ChatComposerSubmission) {
-  const group = newConversationExpertGroup.value
-  const promptText = submission.content.trim()
-  if (!group?.ready || !promptText || !newConversationWorkDir.value.trim() || submitting.value) {
-    if (!newConversationWorkDir.value.trim()) message.warning(t('workflows.task.feedback.chooseDirectory'))
-    return
-  }
-  submitting.value = true
-  try {
-    const createdTask = await apiClient.post<CreatedTaskResponse>('/tasks', {
-      title: createTaskTitle(submission.display_content || promptText),
-      description: promptText,
-      execution_mode: 'expert_group',
-      expert_group_uuid: group.uuid,
-      work_dir: newConversationWorkDir.value.trim(),
-      work_dirs: [newConversationWorkDir.value.trim()],
-      status: 'active',
-      create_notification: true,
-    })
-    const leaderStep = createdTask.steps?.find((step) => step.member_role === 'leader')
-    const notification = createdTask.notification
-    temporaryNotifications.value = [{
-      uuid: `created-${createdTask.uuid}-${Date.now()}`,
-      task_uuid: createdTask.uuid,
-      task_title: createdTask.title,
-      task_step_uuid: leaderStep?.uuid || '',
-      step_name: leaderStep?.name || group.leader?.name || t('expertGroups.leader'),
-      status: notification?.status || 'created',
-      summary: notification?.summary || t('workflows.task.feedback.taskCreated'),
-      is_read: true,
-      created_at: notification?.created_at || Date.now(),
-    }, ...temporaryNotifications.value.filter((item) => item.task_uuid !== createdTask.uuid)]
-    selectedTaskUuid.value = createdTask.uuid; selectedStepUuid.value = leaderStep?.uuid || ''
-    newConversationExpertGroup.value = undefined; newConversationQuestion.value = ''; newConversationWorkDir.value = ''
-    message.success(t('workflows.task.feedback.taskCreated')); await syncConversationRoute(createdTask.uuid, selectedStepUuid.value)
-    await loadSelectedTask()
-  } catch (error) {
-    message.error(error instanceof Error ? error.message : t('workflows.task.feedback.taskCreateFailed'))
-  } finally { submitting.value = false }
-}
-
-async function submitNewCodexConversation(submission: ChatComposerSubmission) {
-  const promptText = submission.content.trim()
-  const displayText = submission.display_content?.trim() || promptText
-  if (!promptText || !newConversationCodex.value || submitting.value) return
-  if (!newConversationWorkDir.value.trim()) {
-    message.warning(t('workflows.task.feedback.chooseDirectory'))
-    return
-  }
-  submitting.value = true
-  let taskCreated = false
-  try {
-    const workDir = newConversationWorkDir.value.trim()
-    const createdTask = await apiClient.post<CreatedTaskResponse>('/tasks', {
-      title: createTaskTitle(displayText) || t('workflows.task.feedback.imageTask'),
-      description: promptText,
-      execution_mode: 'vibe_coding',
-      execution_tool: 'codex',
-      work_dir: workDir,
-      work_dirs: [workDir],
-      status: 'active',
-      create_notification: true,
-    })
-    taskCreated = true
-    const notification = createdTask.notification
-    temporaryNotifications.value = [
-      {
-        uuid: `created-${createdTask.uuid}-${notification?.created_at || Date.now()}`,
-        task_uuid: createdTask.uuid,
-        task_title:
-          createdTask.title ||
-          createTaskTitle(displayText) ||
-          t('workflows.task.feedback.imageTask'),
-        task_step_uuid: '',
-        step_name: t('workflows.task.assign.codex'),
-        status: notification?.status || 'created',
-        execution_mode: 'vibe_coding',
-        execution_tool: 'codex',
-        summary: notification?.summary || t('workflows.task.feedback.taskCreated'),
-        is_read: true,
-        created_at: notification?.created_at || Date.now(),
-      },
-      ...temporaryNotifications.value.filter((item) => item.task_uuid !== createdTask.uuid),
-    ]
-    selectedTaskUuid.value = createdTask.uuid
-    selectedStepUuid.value = ''
-    selectedProgressUuid.value = ''
-    task.value = createdTask
-    progress.value = []
-    taskViewCache.set(createdTask.uuid, { task: createdTask, progress: [] })
-    newConversationCodex.value = false
-    newConversationQuestion.value = ''
-    newConversationWorkDir.value = ''
-    newConversationSubmission.value = undefined
-    newConversationComposerRef.value?.resetAfterSubmit()
-    await syncConversationRoute(createdTask.uuid)
-    await Promise.all([
-      persistNotificationSnapshot(),
-      persistViewState(),
-      persistTaskView(createdTask.uuid, createdTask, []),
-    ])
-
-    const openResult = await openTaskInCodex(createdTask.uuid)
-    if (openResult.opened) {
-      message.success(t('workflows.task.detail.codexOpened'))
-    } else if (openResult.copied) {
-      message.warning(t('workflows.task.detail.codexCopiedFallback'))
-    } else {
-      message.warning(t('workflows.task.detail.codexUnavailableAfterAssign'))
-    }
-    await loadSelectedTask()
-  } catch (error) {
-    message.error(
-      error instanceof Error
-        ? error.message
-        : taskCreated
-          ? t('workflows.task.detail.codexOpenFailed')
-          : t('workflows.task.feedback.taskCreateFailed'),
-    )
-  } finally {
-    submitting.value = false
-  }
-}
-
-// CLI 直接执行对话：任务创建后即进入进行中，等用户第一条消息触发 RunStep。
-async function submitNewCLIConversation(submission: ChatComposerSubmission) {
-  const promptText = submission.content.trim()
-  if (!promptText || !newConversationCliType.value || !newConversationCliModel.value || submitting.value) return
-  if (!newConversationWorkDir.value.trim()) {
-    message.warning(t('workflows.task.feedback.chooseDirectory'))
-    return
-  }
-  submitting.value = true
-  try {
-    const createdTask = await apiClient.post<CreatedTaskResponse>('/tasks', {
-      title: createTaskTitle(submission.display_content || promptText),
-      description: promptText,
-      execution_mode: 'cli',
-      execution_tool: newConversationCliType.value,
-      model_name: newConversationCliModel.value,
-      work_dir: newConversationWorkDir.value.trim(),
-      work_dirs: [newConversationWorkDir.value.trim()],
-      status: 'active',
-      create_notification: true,
-    })
-    const cliStep = createdTask.steps?.[0]
-    temporaryNotifications.value = [{
-      uuid: `created-${createdTask.uuid}-${Date.now()}`,
-      task_uuid: createdTask.uuid,
-      task_title: createdTask.title,
-      task_step_uuid: cliStep?.uuid || '',
-      step_name: cliStep?.name || t('workflows.task.assign.cliMode'),
-      status: createdTask.notification?.status || 'created',
-      summary: createdTask.notification?.summary || t('workflows.task.feedback.taskCreated'),
-      is_read: true,
-      created_at: createdTask.notification?.created_at || Date.now(),
-    }, ...temporaryNotifications.value.filter((item) => item.task_uuid !== createdTask.uuid)]
-    selectedTaskUuid.value = createdTask.uuid; selectedStepUuid.value = cliStep?.uuid || ''
-    // 评论 4：CLI 与模型记忆值保留，作为下次新建对话的默认值。
-    // 评论 1：创建任务成功后自动向 CLI 发送起始指令，无需用户再发一条；
-    // 等 loadSelectedTask 把隐式步骤加载完，由 cliKickoff watcher 触发发送。
-    autoKickoffTaskUuid.value = createdTask.uuid
-    newConversationCLI.value = false
-    newConversationQuestion.value = ''; newConversationWorkDir.value = ''
-    message.success(t('workflows.task.feedback.taskCreated')); await syncConversationRoute(createdTask.uuid, selectedStepUuid.value)
-    await loadSelectedTask()
-  } catch (error) {
-    message.error(error instanceof Error ? error.message : t('workflows.task.feedback.taskCreateFailed'))
-  } finally { submitting.value = false }
 }
 
 async function submitExpertMessage(submission: ChatComposerSubmission) {
@@ -2466,20 +1508,11 @@ async function submitExpertMessage(submission: ChatComposerSubmission) {
       member_uuid: submission.member_uuid,
       request_id: crypto.randomUUID(),
     })
+    await unarchiveConversationIfNeeded(selectedTaskUuid.value)
     question.value = ''; composerRef.value?.resetAfterSubmit(); message.success(t('workflows.task.feedback.messageSent'))
     await Promise.all([loadNotifications(true), loadSelectedTask()])
   } catch (error) { message.error(error instanceof Error ? error.message : t('workflows.task.feedback.messageFailed')) }
   finally { submitting.value = false }
-}
-
-function handleCreationPipelineSelected(pipeline: Pipeline) {
-  newConversationPipeline.value = pipeline
-  pipelineConfigModalOpen.value = false
-  void submitNewConversation(undefined, pipeline)
-}
-
-function getPipelinePopupContainer(trigger: HTMLElement) {
-  return trigger.parentElement || document.body
 }
 
 function showImagePreview(url: string) {
@@ -2487,95 +1520,13 @@ function showImagePreview(url: string) {
   previewImageVisible.value = true
 }
 
-function syncSidebarMetrics() {
-  const layoutWidth = taskLayoutRef.value?.getBoundingClientRect().width || MIN_SIDEBAR_WIDTH
-  sidebarMaxWidth.value = Math.max(
-    MIN_SIDEBAR_WIDTH,
-    Math.min(MAX_SIDEBAR_WIDTH, Math.floor(layoutWidth)),
-  )
-  if (sidebarResized.value) {
-    sidebarWidth.value = Math.min(sidebarMaxWidth.value, sidebarWidth.value)
-    return
-  }
-  sidebarWidth.value = conversationSidebarRef.value?.getBoundingClientRect().width || 300
-}
-
-function restoreSidebarWidth() {
-  syncSidebarMetrics()
-  try {
-    const cachedWidth = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY)
-    if (!cachedWidth) return
-    const width = Number(cachedWidth)
-    if (Number.isFinite(width)) setSidebarWidth(width)
-  } catch {
-    // 本地存储不可用时保留页面默认宽度
-  }
-}
-
-function persistSidebarWidth() {
-  try {
-    window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(sidebarWidth.value)))
-  } catch {
-    // 本地存储不可用不影响侧栏宽度调整
-  }
-}
-
-function setSidebarWidth(width: number) {
-  sidebarResized.value = true
-  sidebarWidth.value = Math.min(sidebarMaxWidth.value, Math.max(MIN_SIDEBAR_WIDTH, width))
-}
-
-function startSidebarResize(event: PointerEvent) {
-  if (event.button !== 0) return
-  syncSidebarMetrics()
-  sidebarResizeState = {
-    pointerId: event.pointerId,
-    pointerX: event.clientX,
-    width: sidebarWidth.value,
-  }
-  sidebarDragging.value = true
-  const target = event.currentTarget as HTMLElement
-  target.setPointerCapture(event.pointerId)
-  event.preventDefault()
-}
-
-function handleSidebarResize(event: PointerEvent) {
-  if (!sidebarResizeState || sidebarResizeState.pointerId !== event.pointerId) return
-  setSidebarWidth(sidebarResizeState.width + event.clientX - sidebarResizeState.pointerX)
-  event.preventDefault()
-}
-
-function finishSidebarResize(event: PointerEvent) {
-  if (!sidebarResizeState || sidebarResizeState.pointerId !== event.pointerId) return
-  const target = event.currentTarget as HTMLElement
-  sidebarResizeState = undefined
-  sidebarDragging.value = false
-  persistSidebarWidth()
-  if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId)
-}
-
-function handleSidebarResizeKeydown(event: KeyboardEvent) {
-  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
-  syncSidebarMetrics()
-  if (event.key === 'Home') setSidebarWidth(MIN_SIDEBAR_WIDTH)
-  else if (event.key === 'End') setSidebarWidth(sidebarMaxWidth.value)
-  else {
-    setSidebarWidth(
-      sidebarWidth.value +
-        (event.key === 'ArrowLeft' ? -SIDEBAR_KEYBOARD_STEP : SIDEBAR_KEYBOARD_STEP),
-    )
-  }
-  persistSidebarWidth()
-  event.preventDefault()
-}
-
 function handleDocumentKeydown(event: KeyboardEvent) {
   if (event.key !== 'Escape') return
   closeContextMenu()
-  pipelineMenuOpen.value = false
 }
 
 useLocalWS('task.changed', (data: { task_uuid?: string }) => {
+  if (isNewConversation.value) return
   void loadNotifications(true)
   if (data.task_uuid === selectedTaskUuid.value) void loadSelectedTask(true)
 })
@@ -2596,22 +1547,18 @@ watch(
   },
 )
 
-watch(pipelines, (items) => {
-  if (
-    newConversationPipeline.value &&
-    !items.some((item) => item.uuid === newConversationPipeline.value?.uuid)
-  ) {
-    newConversationPipeline.value = undefined
-  }
+// 已经停在同一个对话路由时，router.push 不会触发上面的监听。
+// 切换执行方式后再次进来，仍要丢掉旧会话并拉起这一次执行。
+watch(pendingCliKickoffUuid, (taskUuid) => {
+  if (!taskUuid || routeQueryValue(route.query.taskUuid) !== taskUuid) return
+  void selectConversationFromRoute()
 })
 
 onMounted(() => {
   document.addEventListener('click', closeContextMenu)
   document.addEventListener('keydown', handleDocumentKeydown)
-  window.addEventListener('resize', syncSidebarMetrics)
-  restoreSidebarWidth()
   void ensureNotificationPermission()
-  void initialize()
+  if (!isNewConversation.value) void initialize()
 })
 
 onBeforeUnmount(() => {
@@ -2621,7 +1568,6 @@ onBeforeUnmount(() => {
   if (highlightTimer) clearTimeout(highlightTimer)
   document.removeEventListener('click', closeContextMenu)
   document.removeEventListener('keydown', handleDocumentKeydown)
-  window.removeEventListener('resize', syncSidebarMetrics)
 })
 </script>
 
@@ -3559,5 +2505,43 @@ onBeforeUnmount(() => {
   .conversation-subtitle {
     padding-right: 0;
   }
+}
+
+.archived-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 24px;
+  background: #fdf6ec;
+  border-bottom: 1px solid #faecd8;
+  color: #e6a23c;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.archived-banner-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.archived-badge {
+  padding: 1px 6px;
+  background: #e6a23c;
+  color: #ffffff;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.unarchive-action-btn {
+  border: none;
+  background: transparent;
+  color: #3157e2;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.unarchive-action-btn:hover {
+  text-decoration: underline;
 }
 </style>

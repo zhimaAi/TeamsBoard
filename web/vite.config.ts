@@ -9,22 +9,33 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const RUNTIME_JSON_PATH = path.join(os.homedir(), '.goteams', 'runtime', 'runtime.json')
+function runtimeJsonPath(): string {
+  const home = os.homedir()
+  const fallback = path.join(home, '.goteams', 'runtime', 'runtime.json')
+  try {
+    const target = fs.readFileSync(path.join(home, '.goteams.mlink'), 'utf8').trim()
+    if (target) return path.join(target, 'runtime', 'runtime.json')
+  } catch {
+    // 还没搬迁过，使用默认数据根。
+  }
+  return fallback
+}
 
 // 后端地址发现：优先环境变量显式指定（调试用），否则读取后端写入的 runtime.json，
 // 按 mtime 缓存，后端重启换端口后自动刷新。
 function createBackendTargetResolver(envTarget?: string): () => string | null {
-  let cached: { mtimeMs: number; target: string } | null = null
+  let cached: { path: string; mtimeMs: number; target: string } | null = null
   return () => {
     if (envTarget) return envTarget
+    const runtimePath = runtimeJsonPath()
     try {
-      const stat = fs.statSync(RUNTIME_JSON_PATH)
-      if (cached && cached.mtimeMs === stat.mtimeMs) return cached.target
-      const raw = fs.readFileSync(RUNTIME_JSON_PATH, 'utf8')
+      const stat = fs.statSync(runtimePath)
+      if (cached && cached.path === runtimePath && cached.mtimeMs === stat.mtimeMs) return cached.target
+      const raw = fs.readFileSync(runtimePath, 'utf8')
       const data = JSON.parse(raw) as { address?: unknown }
       const address = typeof data.address === 'string' ? data.address.trim() : ''
       if (address) {
-        cached = { mtimeMs: stat.mtimeMs, target: `http://${address}` }
+        cached = { path: runtimePath, mtimeMs: stat.mtimeMs, target: `http://${address}` }
         return cached.target
       }
     } catch {

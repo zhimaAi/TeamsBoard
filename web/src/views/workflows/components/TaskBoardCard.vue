@@ -2,7 +2,7 @@
   <div
     class="task-card"
     :class="{ dragging }"
-    draggable="true"
+    :draggable="draggable"
     @dragstart="handleDragStart"
     @click="emit('open', task.uuid)"
   >
@@ -21,7 +21,7 @@
         v-if="task.status === 'blocked'"
         :title="task.blocked_reason || t('workflows.board.blockedFallback')"
       >
-        <span class="blocked-badge">!</span>
+        <span class="blocked-badge" aria-hidden="true" />
       </a-tooltip>
     </div>
     <div class="card-footer">
@@ -58,27 +58,70 @@
         {{ relativeTime(task.updated_at) }}
       </span>
     </div>
+    <a-tooltip
+      v-if="task.latest_activity"
+      placement="top"
+      :trigger="['hover', 'focus']"
+      overlay-class-name="task-board-activity-tooltip"
+      @open-change="handleActivityTooltipOpen"
+    >
+      <template #title>
+        <span class="activity-tooltip-content">{{ activityTooltipText }}</span>
+      </template>
+      <div
+        class="card-activity"
+        :class="`is-${task.latest_activity.status}`"
+        :aria-label="activityAriaLabel"
+        tabindex="0"
+      >
+        <SyncOutlined
+          v-if="task.latest_activity.status === 'running'"
+          class="activity-icon activity-icon-running"
+          aria-hidden="true"
+        />
+        <CheckOutlined
+          v-else-if="task.latest_activity.status === 'completed'"
+          class="activity-icon activity-icon-completed"
+          aria-hidden="true"
+        />
+        <AlertOutlined
+          v-else
+          class="activity-icon activity-icon-error"
+          aria-hidden="true"
+        />
+        <span class="activity-preview">{{ activityPreviewText }}</span>
+      </div>
+    </a-tooltip>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { TaskBoardTask } from '@/types/task-board'
+import { computed, ref, watch } from 'vue'
+import { AlertOutlined, CheckOutlined, SyncOutlined } from '@ant-design/icons-vue'
+import { apiClient } from '@/api/client'
+import type {
+  TaskActivityDetail,
+  TaskActivityStatus,
+  TaskBoardTask,
+  TaskLatestActivity,
+} from '@/types/task-board'
 import { useAppI18n } from '@/i18n'
 import { useLocale } from '@/composables/useLocale'
-import { useCliNames } from '@/composables/useCliNames'
-import cliExecutionLogo from '@/assets/icons/task-composer-cli.svg'
+import { useTaskExecutionDisplay } from '@/composables/useTaskExecutionDisplay'
+import { formatRelativeTime } from '@/utils/relativeTime'
 
 const { t } = useAppI18n()
 const { locale } = useLocale()
-const { cliDisplayName, ensureLoaded } = useCliNames()
-void ensureLoaded()
+const { executionName, executionAvatar } = useTaskExecutionDisplay()
 
 const props = withDefaults(defineProps<{
   task: TaskBoardTask
   dragging?: boolean
+  /** 团队工作看板只读展示任务卡片，不参与看板的拖拽改状态。 */
+  draggable?: boolean
 }>(), {
   dragging: false,
+  draggable: true,
 })
 
 const emit = defineEmits<{
@@ -86,26 +129,94 @@ const emit = defineEmits<{
   'drag-start': [event: DragEvent, task: TaskBoardTask]
 }>()
 
+const activityContent = ref('')
+const loadedActivityID = ref('')
+const loadingActivityID = ref('')
+const activityTooltipOpen = ref(false)
+
+const activityDefaultKeys: Record<string, string> = {
+  thinking: 'workflows.board.activityDefault.thinking',
+  message: 'workflows.board.activityDefault.message',
+  tool_call: 'workflows.board.activityDefault.toolCall',
+  tool_result: 'workflows.board.activityDefault.toolResult',
+  permission_request: 'workflows.board.activityDefault.permissionRequest',
+}
+
+function activityStatusLabel(status: TaskActivityStatus) {
+  return t(`workflows.board.activityStatus.${status}`)
+}
+
+function displayActivityPreview(activity: TaskLatestActivity) {
+  const preview = activity.preview.trim()
+  if (preview) return preview
+  const defaultKey = activityDefaultKeys[activity.kind]
+  return defaultKey ? t(defaultKey) : activityStatusLabel(activity.status)
+}
+
+const activityPreviewText = computed(() => {
+  const activity = props.task.latest_activity
+  return activity ? displayActivityPreview(activity) : ''
+})
+
+const activityTooltipText = computed(() => activityContent.value || activityPreviewText.value)
+
+const activityAriaLabel = computed(() => {
+  const activity = props.task.latest_activity
+  if (!activity) return ''
+  return t('workflows.board.activityAriaLabel', {
+    status: activityStatusLabel(activity.status),
+    content: activityPreviewText.value,
+  })
+})
+
+async function loadActivityContent() {
+  const activity = props.task.latest_activity
+  if (!activity || loadedActivityID.value === activity.id || loadingActivityID.value === activity.id) return
+  const requestedID = activity.id
+  loadingActivityID.value = requestedID
+  try {
+    const detail = await apiClient.get<TaskActivityDetail>(
+      `/tasks/${encodeURIComponent(props.task.uuid)}/activities/${encodeURIComponent(requestedID)}`,
+    )
+    if (props.task.latest_activity?.id !== requestedID) return
+    activityContent.value = detail.content
+    loadedActivityID.value = requestedID
+  } catch {
+    if (props.task.latest_activity?.id === requestedID) {
+      activityContent.value = ''
+      loadedActivityID.value = requestedID
+    }
+  } finally {
+    if (loadingActivityID.value === requestedID) loadingActivityID.value = ''
+  }
+}
+
+function handleActivityTooltipOpen(open: boolean) {
+  activityTooltipOpen.value = open
+  if (open) void loadActivityContent()
+}
+
+watch(() => props.task.latest_activity?.id, () => {
+  activityContent.value = ''
+  loadedActivityID.value = ''
+  if (activityTooltipOpen.value) void loadActivityContent()
+})
+
 function handleDragStart(event: DragEvent) {
+  // 只读卡片（团队工作看板）不参与拖拽改状态，即便事件被其它途径触发也直接忽略。
+  if (!props.draggable) {
+    event.preventDefault()
+    return
+  }
   emit('drag-start', event, props.task)
 }
 
 function agentName(task: TaskBoardTask) {
-  if (task.execution_mode === 'vibe_coding' && task.execution_tool === 'codex') return 'Codex'
-	if (task.execution_mode === 'expert_group') return task.expert_group_name_snapshot || ''
-  // 需求 2204：CLI 直接执行的任务在看板卡片上显示 CLI 名称，与其他执行方式保持一致，
-  // 不再落到「未指派执行方式」。看板列表接口不透出模型，卡片也不展示模型。
-  if (task.execution_mode === 'cli') return cliDisplayName(task.execution_tool || '')
-  return task.pipeline_name_snapshot || task.agent_name_snapshot || ''
+  return executionName(task)
 }
 
 /** 卡片头像：CLI 用固定 logo，其余沿用各自快照。 */
-const agentAvatar = computed(() => {
-  const task = props.task
-  if (task.execution_mode === 'cli') return cliExecutionLogo
-  if (task.execution_mode === 'expert_group') return task.expert_group_avatar_snapshot
-  return task.pipeline_avatar_snapshot
-})
+const agentAvatar = computed(() => executionAvatar(props.task))
 
 function priorityClass(priority?: string): 'high' | 'medium' | 'low' {
   if (priority === '高' || priority === 'high') return 'high'
@@ -120,18 +231,7 @@ function priorityLabel(priority?: string) {
 }
 
 function relativeTime(timestamp: number) {
-  const value = timestamp < 1e12 ? timestamp * 1000 : timestamp
-  const elapsed = Math.max(0, Date.now() - value)
-  const minutes = Math.floor(elapsed / 60000)
-  if (minutes < 1) return t('workflows.board.justNow')
-  if (minutes < 60) return t('workflows.board.minutesAgo', { count: minutes })
-
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return t('workflows.board.hoursAgo', { count: hours })
-
-  const days = Math.floor(hours / 24)
-  if (days < 30) return t('workflows.board.daysAgo', { count: days })
-  return new Date(value).toLocaleDateString(locale.value)
+  return formatRelativeTime(timestamp, locale.value)
 }
 </script>
 
@@ -265,5 +365,99 @@ function relativeTime(timestamp: number) {
 .card-updated {
   color: #8c8c8c;
   white-space: nowrap;
+}
+
+.blocked-badge::before {
+  content: '!';
+}
+
+.card-activity {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px 6px;
+  border-radius: 10px;
+  outline: none;
+  background: #f3f5f8;
+  color: #8c8c8c;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.card-activity.is-completed,
+.card-activity.is-error {
+  min-height: 34px;
+}
+
+.card-activity:focus-visible {
+  box-shadow: 0 0 0 2px rgba(49, 87, 226, 0.22);
+}
+
+.activity-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  font-size: 16px;
+  line-height: 16px;
+}
+
+.activity-icon-running {
+  animation: task-activity-spin 1s linear infinite;
+  color: #40acef;
+}
+
+.activity-icon-completed {
+  color: #47cb8a;
+}
+
+.activity-icon-error {
+  color: #fc8f57;
+}
+
+.activity-preview {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes task-activity-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-icon-running {
+    animation: none;
+  }
+}
+
+:global(.task-board-activity-tooltip) {
+  max-width: 205px;
+}
+
+:global(.task-board-activity-tooltip .ant-tooltip-inner) {
+  width: 205px;
+  max-height: min(320px, 40vh);
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.75);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  color: #fff;
+  font-size: 14px;
+  line-height: 22px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+:global(.task-board-activity-tooltip .ant-tooltip-arrow::before) {
+  background: rgba(0, 0, 0, 0.75);
 }
 </style>

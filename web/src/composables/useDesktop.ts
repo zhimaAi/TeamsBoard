@@ -4,7 +4,30 @@ export function isDesktopRuntime(): boolean {
   return typeof window !== 'undefined' && Boolean(window.goteamsDesktop)
 }
 
+export function isMacDesktopRuntime(): boolean {
+  return isDesktopRuntime() && window.goteamsDesktop?.platform === 'darwin'
+}
+
+export function isWindowsDesktopRuntime(): boolean {
+  return isDesktopRuntime() && window.goteamsDesktop?.platform === 'win32'
+}
+
 export type DesktopCloseBehavior = 'hide' | 'quit'
+
+function updateBridge() {
+  const bridge = window.goteamsDesktop
+  if (!bridge) throw new Error(t('components.errors.desktopSettingsUnsupported'))
+  return bridge
+}
+
+export const getUpdateState = () => updateBridge().getUpdateState()
+export const checkForUpdates = (manual = false) => updateBridge().checkForUpdates(manual)
+export const deferUpdate = () => updateBridge().deferUpdate()
+export const downloadUpdate = () => updateBridge().downloadUpdate()
+export const cancelUpdateDownload = () => updateBridge().cancelUpdateDownload()
+export const installUpdate = () => updateBridge().installUpdate()
+export const onUpdateState = (listener: (state: DesktopUpdateState) => void) =>
+  updateBridge().onUpdateState(listener)
 
 export interface DesktopTaskNotification {
   title: string
@@ -47,6 +70,20 @@ export async function openTerminal(directoryPath: string): Promise<void> {
   await bridge.openTerminal(directoryPath)
 }
 
+export async function openVibeCli(payload: {
+  tool: string
+  execPath: string
+  directoryPath: string
+  prompt: string
+  threadId?: string
+}): Promise<void> {
+  const bridge = window.goteamsDesktop
+  if (!bridge?.openVibeCli) {
+    throw new Error(t('components.errors.openVibeToolUnsupported'))
+  }
+  await bridge.openVibeCli(payload)
+}
+
 export async function openCodexThread(
   directoryPath: string,
   prompt: string,
@@ -75,6 +112,14 @@ export async function setDesktopCloseBehavior(
     throw new Error(t('components.errors.desktopSettingsUnsupported'))
   }
   return (await bridge.setCloseBehavior(closeBehavior)).closeBehavior
+}
+
+export async function restartDesktopApp(): Promise<void> {
+  const bridge = window.goteamsDesktop
+  if (!bridge?.relaunchApp) {
+    throw new Error(t('settings.workspaceRestartUnsupported'))
+  }
+  await bridge.relaunchApp()
 }
 
 export function syncTrayTaskCount(runningTaskCount: number) {

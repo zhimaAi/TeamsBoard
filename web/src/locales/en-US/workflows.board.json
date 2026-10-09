@@ -1,9 +1,23 @@
 {
   "title": "Board",
+  "localTasks": "Local tasks",
   "viewSwitch": "Board view switcher",
+  "layoutSwitch": "Board and list view switcher",
+  "boardView": "Board view",
+  "listView": "List view",
   "teamWork": "Team workspace",
   "comingSoon": "Coming soon",
   "newTask": "New task",
+  "allStatuses": "All",
+  "statusFilter": "Filter tasks by status",
+  "statusFilterCount": "{label} ({count})",
+  "columns": {
+    "task": "Task",
+    "status": "Status",
+    "executor": "Executor",
+    "time": "Time",
+    "actions": "Actions"
+  },
   "listSettings": "List settings",
   "changeBackground": "Change background color",
   "setBackground": "Set background to {color}",
@@ -32,6 +46,19 @@
   "settingsSaved": "List settings saved",
   "updatedAt": "Updated {time}",
   "blockedFallback": "An execution error blocked this task",
+  "activityStatus": {
+    "running": "Running",
+    "completed": "Completed",
+    "error": "Error"
+  },
+  "activityDefault": {
+    "thinking": "Thinking...",
+    "message": "Generating response...",
+    "toolCall": "Calling tool...",
+    "toolResult": "Tool call completed",
+    "permissionRequest": "Waiting for approval"
+  },
+  "activityAriaLabel": "{status}: {content}",
   "justNow": "Just now",
   "minutesAgo": "{count} minute ago | {count} minutes ago",
   "hoursAgo": "{count} hour ago | {count} hours ago",

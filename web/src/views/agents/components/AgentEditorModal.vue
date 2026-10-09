@@ -220,6 +220,7 @@ const props = defineProps<{
 	isCloudPipeline?: boolean
   step?: PipelineStep
 	expertGroupUuid?: string
+	isCloudExpertGroup?: boolean
 	expertMember?: ExpertMember
 	expertRole?: 'leader' | 'member'
   currentAvatar?: string
@@ -249,7 +250,12 @@ const { file: avatarFile, previewUrl, selectFile, reset: resetAvatarFile } = use
 const MAX_AVATAR_FILE_SIZE = 100 * 1024
 let modelRequestId = 0
 
-const cloudLocked = computed(() => props.isCloudPipeline && Boolean(props.step))
+// 云端资源（流水线步骤/专家团成员）仅锁编排字段，仍允许本地配置 CLI 与模型
+const cloudLocked = computed(
+  () =>
+    (props.isCloudPipeline && Boolean(props.step)) ||
+    (props.isCloudExpertGroup && Boolean(props.expertMember)),
+)
 const editingAgent = computed(() => props.expertMember || props.step)
 const previewAvatar = computed(
   () => previewUrl.value || form.avatar || props.currentAvatar || AGENT_AVATARS[0],
@@ -395,12 +401,12 @@ async function save() {
 	const requestPayload = isExpertGroup
 	  ? { ...payload, member_role: props.expertRole || props.expertMember?.member_role || 'member' }
 	  : payload
-    if (cloudLocked.value && props.step) {
+    if (cloudLocked.value) {
       const executionPayload: CloudStepExecutionInput = {
         cli_type: payload.cli_type,
         model_name: payload.model_name,
       }
-      await apiClient.put<PipelineStep>(path, executionPayload)
+      await apiClient.put<PipelineStep | ExpertMember>(path, executionPayload)
 	} else if (avatarFile.value) {
 	  const multipartPayload = buildStepFormData(payload)
 	  if (isExpertGroup) multipartPayload.append('member_role', props.expertRole || props.expertMember?.member_role || 'member')

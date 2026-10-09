@@ -38,11 +38,21 @@
             task.work_dir || t('workflows.task.common.unsetDirectory')
           }}</span>
         </div>
-        <button type="button" class="detail-button terminal-button" :disabled="openingTerminal || !(task.work_dir || task.task_dir)" :aria-label="t('workflows.task.progress.openTerminal')" :title="t('workflows.task.progress.openTerminal')" @click="openTaskTerminal">
+        <button
+          type="button"
+          class="detail-button terminal-button"
+          :disabled="openingTerminal || !(task.work_dir || task.task_dir)"
+          :aria-label="t('workflows.task.progress.openTerminal')"
+          :title="t('workflows.task.progress.openTerminal')"
+          @click="openTaskTerminal"
+        >
           <CodeOutlined />
         </button>
         <a-tooltip v-if="showCodexActions">
-          <template v-if="!codexCapability.available" #title>
+          <template
+            v-if="!codexCapability.available"
+            #title
+          >
             {{ codexCapability.message || t('workflows.task.codex.capabilityUnavailable') }}
           </template>
           <span
@@ -75,10 +85,16 @@
               </button>
               <template #overlay>
                 <a-menu>
-                  <a-menu-item key="open" @click="handleOpenCodex">
+                  <a-menu-item
+                    key="open"
+                    @click="handleOpenCodex"
+                  >
                     <DesktopOutlined /> {{ t('workflows.task.detail.openCodex') }}
                   </a-menu-item>
-                  <a-menu-item key="copy" @click="handleCopyCodexPrompt">
+                  <a-menu-item
+                    key="copy"
+                    @click="handleCopyCodexPrompt"
+                  >
                     <CopyOutlined /> {{ t('workflows.task.detail.copyCodexPrompt') }}
                   </a-menu-item>
                 </a-menu>
@@ -86,6 +102,15 @@
             </a-dropdown>
           </span>
         </a-tooltip>
+        <button
+          v-if="isCloudWorkItem"
+          type="button"
+          class="original-requirement-button"
+          :disabled="originalLoading"
+          @click="openOriginalRequirement"
+        >
+          {{ t('teamwork.workItem.view') }}
+        </button>
         <button
           type="button"
           class="detail-button"
@@ -130,7 +155,10 @@
       v-if="task"
       class="pipeline-card"
     >
-      <div v-if="isVibeCoding" class="direct-execution">
+      <div
+        v-if="isVibeCoding"
+        class="direct-execution"
+      >
         <img
           class="direct-execution-logo"
           :src="vibeCodingLogo"
@@ -145,7 +173,12 @@
             class="execution-action"
             @click="openExecutionModeModal(true)"
           >
-            <img class="execution-switch-icon" :src="switchExecutionModeIcon" alt="" aria-hidden="true" />
+            <img
+              class="execution-switch-icon"
+              :src="switchExecutionModeIcon"
+              alt=""
+              aria-hidden="true"
+            />
             {{ t('workflows.task.detail.switchExecutionMode') }}
           </button>
         </div>
@@ -170,75 +203,125 @@
             class="execution-action"
             @click="openExecutionModeModal(true)"
           >
-            <img class="execution-switch-icon" :src="switchExecutionModeIcon" alt="" aria-hidden="true" />
+            <img
+              class="execution-switch-icon"
+              :src="switchExecutionModeIcon"
+              alt=""
+              aria-hidden="true"
+            />
             {{ t('workflows.task.detail.switchExecutionMode') }}
           </button>
         </div>
       </div>
-	  <div v-else-if="isExpertGroup" class="expert-summary">
-		<img v-if="task.expert_group_avatar_snapshot" :src="task.expert_group_avatar_snapshot" alt="" />
-		<span><small>{{ t('agents.expertTeam') }}</small><strong>{{ task.expert_group_name_snapshot }}</strong></span>
-		<div class="expert-members"><span v-for="member in sortedSteps" :key="member.uuid" :title="member.name"><img v-if="member.avatar" :src="member.avatar" alt="" /><em v-else>{{ member.name.slice(0, 1) }}</em><b v-if="member.member_role === 'leader'">{{ t('expertGroups.leader') }}</b></span></div>
+      <div
+        v-else-if="isExpertGroup"
+        class="expert-summary"
+      >
+        <img
+          v-if="task.expert_group_avatar_snapshot"
+          :src="task.expert_group_avatar_snapshot"
+          alt=""
+        />
+        <span
+          ><small>{{ t('agents.expertTeam') }}</small
+          ><strong>{{ task.expert_group_name_snapshot }}</strong></span
+        >
+        <div class="expert-members">
+          <span
+            v-for="member in sortedSteps"
+            :key="member.uuid"
+            :title="member.name"
+            ><img
+              v-if="member.avatar"
+              :src="member.avatar"
+              alt=""
+            /><em v-else>{{ member.name.slice(0, 1) }}</em
+            ><b v-if="member.member_role === 'leader'">{{ t('expertGroups.leader') }}</b></span
+          >
+        </div>
         <div class="direct-execution-actions">
           <button
             type="button"
             class="execution-action"
             @click="openExecutionModeModal(true)"
           >
-            <img class="execution-switch-icon" :src="switchExecutionModeIcon" alt="" aria-hidden="true" />
-            {{ t('workflows.task.detail.switchExecutionMode') }}
-          </button>
-        </div>
-	  </div>
-      <template v-else>
-      <div class="pipeline-card-head">
-        <PipelineFlowIcon class="pipeline-card-icon" />
-        <span class="pipeline-card-label">{{ t('workflows.task.common.pipeline') }}</span>
-        <span
-          class="pipeline-card-sep"
-          aria-hidden="true"
-        ></span>
-        <strong class="pipeline-card-name">{{
-          task.pipeline_name_snapshot || t('workflows.task.common.unassignedPipeline')
-        }}</strong>
-        <button type="button" class="pipeline-toggle" :aria-expanded="pipelineExpanded" :title="pipelineExpanded ? t('workflows.task.detail.collapse') : t('workflows.task.detail.expand')" @click="pipelineExpanded = !pipelineExpanded">
-          <DownOutlined :class="{ rotated: !pipelineExpanded }" />
-        </button>
-        <span
-          v-if="sortedSteps.length"
-          class="pipeline-card-progress"
-          >{{
-            t('workflows.task.common.stepCount', {
-              current: currentStepIndex + 1,
-              total: sortedSteps.length,
-            })
-          }}</span
-        >
-        <div v-if="task.execution_mode === 'pipeline'" class="direct-execution-actions">
-          <button
-            type="button"
-            class="execution-action"
-            @click="openExecutionModeModal(true)"
-          >
-            <img class="execution-switch-icon" :src="switchExecutionModeIcon" alt="" aria-hidden="true" />
+            <img
+              class="execution-switch-icon"
+              :src="switchExecutionModeIcon"
+              alt=""
+              aria-hidden="true"
+            />
             {{ t('workflows.task.detail.switchExecutionMode') }}
           </button>
         </div>
       </div>
-      <AgentStepStrip
-        v-if="hasPipelineSnapshot"
-        v-show="pipelineExpanded"
-        :steps="sortedSteps"
-        :current-step-index="currentStepIndex"
-        :current-step-uuid="effectiveCurrentStepUuid"
-        :selected-step-uuid="selectedStepUuid"
-        @select="selectStep"
-      />
-      <UnassignedPipelineGuide
-        v-else
-        v-show="pipelineExpanded"
-        @assign="openExecutionModeModal(false)"
-      />
+      <template v-else>
+        <div class="pipeline-card-head">
+          <PipelineFlowIcon class="pipeline-card-icon" />
+          <span class="pipeline-card-label">{{ t('workflows.task.common.pipeline') }}</span>
+          <span
+            class="pipeline-card-sep"
+            aria-hidden="true"
+          ></span>
+          <strong class="pipeline-card-name">{{
+            task.pipeline_name_snapshot || t('workflows.task.common.unassignedPipeline')
+          }}</strong>
+          <button
+            type="button"
+            class="pipeline-toggle"
+            :aria-expanded="pipelineExpanded"
+            :title="
+              pipelineExpanded
+                ? t('workflows.task.detail.collapse')
+                : t('workflows.task.detail.expand')
+            "
+            @click="pipelineExpanded = !pipelineExpanded"
+          >
+            <DownOutlined :class="{ rotated: !pipelineExpanded }" />
+          </button>
+          <span
+            v-if="sortedSteps.length"
+            class="pipeline-card-progress"
+            >{{
+              t('workflows.task.common.stepCount', {
+                current: currentStepIndex + 1,
+                total: sortedSteps.length,
+              })
+            }}</span
+          >
+          <div
+            v-if="task.execution_mode === 'pipeline'"
+            class="direct-execution-actions"
+          >
+            <button
+              type="button"
+              class="execution-action"
+              @click="openExecutionModeModal(true)"
+            >
+              <img
+                class="execution-switch-icon"
+                :src="switchExecutionModeIcon"
+                alt=""
+                aria-hidden="true"
+              />
+              {{ t('workflows.task.detail.switchExecutionMode') }}
+            </button>
+          </div>
+        </div>
+        <AgentStepStrip
+          v-if="hasPipelineSnapshot"
+          v-show="pipelineExpanded"
+          :steps="sortedSteps"
+          :current-step-index="currentStepIndex"
+          :current-step-uuid="effectiveCurrentStepUuid"
+          :selected-step-uuid="selectedStepUuid"
+          @select="selectStep"
+        />
+        <UnassignedPipelineGuide
+          v-else
+          v-show="pipelineExpanded"
+          @assign="openExecutionModeModal(false)"
+        />
       </template>
     </section>
 
@@ -247,9 +330,9 @@
       class="detail-scroll"
     >
       <div class="detail-content">
-		<template v-if="hasPipelineSnapshot || isVibeCoding || isExpertGroup || isCLI">
+        <template v-if="hasPipelineSnapshot || isVibeCoding || isExpertGroup || isCLI">
           <NextStepButton
-			v-if="!isVibeCoding && !isExpertGroup && !isCLI && showNextStepCard"
+            v-if="!isVibeCoding && !isExpertGroup && !isCLI && showNextStepCard"
             :next-step-name="nextStepName"
             :is-last-step="isLastStep"
             :disabled="!canComplete"
@@ -293,7 +376,14 @@
               }}
             </button>
           </div>
-		  <p v-if="!isVibeCoding && !isExpertGroup && !isCLI" class="conversation-scope-note">
+          <TaskExecutionHistory
+            :task-uuid="resolvedTaskUuid"
+            :revision="task.updated_at"
+          />
+          <p
+            v-if="!isVibeCoding && !isExpertGroup && !isCLI"
+            class="conversation-scope-note"
+          >
             <img
               class="conversation-scope-icon"
               :src="conversationFilterIcon"
@@ -326,12 +416,28 @@
             ref="messageListRef"
             v-show="!isCLI || cliActivityExpanded"
             :items="displayedProgress"
-			:steps="isVibeCoding || isCLI ? [] : sortedSteps"
+            :steps="isVibeCoding || isCLI ? [] : sortedSteps"
             :highlight-uuid="highlightUuid"
             :loading="loading"
-			:selected-step-name="isVibeCoding ? vibeCodingToolName : isCLI ? cliRuntimeLabel : isExpertGroup ? task.expert_group_name_snapshot || t('agents.expertTeam') : selectedStep?.name || ''"
-			:fallback-actor-name="isVibeCoding ? vibeCodingToolName : isCLI ? task.execution_tool || t('workflows.task.assign.cliMode') : ''"
-			:fallback-actor-logo="isVibeCoding ? vibeCodingActorLogo : isCLI ? cliExecutionLogo : ''"
+            :selected-step-name="
+              isVibeCoding
+                ? vibeCodingToolName
+                : isCLI
+                  ? cliRuntimeLabel
+                  : isExpertGroup
+                    ? task.expert_group_name_snapshot || t('agents.expertTeam')
+                    : selectedStep?.name || ''
+            "
+            :fallback-actor-name="
+              isVibeCoding
+                ? vibeCodingToolName
+                : isCLI
+                  ? task.execution_tool || t('workflows.task.assign.cliMode')
+                  : ''
+            "
+            :fallback-actor-logo="
+              isVibeCoding ? vibeCodingActorLogo : isCLI ? cliExecutionLogo : ''
+            "
             :task-uuid="resolvedTaskUuid"
             @copy="copyResult"
           />
@@ -367,7 +473,8 @@
     <VibeCodingConversationNotice
       v-if="task && isVibeCoding"
       :tool-name="vibeCodingToolName"
-      :show-open-button="task.execution_tool === 'codex'"
+      :show-open-button="isVibeCoding"
+      :open-label="t('workflows.task.detail.openInTool', { tool: vibeCodingToolName })"
       :opening="codexBusy"
       @open="handleOpenCodex"
     />
@@ -393,38 +500,46 @@
       @stop="stopSelectedConversation"
       @prompt-saved="load"
     />
-	<ChatComposer
-	  ref="expertComposerRef"
-	  v-else-if="task && isExpertGroup"
-	  v-model="question"
-	  :can-ask="!activeExpertProgress"
-	  :submitting="submitting"
-	  :running="Boolean(activeExpertProgress)"
-	  :stopping="stoppingSessionUuid === activeExpertProgress?.session_uuid"
-	  :placeholder="activeExpertProgress ? t('workflows.task.feedback.agentRunning') : t('workflows.task.feedback.mentionPlaceholder')"
-	  :context-text="t('agents.expertTeam')"
-	  :task-uuid="resolvedTaskUuid"
-	  :expert-members="sortedSteps"
-	  :document-step="currentStep"
-	  @submit="submitExpertMessage"
-	  @stop="stopExpertConversation"
-	/>
-	<ChatComposer
-	  v-else-if="task && isCLI"
-	  ref="composerRef"
-	  v-model="question"
-	  :can-ask="cliCanAsk"
-	  :submitting="submitting"
-	  :running="Boolean(activeCLIProgress)"
-	  :stopping="stoppingSessionUuid === activeCLIProgress?.session_uuid"
-	  :placeholder="activeCLIProgress ? t('workflows.task.feedback.agentRunning') : t('workflows.task.detail.cliMessagePlaceholder')"
-	  :context-text="cliRuntimeLabel"
-	  :task-uuid="resolvedTaskUuid"
-	  :document-step="currentStep"
-	  :hide-agent-prompt="true"
-	  @submit="submitCLIQuestion"
-	  @stop="stopCLIConversation"
-	/>
+    <ChatComposer
+      ref="expertComposerRef"
+      v-else-if="task && isExpertGroup"
+      v-model="question"
+      :can-ask="!activeExpertProgress"
+      :submitting="submitting"
+      :running="Boolean(activeExpertProgress)"
+      :stopping="stoppingSessionUuid === activeExpertProgress?.session_uuid"
+      :placeholder="
+        activeExpertProgress
+          ? t('workflows.task.feedback.agentRunning')
+          : t('workflows.task.feedback.mentionPlaceholder')
+      "
+      :context-text="t('agents.expertTeam')"
+      :task-uuid="resolvedTaskUuid"
+      :expert-members="sortedSteps"
+      :document-step="currentStep"
+      @submit="submitExpertMessage"
+      @stop="stopExpertConversation"
+    />
+    <ChatComposer
+      v-else-if="task && isCLI"
+      ref="composerRef"
+      v-model="question"
+      :can-ask="cliCanAsk"
+      :submitting="submitting"
+      :running="Boolean(activeCLIProgress)"
+      :stopping="stoppingSessionUuid === activeCLIProgress?.session_uuid"
+      :placeholder="
+        activeCLIProgress
+          ? t('workflows.task.feedback.agentRunning')
+          : t('workflows.task.detail.cliMessagePlaceholder')
+      "
+      :context-text="cliRuntimeLabel"
+      :task-uuid="resolvedTaskUuid"
+      :document-step="currentStep"
+      :hide-agent-prompt="true"
+      @submit="submitCLIQuestion"
+      @stop="stopCLIConversation"
+    />
 
     <StopExecutionConfirmModal
       :open="stopConfirmOpen"
@@ -442,6 +557,11 @@
       @saved="handleTaskSaved"
     />
 
+    <WorkItemDetailModal
+      v-model:open="originalOpen"
+      :item="originalItem"
+    />
+
     <TaskImagePreviewModal
       v-model:open="previewImageVisible"
       :image-url="previewImageUrl"
@@ -451,11 +571,22 @@
       v-model:open="assignModalOpen"
       :task-uuid="resolvedTaskUuid"
       :task-title="task?.title || ''"
-	  :initial-mode="task?.execution_mode === 'pipeline' ? 'pipeline' : task?.execution_mode === 'expert_group' ? 'expert_group' : task?.execution_mode === 'cli' ? 'cli' : task?.execution_mode === 'vibe_coding' ? 'vibe_coding' : ''"
-	  :preferred-expert-group-uuid="task?.selected_expert_group_uuid || ''"
+      :initial-mode="
+        task?.execution_mode === 'pipeline'
+          ? 'pipeline'
+          : task?.execution_mode === 'expert_group'
+            ? 'expert_group'
+            : task?.execution_mode === 'cli'
+              ? 'cli'
+              : task?.execution_mode === 'vibe_coding'
+                ? 'vibe_coding'
+                : ''
+      "
+      :preferred-expert-group-uuid="task?.selected_expert_group_uuid || ''"
       :preferred-pipeline-uuid="task?.selected_pipeline_uuid || ''"
       :initial-cli-type="task?.execution_mode === 'cli' ? task?.execution_tool || '' : ''"
-	  :initial-model-name="task?.execution_mode === 'cli' ? task?.execution_model || '' : ''"
+      :initial-vibe-tool="task?.execution_mode === 'vibe_coding' ? task?.execution_tool || '' : ''"
+      :initial-model-name="task?.execution_mode === 'cli' ? task?.execution_model || '' : ''"
       :replace-existing="assignReplaceExisting"
       mode="detail"
       @assigned="handleAssigned"
@@ -464,7 +595,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import {
   CopyOutlined,
@@ -493,6 +624,7 @@ import NextStepButton from '@/components/task-progress/NextStepButton.vue'
 import PipelineFlowIcon from '@/components/task-progress/PipelineFlowIcon.vue'
 import StepMessageList from '@/components/task-progress/StepMessageList.vue'
 import StopExecutionConfirmModal from '@/components/task-progress/StopExecutionConfirmModal.vue'
+import TaskExecutionHistory from '@/components/task-progress/TaskExecutionHistory.vue'
 import UnassignedPipelineGuide from '@/components/task-progress/UnassignedPipelineGuide.vue'
 import VibeCodingConversationNotice from '@/components/task-progress/VibeCodingConversationNotice.vue'
 import { isUserMessage, resultText, userMessageText } from '@/components/task-progress/utils'
@@ -508,11 +640,14 @@ import {
   openTaskInCodex,
   type CodexCapability,
 } from '@/composables/useTaskCodex'
+import { vibeToolLabelKey, vibeToolLogo } from '@/composables/useVibeCoding'
 import type { TaskProgress } from '@/types/pipeline'
 import type { ChatComposerSubmission } from '@/types/task-attachments'
 import type { TaskWithDetails } from '@/types/task-detail'
 import TaskDetailInfoModal from '@/views/workflows/components/TaskDetailInfoModal.vue'
 import TaskImagePreviewModal from '@/views/workflows/components/TaskImagePreviewModal.vue'
+import WorkItemDetailModal from '@/views/workflows/components/WorkItemDetailModal.vue'
+import type { MyWorkItem } from '@/types/workitem'
 import { useAppI18n } from '@/i18n'
 
 const { t } = useAppI18n()
@@ -533,6 +668,9 @@ const codexCapability = ref<CodexCapability>({ available: false })
 const changingStatus = ref(false)
 const selectedTaskStatus = ref('pending')
 const detailModalOpen = ref(false)
+const originalOpen = ref(false)
+const originalItem = ref<MyWorkItem>()
+const originalLoading = ref(false)
 const assignModalOpen = ref(false)
 const assignReplaceExisting = ref(false)
 const previewImageUrl = ref('')
@@ -553,28 +691,31 @@ const taskStatusOptions = computed(() => [
   { value: 'done', label: t('workflows.task.status.done') },
 ])
 const hasPipelineSnapshot = computed(() =>
-	Boolean(task.value?.execution_mode === 'pipeline' && (task.value?.pipeline_snapshot_uuid || task.value?.steps?.length)),
+  Boolean(
+    task.value?.execution_mode === 'pipeline' &&
+    (task.value?.pipeline_snapshot_uuid || task.value?.steps?.length),
+  ),
 )
 async function openTaskTerminal() {
   const workDir = task.value?.work_dir || task.value?.task_dir || ''
   if (!workDir || openingTerminal.value) return
   openingTerminal.value = true
-  try { await openTerminal(workDir) } catch (error) { message.error(error instanceof Error ? error.message : t('workflows.task.progress.openTerminalFailed')) } finally { openingTerminal.value = false }
+  try {
+    await openTerminal(workDir)
+  } catch (error) {
+    message.error(
+      error instanceof Error ? error.message : t('workflows.task.progress.openTerminalFailed'),
+    )
+  } finally {
+    openingTerminal.value = false
+  }
 }
-const isVibeCoding = computed(
-  () => task.value?.execution_mode === 'vibe_coding',
-)
+const isVibeCoding = computed(() => task.value?.execution_mode === 'vibe_coding')
 const isCodexVibeCoding = computed(
   () => isVibeCoding.value && task.value?.execution_tool === 'codex',
 )
-const vibeCodingToolName = computed(() =>
-  task.value?.execution_tool === 'codex'
-    ? t('workflows.task.assign.codex')
-    : task.value?.execution_tool || t('workflows.task.create.vibeCodingMode'),
-)
-const vibeCodingActorLogo = computed(() =>
-  task.value?.execution_tool === 'codex' ? codexLogo : vibeCodingLogo,
-)
+const vibeCodingToolName = computed(() => t(vibeToolLabelKey(task.value?.execution_tool || '')))
+const vibeCodingActorLogo = computed(() => vibeToolLogo(task.value?.execution_tool || ''))
 const isExpertGroup = computed(() => task.value?.execution_mode === 'expert_group')
 // CLI 直接执行：任务只有一条隐式步骤，CLI 与模型来自用户指派时的选择。
 const isCLI = computed(() => task.value?.execution_mode === 'cli')
@@ -584,9 +725,7 @@ const cliRuntimeLabel = computed(() => {
   const model = task.value?.execution_model || sortedSteps.value[0]?.model_name || ''
   return model ? `${cli} · ${model}` : cli
 })
-const showCodexActions = computed(
-  () => !task.value?.execution_mode || isCodexVibeCoding.value,
-)
+const showCodexActions = computed(() => !task.value?.execution_mode || isCodexVibeCoding.value)
 useDocumentTitle(taskTitle)
 
 function openExecutionModeModal(replaceExisting: boolean) {
@@ -645,11 +784,21 @@ const selectedStepIndex = computed(() =>
 const selectedProgress = computed(() =>
   progress.value.filter((item) => item.task_step_uuid === selectedStepUuid.value),
 )
-const displayedProgress = computed(() => isVibeCoding.value || isExpertGroup.value || isCLI.value ? progress.value : selectedProgress.value)
-const activeExpertProgress = computed(() => [...progress.value].reverse().find((item) => !isUserMessage(item) && ['created', 'running'].includes(item.status)))
+const displayedProgress = computed(() =>
+  isVibeCoding.value || isExpertGroup.value || isCLI.value
+    ? progress.value
+    : selectedProgress.value,
+)
+const activeExpertProgress = computed(() =>
+  [...progress.value]
+    .reverse()
+    .find((item) => !isUserMessage(item) && ['created', 'running'].includes(item.status)),
+)
 // CLI 直接执行与专家团一致：动态不按步骤过滤，活动会话取最近一条未结束的记录。
 const activeCLIProgress = computed(() =>
-  [...progress.value].reverse().find((item) => !isUserMessage(item) && ['created', 'running'].includes(item.status)),
+  [...progress.value]
+    .reverse()
+    .find((item) => !isUserMessage(item) && ['created', 'running'].includes(item.status)),
 )
 const cliCanAsk = computed(() => !activeCLIProgress.value)
 const latestSelectedAgentProgress = computed(() =>
@@ -740,6 +889,7 @@ function handleTaskSaved() {
 
 function returnToBoard() {
   if (props.embedded) emit('close')
+  else if (route.query.from === 'team-work') void router.push('/board?tab=team')
   else void router.push('/board')
 }
 
@@ -765,16 +915,21 @@ async function handleOpenCodex() {
   try {
     await ensureCodexAssigned()
     const openResult = await openTaskInCodex(resolvedTaskUuid.value)
+    const toolName = vibeCodingToolName.value
     if (openResult.opened) {
-      message.success(t('workflows.task.detail.codexOpened'))
+      message.success(t('workflows.task.detail.toolOpened', { tool: toolName }))
     } else if (openResult.copied) {
-      message.warning(t('workflows.task.detail.codexCopiedFallback'))
+      message.warning(t('workflows.task.detail.toolCopiedFallback', { tool: toolName }))
+    } else if (openResult.error) {
+      message.error(openResult.error.message)
     } else {
-      message.warning(t('workflows.task.detail.codexUnavailableAfterAssign'))
+      message.warning(t('workflows.task.detail.toolUnavailable', { tool: toolName }))
     }
     await load(true)
   } catch (error) {
-    message.error(error instanceof Error ? error.message : t('workflows.task.detail.codexOpenFailed'))
+    message.error(
+      error instanceof Error ? error.message : t('workflows.task.detail.codexOpenFailed'),
+    )
   } finally {
     codexBusy.value = false
   }
@@ -789,7 +944,9 @@ async function handleCopyCodexPrompt() {
     message.success(t('workflows.task.detail.codexPromptCopied'))
     await load(true)
   } catch (error) {
-    message.error(error instanceof Error ? error.message : t('workflows.task.detail.codexCopyFailed'))
+    message.error(
+      error instanceof Error ? error.message : t('workflows.task.detail.codexCopyFailed'),
+    )
   } finally {
     codexBusy.value = false
   }
@@ -867,11 +1024,51 @@ function handleAssigned() {
   emit('changed')
 }
 
+const isCloudWorkItem = computed(
+  () => task.value?.source_type === 'cloud' && Boolean(task.value?.work_item_id),
+)
+
+async function openOriginalRequirement() {
+  const current = task.value
+  if (!current?.work_item_id || originalLoading.value) return
+  originalLoading.value = true
+  try {
+    const result = await apiClient.get<{ items: MyWorkItem[] }>('/team/my-work')
+    const found = (result.items || []).find(
+      (item) =>
+        String(item.id) === String(current.work_item_id) &&
+        (!current.work_item_type || item.type === current.work_item_type),
+    )
+    originalItem.value = found || {
+      type: current.work_item_type === 'defect' ? 'defect' : 'requirement',
+      id: Number(current.work_item_id),
+      workspace_id: Number(current.workspace_id || 0),
+      title: current.title,
+      description: current.description,
+      // 详情页入口没有「我的工作」列表行，这里补上本地任务关联，让弹窗能读到任务信息。
+      local_task_uuid: resolvedTaskUuid.value,
+      local_task_status: current.status,
+    }
+    originalOpen.value = true
+  } catch {
+    message.error(t('teamwork.workItem.loadFailed'))
+  } finally {
+    originalLoading.value = false
+  }
+}
+
 function deleteTask() {
   Modal.confirm({
-    title: t('workflows.task.detail.deleteConfirm'),
-    content: t('workflows.task.detail.deleteWarning'),
-    okText: t('common.actions.delete'),
+    title: isCloudWorkItem.value
+      ? t('teamwork.delete.title')
+      : t('workflows.task.detail.deleteConfirm'),
+    content: isCloudWorkItem.value
+      ? h('div', { class: 'team-task-delete-copy' }, [
+          h('p', t('teamwork.delete.item1')),
+          h('p', t('teamwork.delete.item2')),
+        ])
+      : t('workflows.task.detail.deleteWarning'),
+    okText: isCloudWorkItem.value ? t('teamwork.delete.confirm') : t('common.actions.delete'),
     okType: 'danger',
     cancelText: t('common.actions.cancel'),
     onOk: async () => {
@@ -1103,7 +1300,9 @@ async function submitExpertMessage(submission: ChatComposerSubmission) {
     message.success(t('workflows.task.feedback.messageSent'))
     await load()
   } catch (error) {
-    message.error(error instanceof Error ? error.message : t('workflows.task.feedback.messageFailed'))
+    message.error(
+      error instanceof Error ? error.message : t('workflows.task.feedback.messageFailed'),
+    )
   } finally {
     submitting.value = false
   }
@@ -1322,6 +1521,30 @@ onBeforeUnmount(() => {
   gap: 4px;
 }
 
+.original-requirement-button {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  padding: 2px 8px;
+  color: #262626;
+  background: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.original-requirement-button:hover:not(:disabled) {
+  border-color: #3157e2;
+  color: #3157e2;
+}
+
+.original-requirement-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .status-select {
   width: 92px;
 }
@@ -1528,15 +1751,59 @@ onBeforeUnmount(() => {
   font-weight: 500;
 }
 
-.expert-summary { display:flex; align-items:center; gap:12px; }
-.expert-summary>img { width:36px; height:36px; border-radius:50%; object-fit:cover; }
-.expert-summary>span { display:flex; flex-direction:column; }
-.expert-summary small { color:#8c8c8c; }
-.expert-summary>.expert-members { display:flex; margin-left:auto; }
-.expert-summary>.expert-members>span { position:relative; margin-left:-5px; }
-.expert-summary>.expert-members img,.expert-summary>.expert-members em { display:flex; width:30px; height:30px; align-items:center; justify-content:center; border:2px solid #fff; border-radius:50%; background:#e5efff; object-fit:cover; font-style:normal; }
-.expert-summary>.expert-members b { position:absolute; right:-4px; bottom:-8px; padding:0 4px; border-radius:8px; color:#d97706; background:#fff5e5; font-size:9px; white-space:nowrap; }
-.expert-summary>.direct-execution-actions { margin-left:16px; }
+.expert-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.expert-summary > img {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.expert-summary > span {
+  display: flex;
+  flex-direction: column;
+}
+.expert-summary small {
+  color: #8c8c8c;
+}
+.expert-summary > .expert-members {
+  display: flex;
+  margin-left: auto;
+}
+.expert-summary > .expert-members > span {
+  position: relative;
+  margin-left: -5px;
+}
+.expert-summary > .expert-members img,
+.expert-summary > .expert-members em {
+  display: flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #e5efff;
+  object-fit: cover;
+  font-style: normal;
+}
+.expert-summary > .expert-members b {
+  position: absolute;
+  right: -4px;
+  bottom: -8px;
+  padding: 0 4px;
+  border-radius: 8px;
+  color: #d97706;
+  background: #fff5e5;
+  font-size: 9px;
+  white-space: nowrap;
+}
+.expert-summary > .direct-execution-actions {
+  margin-left: 16px;
+}
 
 .pipeline-card-label {
   color: #8c8c8c;
@@ -1559,8 +1826,17 @@ onBeforeUnmount(() => {
   color: #8c8c8c;
   font-size: 14px;
 }
-.pipeline-toggle { margin-left: auto; border: 0; padding: 4px; color: #8c8c8c; background: transparent; cursor: pointer; }
-.pipeline-toggle .rotated { transform: rotate(-90deg); }
+.pipeline-toggle {
+  margin-left: auto;
+  border: 0;
+  padding: 4px;
+  color: #8c8c8c;
+  background: transparent;
+  cursor: pointer;
+}
+.pipeline-toggle .rotated {
+  transform: rotate(-90deg);
+}
 
 .detail-content {
   flex: 1 0 auto;

@@ -10,7 +10,8 @@
 		  class="pane-switch-item"
 		  :class="{ active: mode === 'pipeline' }"
 		  :aria-pressed="mode === 'pipeline'"
-		  @click="emit('change-mode', 'pipeline')"
+		  :disabled="navigationDisabled"
+		  @click="changeMode('pipeline')"
         >
           <ApartmentOutlined />
           <span>{{ t('agents.pipeline') }}</span>
@@ -20,7 +21,8 @@
             class="pane-switch-item"
 			:class="{ active: mode === 'expert_group' }"
 			:aria-pressed="mode === 'expert_group'"
-			@click="emit('change-mode', 'expert_group')"
+			:disabled="navigationDisabled"
+			@click="changeMode('expert_group')"
           >
             <TeamOutlined />
             <span>{{ t('agents.expertTeam') }}</span>
@@ -30,7 +32,8 @@
         type="button"
         class="create-button"
 		:aria-label="mode === 'expert_group' ? t('expertGroups.newGroup') : t('agents.newPipeline')"
-        @click="emit('create')"
+		:disabled="navigationDisabled"
+		@click="createResource"
       >
         <PlusOutlined />
       </button>
@@ -45,11 +48,12 @@
         <div
           class="pipeline-main"
           role="button"
-          tabindex="0"
+		  :tabindex="navigationDisabled ? -1 : 0"
 		  :aria-pressed="selectedUuid === resource.uuid"
-		  @click="emit('select', resource.uuid)"
-		  @keydown.enter="emit('select', resource.uuid)"
-		  @keydown.space.prevent="emit('select', resource.uuid)"
+		  :aria-disabled="navigationDisabled"
+		  @click="selectResource(resource.uuid)"
+		  @keydown.enter="selectResource(resource.uuid)"
+		  @keydown.space.prevent="selectResource(resource.uuid)"
         >
           <div class="pipeline-summary">
             <img
@@ -72,17 +76,30 @@
 			  <div class="pipeline-description">{{ resource.description || t('agents.noDescription') }}</div>
             </div>
           </div>
-          <div class="avatar-chain">
+          <div
+            class="avatar-chain"
+            :class="{ 'avatar-chain--expert': isExpertResource(resource) }"
+          >
             <a-tooltip
 			  v-for="(step, index) in visibleMembers(resource)"
               :key="step.uuid"
               :title="step.name"
             >
-              <span class="agent-avatar-item">
+              <span
+                class="agent-avatar-item"
+                :class="{ 'agent-avatar-item--leader': isExpertLeader(resource, step) }"
+              >
                 <img
 				  :src="memberAvatar(step, index)"
                   alt=""
                 />
+                <span
+                  v-if="isExpertLeader(resource, step)"
+                  class="expert-leader-badge"
+                  :aria-label="t('expertGroups.leader')"
+                >
+                  <CrownOutlined />
+                </span>
                 <img
 				  v-if="!isExpertResource(resource) && (index < visibleMembers(resource).length - 1 || hiddenMemberCount(resource))"
                   class="agent-flow-icon"
@@ -108,7 +125,7 @@
           <button
             type="button"
             class="action-btn pipeline-edit"
-            :disabled="Boolean(copyingUuid)"
+            :disabled="Boolean(copyingUuid) || navigationDisabled"
             :aria-label="t('agents.actions')"
             aria-haspopup="menu"
 			:aria-expanded="activeMenuUuid === resource.uuid"
@@ -130,7 +147,7 @@
 			<a-menu @click="handleActionMenuClick($event, resource)">
               <a-menu-item
                 key="copy"
-                :disabled="Boolean(copyingUuid)"
+                :disabled="Boolean(copyingUuid) || navigationDisabled"
               >
                 <LoadingOutlined
 				  v-if="copyingUuid === resource.uuid"
@@ -142,12 +159,14 @@
               <a-menu-item
 				v-if="canManage(resource)"
                 key="edit"
+                :disabled="navigationDisabled"
               >
                 <EditOutlined /> {{ t('agents.edit') }}
               </a-menu-item>
               <a-menu-item
 				v-if="canManage(resource)"
                 key="delete"
+                :disabled="navigationDisabled"
               >
                 <DeleteOutlined /> {{ t('agents.delete') }}
               </a-menu-item>
@@ -167,6 +186,7 @@
 import {
   ApartmentOutlined,
   CopyOutlined,
+  CrownOutlined,
   DeleteOutlined,
   EditOutlined,
   ExclamationOutlined,
@@ -195,7 +215,8 @@ const props = withDefaults(defineProps<{
   selectedUuid: string
   copyingUuid?: string
 	mode?: 'pipeline' | 'expert_group'
-}>(), { expertGroups: () => [], mode: 'pipeline' })
+  navigationDisabled?: boolean
+}>(), { expertGroups: () => [], mode: 'pipeline', navigationDisabled: false })
 
 const emit = defineEmits<{
 	copy: [resource: Pipeline | ExpertGroup]
@@ -206,17 +227,20 @@ const emit = defineEmits<{
 	'change-mode': [mode: 'pipeline' | 'expert_group']
 }>()
 
-const MAX_VISIBLE_STEPS = 6
+const MAX_VISIBLE_PIPELINE_STEPS = 6
+const MAX_VISIBLE_EXPERT_MEMBERS = 10
 const activeMenuUuid = ref('')
 const resources = computed<Array<Pipeline | ExpertGroup>>(() =>
 	props.mode === 'expert_group' ? props.expertGroups : props.pipelines,
 )
 
 function updateMenuOpen(uuid: string, open: boolean) {
+  if (props.navigationDisabled && open) return
   activeMenuUuid.value = open ? uuid : ''
 }
 
 function handleActionMenuClick({ key }: { key: string | number }, resource: Pipeline | ExpertGroup) {
+  if (props.navigationDisabled) return
   activeMenuUuid.value = ''
   if (key === 'copy') {
 	  emit('copy', resource)
@@ -233,17 +257,42 @@ function isExpertResource(resource: Pipeline | ExpertGroup): resource is ExpertG
 	return 'ready' in resource
 }
 
+function isExpertCloud(resource: ExpertGroup): boolean {
+	return resource.source_type === 'cloud'
+}
+
 function resourceMembers(resource: Pipeline | ExpertGroup): Array<PipelineStep | ExpertMember> {
 	if (!isExpertResource(resource)) return resource.steps || []
 	return [...(resource.leader ? [resource.leader] : []), ...resource.members]
 }
 
 function visibleMembers(resource: Pipeline | ExpertGroup) {
-	return resourceMembers(resource).slice(0, MAX_VISIBLE_STEPS)
+	return resourceMembers(resource).slice(0, visibleMemberLimit(resource))
+}
+
+function changeMode(mode: 'pipeline' | 'expert_group') {
+  if (props.navigationDisabled) return
+  emit('change-mode', mode)
+}
+
+function createResource() {
+  if (props.navigationDisabled) return
+  emit('create')
+}
+
+function selectResource(uuid: string) {
+  if (props.navigationDisabled) return
+  emit('select', uuid)
 }
 
 function hiddenMemberCount(resource: Pipeline | ExpertGroup) {
-	return Math.max(resourceMembers(resource).length - MAX_VISIBLE_STEPS, 0)
+	return Math.max(resourceMembers(resource).length - visibleMemberLimit(resource), 0)
+}
+
+function visibleMemberLimit(resource: Pipeline | ExpertGroup) {
+	return isExpertResource(resource)
+		? MAX_VISIBLE_EXPERT_MEMBERS
+		: MAX_VISIBLE_PIPELINE_STEPS
 }
 
 function memberAvatar(member: PipelineStep | ExpertMember, index: number) {
@@ -253,13 +302,20 @@ function memberAvatar(member: PipelineStep | ExpertMember, index: number) {
 	return resolveAgentAvatar(member as PipelineStep, index)
 }
 
+function isExpertLeader(
+  resource: Pipeline | ExpertGroup,
+  member: PipelineStep | ExpertMember,
+) {
+  return isExpertResource(resource) && resource.leader?.uuid === member.uuid
+}
+
 function resourceLabel(resource: Pipeline | ExpertGroup) {
-	if (isExpertResource(resource)) return t('agents.private')
+	if (isExpertResource(resource)) return isExpertCloud(resource) ? t('agents.team') : t('agents.private')
 	return isPipelineCloud(resource) ? t('agents.team') : t('agents.private')
 }
 
 function resourceLabelClass(resource: Pipeline | ExpertGroup) {
-	if (isExpertResource(resource)) return 'local'
+	if (isExpertResource(resource)) return isExpertCloud(resource) ? 'cloud' : 'local'
 	return isPipelineCloud(resource) ? 'cloud' : 'local'
 }
 
@@ -268,7 +324,8 @@ function resourceMissingConfig(resource: Pipeline | ExpertGroup) {
 }
 
 function canManage(resource: Pipeline | ExpertGroup) {
-	return isExpertResource(resource) || !isPipelineCloud(resource)
+	// 云端资源只读（团队），无论流水线还是专家团；本地资源可编辑/删除。
+	return isExpertResource(resource) ? !isExpertCloud(resource) : !isPipelineCloud(resource)
 }
 
 onDeactivated(() => {
@@ -354,9 +411,15 @@ onDeactivated(() => {
     background-color 0.18s;
 }
 
-.create-button:hover {
+.create-button:hover:not(:disabled) {
   color: #2475fc;
   background: #f2f4f7;
+}
+
+.create-button:disabled,
+.pane-switch-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .pipeline-list {
@@ -534,6 +597,56 @@ onDeactivated(() => {
 
 .pipeline-card.active .agent-avatar-item {
   opacity: 1;
+}
+
+.pipeline-main[aria-disabled='true'] {
+  cursor: not-allowed;
+}
+
+.agent-avatar-item--leader {
+  opacity: 1;
+}
+
+.avatar-chain--expert {
+  gap: 0;
+}
+
+.avatar-chain--expert .agent-avatar-item {
+  width: 22px;
+  flex-basis: 22px;
+}
+
+.avatar-chain--expert .agent-avatar-item > img:first-child {
+  background: #fff;
+  box-shadow: 0 0 0 2px #fff;
+}
+
+.avatar-chain--expert .agent-avatar-item--leader {
+  width: 34px;
+  flex-basis: 34px;
+  margin-right: 6px;
+}
+
+.avatar-chain--expert .avatar-overflow {
+  margin-left: 8px;
+}
+
+.expert-leader-badge {
+  position: absolute;
+  z-index: 1;
+  top: -3px;
+  left: 16px;
+  display: inline-flex;
+  width: 12px;
+  height: 12px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #fff;
+  border-radius: 50%;
+  color: #fff;
+  background: #3157e2;
+  font-size: 7px;
+  line-height: 1;
 }
 
 .avatar-overflow {
