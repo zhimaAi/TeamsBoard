@@ -4,8 +4,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { notification } from 'ant-design-vue'
 import apiClient from '@/api/client'
 import { useAppStore } from '@/stores/app'
+import { useConversationStore } from '@/stores/conversation'
 import {
   isDesktopRuntime,
+  isMacDesktopRuntime,
+  isWindowsDesktopRuntime,
   onOpenTaskConversation,
   showTaskNotification,
   syncTrayTaskCount,
@@ -15,13 +18,17 @@ import { provideDocumentTitle } from '@/composables/useDocumentTitle'
 import { useAppI18n } from '@/i18n'
 import type { TaskWithDetails } from '@/types/task-detail'
 import type { TaskNotification } from '@/types/pipeline'
+import sidebarToggleLight from '@/assets/icons/sidebar-toggle-light.svg'
 import AppSidebar from './components/AppSidebar.vue'
 
 const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
+const conversationStore = useConversationStore()
+const isMacDesktop = isMacDesktopRuntime()
+const isWindowsDesktop = isWindowsDesktopRuntime()
 const { t } = useAppI18n()
-const notificationPermission = ref<NotificationPermission>(
+const notificationPermission = ref<'default' | 'denied' | 'granted'>(
   typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'denied',
 )
 const seenNotificationIds = new Set<string>()
@@ -63,7 +70,12 @@ useLocalWS('app.notifications.unread', (data: { count: number }) => {
   const nextCount = data?.count ?? 0
   const previousCount = appStore.unreadTaskNotifications
   appStore.setUnreadTaskNotifications(nextCount)
+  void conversationStore.loadConversations(true)
   void syncTaskNotifications(previousCount, nextCount)
+})
+
+useLocalWS('task.changed', () => {
+  void conversationStore.loadConversations(true)
 })
 
 useLocalWS(
@@ -197,27 +209,54 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-layout">
+  <div class="app-layout" :class="{ 'mac-desktop': isMacDesktop, 'windows-desktop': isWindowsDesktop }">
     <AppSidebar />
-    <main
-      class="main-content"
-      :class="mainContentClasses"
-    >
-      <RouterView v-slot="{ Component, route: currentRoute }">
-        <KeepAlive>
+    <div class="main-wrapper">
+      <!-- Windows 标题栏盖住内容区，侧栏收起时展开条本身就是这一行；展开时主区域另留等高拖动条。macOS 窗口按钮在左侧，不留这道空白。 -->
+      <div
+        v-if="appStore.sidebarCollapsed"
+        class="collapsed-bar"
+      >
+        <button
+          type="button"
+          class="sidebar-expand-btn"
+          :title="t('layout.sidebar.expand')"
+          :aria-label="t('layout.sidebar.expand')"
+          @click="appStore.setSidebarCollapsed(false)"
+        >
+          <img
+            :src="sidebarToggleLight"
+            alt=""
+            class="expand-icon"
+          />
+        </button>
+        <span class="collapsed-title">TeamsBoard</span>
+      </div>
+      <div
+        v-else-if="isWindowsDesktop"
+        class="windows-titlebar-spacer"
+      />
+
+      <main
+        class="main-content"
+        :class="mainContentClasses"
+      >
+        <RouterView v-slot="{ Component, route: currentRoute }">
+          <KeepAlive>
+            <component
+              :is="Component"
+              v-if="currentRoute.meta.keepAlive"
+              :key="currentRoute.name ?? currentRoute.path"
+            />
+          </KeepAlive>
           <component
             :is="Component"
-            v-if="currentRoute.meta.keepAlive"
+            v-if="!currentRoute.meta.keepAlive"
             :key="currentRoute.name ?? currentRoute.path"
           />
-        </KeepAlive>
-        <component
-          :is="Component"
-          v-if="!currentRoute.meta.keepAlive"
-          :key="currentRoute.name ?? currentRoute.path"
-        />
-      </RouterView>
-    </main>
+        </RouterView>
+      </main>
+    </div>
   </div>
 </template>
 
@@ -228,11 +267,80 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-.main-content {
+.main-wrapper {
   flex: 1;
   min-width: 0;
   min-height: 0;
   height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.collapsed-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 38px;
+  padding: 0 16px;
+  background: transparent;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.mac-desktop .collapsed-bar {
+  -webkit-app-region: drag;
+  padding-left: 80px;
+}
+
+.windows-desktop .collapsed-bar {
+  -webkit-app-region: drag;
+  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
+  background: #fff;
+}
+
+.windows-titlebar-spacer {
+  height: env(titlebar-area-height, 38px);
+  flex-shrink: 0;
+  -webkit-app-region: drag;
+  background: #fff;
+}
+
+.sidebar-expand-btn {
+  -webkit-app-region: no-drag;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.sidebar-expand-btn:hover {
+  background: #e5e7eb;
+}
+
+.expand-icon {
+  width: 16px;
+  height: 16px;
+  transform: rotate(180deg);
+}
+
+.collapsed-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1d1d1f;
+}
+
+.main-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
 }
 
 .main-content-default {

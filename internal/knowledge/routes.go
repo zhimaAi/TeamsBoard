@@ -6,12 +6,18 @@ import (
 	"goteams-client/internal/storage"
 )
 
-// RegisterRoutes registers knowledge base routes
-// contentDirProvider is used to parse the knowledge base content directory according to the current login account (account directory: <accountDataDir>/knowledge)
-func RegisterRoutes(r *gin.RouterGroup, dbRef *storage.DBRef, contentDirProvider func() (string, error)) {
-	h := NewHandler(dbRef, contentDirProvider)
+// RegisterRoutes registers knowledge base routes.
+// contentDirProvider resolves the KR (knowledge root directory) for the current Profile.
+// defaultRootDir returns the default KR used by GetRoot for the breadcrumb default.
+func RegisterRoutes(r *gin.RouterGroup, dbRef *storage.DBRef, contentDirProvider func() (string, error), defaultRootDir func() string) {
+	h := NewHandler(dbRef, contentDirProvider, defaultRootDir)
 
-	//Folder management
+	// KR config (BE-01 / DA-01 / IN-01)
+	r.GET("/root", h.GetRoot)
+	r.PUT("/root", h.PutRoot)
+	r.POST("/scan", h.Scan)
+
+	// Folder management
 	folders := r.Group("/folders")
 	{
 		folders.GET("", h.ListFolders)
@@ -20,7 +26,7 @@ func RegisterRoutes(r *gin.RouterGroup, dbRef *storage.DBRef, contentDirProvider
 		folders.DELETE("/:id", h.DeleteFolder)
 	}
 
-	//Document management
+	// Document management
 	documents := r.Group("/documents")
 	{
 		documents.GET("", h.ListDocuments)
@@ -30,9 +36,11 @@ func RegisterRoutes(r *gin.RouterGroup, dbRef *storage.DBRef, contentDirProvider
 		documents.DELETE("/:uuid", h.DeleteDocument)
 		documents.POST("/:uuid/restore", h.RestoreDocument)
 		documents.DELETE("/:uuid/permanent", h.HardDeleteDocument)
+		// Reference resolution (BE-06 / IN-01)
+		documents.GET("/:uuid/path", h.DocumentPath)
 	}
 
-	//recycle bin
+	// recycle bin
 	r.GET("/trash", h.ListTrash)
 
 	// Document history

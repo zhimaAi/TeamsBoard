@@ -32,8 +32,53 @@ const MAX_RESULTS = 50
 const MAX_RANGES_PER_FILE = 8
 
 /**
+ * 扫描整段文本中所有闭合的 `#[...]` 块。
+ *
+ * 与 collectMarkerRanges 的区别：collectMarkerRanges 依赖已登记的 marker 列表，
+ * 本函数只按语法扫描文本中的 #[...] 闭合块，不依赖任何登记表，
+ * 用于手输 / 粘贴时把"恰好写对"的 #[xxx] 自动登记到引用表，
+ * 渲染层无需额外等待用户走候选菜单。
+ *
+ * 返回的 start = `#` 的下标，end = `]` 的下标（不含）。
+ * 未闭合的 `#`（如 `#task` 或 `#[unclosed`）不会出现在结果中。
+ */
+export function collectDocumentMentionBlocks(value: string): DocumentMentionRange[] {
+  const blocks: DocumentMentionRange[] = []
+  if (!value) return blocks
+  let scan = 0
+  while (scan < value.length) {
+    if (
+      value[scan] === '#' &&
+      scan + 1 < value.length &&
+      value[scan + 1] === '['
+    ) {
+      let end = scan + 2
+      let depth = 1
+      while (end < value.length && depth > 0) {
+        if (value[end] === '[') depth++
+        else if (value[end] === ']') depth--
+        if (depth === 0) break
+        end++
+      }
+      if (depth === 0) {
+        blocks.push({ start: scan, end })
+        scan = end + 1
+        continue
+      }
+    }
+    scan++
+  }
+  return blocks
+}
+
+/**
  * 从光标位置还原 # 引用上下文。
  * 返回 null 表示当前不该出现引用菜单，调用方据此直接关闭候选列表。
+ *
+ * 关键约束：行内已闭合的 `#[xxx]` 引用块必须作为整体处理，不能让块内的 `#` /
+ * `[` / `]` 干扰引用起点的判定。光标停留在某个闭合块内部时，光标之前没有未闭合
+ * 的 `#`，应直接返回 null，而不是把块内的 `#` 当成新引用起点、导致 query 形如
+ * `[xxx` 被错误地当作筛选词。
  */
 export function resolveDocumentMentionContext(
   value: string,
@@ -41,16 +86,108 @@ export function resolveDocumentMentionContext(
 ): DocumentMentionContext | null {
   const safeCaret = Math.max(0, Math.min(caret, value.length))
   const lineStart = value.lastIndexOf('\n', safeCaret - 1) + 1
-  const currentLine = value.slice(lineStart, safeCaret)
-  const hashOffset = currentLine.lastIndexOf('#')
-  if (hashOffset < 0) return null
+  const lineEnd = value.indexOf('\n', safeCaret)
+  const lineEndClamped = lineEnd === -1 ? value.length : lineEnd
+  // 扫描整行而非只到光标，才能识别完整闭合的 #[...] 块
+  const fullLine = value.slice(lineStart, lineEndClamped)
+  const caretInLine = safeCaret - lineStart
 
-  const query = currentLine.slice(hashOffset + 1)
-  // 超长段落说明用户只是在正常书写，已插入完成的 #[名称] 标记也不该再次触发
-  if (query.length > MAX_QUERY_LENGTH) return null
-  if (query.startsWith('[') && query.includes(']')) return null
+  // 收集行内所有闭合的 #[...] 块；start = # 的位置，end = ] 的位置（不含）
+  const blocks: Array<{ start: number; end: number }> = []
+  let scan = 0
+  while (scan < fullLine.length) {
+    if (
+      fullLine[scan] === '#' &&
+      scan + 1 < fullLine.length &&
+      fullLine[scan + 1] === '['
+    ) {
+      let end = scan + 2
+      let depth = 1
+      while (end < fullLine.length && depth > 0) {
+        if (fullLine[end] === '[') depth++
+        else if (fullLine[end] === ']') depth--
+        if (depth === 0) break
+        end++
+      }
+      if (depth === 0) {
+        blocks.push({ start: scan, end })
+        scan = end + 1
+        continue
+      }
+    }
+    scan++
+  }
 
-  return { start: lineStart + hashOffset, end: safeCaret, query }
+  // 光标停在某个闭合的 #[...] 块内部（含落在 ] 之后、同一行紧邻块尾）：不是新的输入引用
+  for (const block of blocks) {
+    if (block.start < caretInLine && caretInLine <= block.end) {
+      return null
+    }
+  }
+
+  // 从右往左找到行内最右的 #，并跳过作为 #[...] 块起点的 #（它们只是语法前缀）
+  for (let i = caretInLine - 1; i >= 0; i--) {
+    if (fullLine[i] !== '#') continue
+    const isBlockStart = blocks.some((block) => block.start === i)
+    if (isBlockStart) continue
+    const query = fullLine.slice(i + 1, caretInLine)
+    // 超长段落说明用户只是在正常书写
+    if (query.length > MAX_QUERY_LENGTH) return null
+    return { start: lineStart + i, end: safeCaret, query }
+  }
+  return null
+}
+
+/**
+ * 判断 selection 范围是否与某个已登记 # 引用块重叠。
+ * 返回 marker 与 (start, end) 区间，供 ChatComposer 把「点 textarea 某个位置 /
+ * 整段选中 marker」翻译成「打开片段预览」。
+ *
+ * 接受的是 selection 范围 [selectionStart, selectionEnd]，不是单点 caret——
+ * ChatComposer 在 click 时会调 selectMarkerAtCaret 把整段 marker 选中，
+ * selectionStart === marker.start 时如果还按单点 caret 判断（左开区间）就
+ * 永远不命中，preview 也就打不开。这里用「区间有交集」覆盖这两种情形：
+ * - 单点 caret 落在 marker 内（selectionStart === selectionEnd）
+ * - 整段选中 marker（selectionStart === marker.start, selectionEnd === marker.end）
+ *
+ * 与 resolveDocumentMentionContext 的语义差别：
+ * - resolveDocumentMentionContext: 关心光标前是否有「未闭合」的 #（picker 用）。
+ *   光标落在闭合块内时返回 null，让 picker 自动收起。
+ * - resolveDocumentMentionPreview:  关心 selection 范围是否覆盖某个已登记的 #[...] 块
+ *   （preview 用）。picker 那种返回 null 的位置在这里恰恰是要命中。
+ *
+ * 复用 collectMarkerRanges：它已经处理同名 marker 多次出现、相邻区间的合并，
+ * 直接遍历区间即可，不重复实现 marker 区间扫描。
+ */
+export interface DocumentMentionPreviewContext {
+  marker: DocumentMentionMarker
+  start: number
+  end: number
+}
+
+export function resolveDocumentMentionPreview(
+  value: string,
+  selectionStart: number,
+  selectionEnd: number,
+  markers: DocumentMentionMarker[],
+): DocumentMentionPreviewContext | null {
+  if (!value) return null
+  const safeStart = Math.max(0, Math.min(selectionStart, value.length))
+  const safeEnd = Math.max(safeStart, Math.min(selectionEnd, value.length))
+  const ranges = collectMarkerRanges(
+    value,
+    markers.map((item) => item.marker),
+  )
+  for (const range of ranges) {
+    // 区间交集：[safeStart, safeEnd) 与 [range.start, range.end) 有交集即命中
+    if (safeStart < range.end && range.start < safeEnd) {
+      const text = value.slice(range.start, range.end)
+      const matched = markers.find((item) => item.marker === text)
+      if (!matched) continue
+      return { marker: matched, start: range.start, end: range.end }
+    }
+  }
+  return null
 }
 
 /**
@@ -107,12 +244,34 @@ export interface DocumentMentionToken {
   syntaxSuffix?: string
   /** 引用对应的文件名，用于渲染文件图标 */
   fileName?: string
+  /** S-UI-22: 引用已失效（知识库文档被删除或磁盘文件不存在），渲染为失效胶囊 */
+  invalid?: boolean
+  /**
+   * 知识库选中片段引用，与整篇文档引用视觉区分。
+   * 任务产出文件引用恒为 undefined。
+   */
+  isFragment?: boolean
+  /**
+   * 知识库选中片段原文，用于悬浮 tooltip 展示（S-UI-13）。
+   * 聊天记录渲染时无此数据。
+   */
+  fragmentText?: string
 }
 
 /** 渲染层需要的最小引用信息：标记原文 + 文件名 */
 export interface DocumentMentionMarker {
   marker: string
   name: string
+  /**
+   * 知识库选中片段引用标记（`fragment != null`）。
+   * 渲染层据此与整篇文档引用做视觉区分；任务产出文件引用恒为 false。
+   */
+  isFragment?: boolean
+  /**
+   * 知识库选中片段的原文（S-UI-13 / D3-H2）。
+   * 用于输入框引用胶囊的悬浮 tooltip 展示；聊天记录无此数据。
+   */
+  fragmentText?: string
 }
 
 /**
@@ -156,7 +315,8 @@ function describeReferenceToken(
   const syntaxPrefix = marker.startsWith('#[') ? '#[' : ''
   const syntaxSuffix = marker.endsWith(']') ? ']' : ''
   const label = marker.slice(syntaxPrefix.length, marker.length - syntaxSuffix.length)
-  const name = markers.find((item) => item.marker === marker)?.name
+  const matched = markers.find((item) => item.marker === marker)
+  const name = matched?.name
   return {
     text: marker,
     reference: true,
@@ -164,6 +324,8 @@ function describeReferenceToken(
     label,
     syntaxSuffix,
     fileName: name || label.split(' · ')[0],
+    isFragment: matched?.isFragment ?? false,
+    fragmentText: matched?.fragmentText,
   }
 }
 

@@ -136,6 +136,34 @@ func (m *MemStore) ReplaceAll(sourceKey string, items []CloudPipeline) ([]Pipeli
 	return result, nil
 }
 
+// ApplyStepExecution writes locally chosen CLI and model back onto cached steps.
+// Sync rebuilds the cache from the cloud payload, which does not include the
+// client's execution config, so the caller restores it from local storage.
+func (m *MemStore) ApplyStepExecution(pipelineUUID string, steps []Step) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pipe := m.byUUID[strings.TrimSpace(pipelineUUID)]
+	if pipe == nil {
+		return
+	}
+	byUUID := make(map[string]Step, len(steps))
+	for _, step := range steps {
+		byUUID[step.UUID] = step
+	}
+	for i := range pipe.Steps {
+		next, ok := byUUID[pipe.Steps[i].UUID]
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(next.CLIType) != "" {
+			pipe.Steps[i].CLIType = next.CLIType
+		}
+		if strings.TrimSpace(next.ModelName) != "" {
+			pipe.Steps[i].ModelName = next.ModelName
+		}
+	}
+}
+
 // Get returns a deep copy of the pipeline with the given UUID.
 func (m *MemStore) Get(pipelineUUID string) (*Pipeline, bool) {
 	m.mu.RLock()

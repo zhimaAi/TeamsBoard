@@ -235,8 +235,9 @@ function openAssignment(item: MyWorkItem) {
   assignModalOpen.value = true
 }
 
-function handleTaskCreated(uuid: string) {
+function handleTaskCreated(uuid: string, options?: { openChat?: boolean }) {
   if (selectedWorkItem.value) selectedWorkItem.value.local_task_uuid = uuid
+  if (options?.openChat) return
   router.push(`/board/task/${uuid}`)
 }
 

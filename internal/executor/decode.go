@@ -153,10 +153,20 @@ func (b *BaseDecoder) Thinking(content string, emit EmitFunc) {
 	b.emitContent(EventThinking, content, emit)
 }
 
-// ToolResult 发射一条工具结果事件，空内容自动跳过。
-// toolUseID 用于把结果归属到对应调用；协议未提供时传空字符串。
+// ToolResult 发射最终工具结果。即使内容为空，也必须保留完成信号。
 func (b *BaseDecoder) ToolResult(toolUseID, content string, emit EmitFunc) {
-	b.emitContentWithID(EventToolResult, toolUseID, content, emit)
+	b.emitToolResult(toolUseID, content, false, emit)
+}
+
+// ToolProgress 只更新工具输出，不结束执行预算。
+func (b *BaseDecoder) ToolProgress(toolUseID, content string, emit EmitFunc) {
+	b.emitToolResult(toolUseID, content, true, emit)
+}
+
+func (b *BaseDecoder) emitToolResult(id, content string, partial bool, emit EmitFunc) {
+	emit(ExecutorEvent{Type: EventToolResult, ToolUseID: strings.TrimSpace(id),
+		Content: strings.TrimSpace(content), ToolResultPartial: partial,
+		SessionID: b.sessionID, Timestamp: NowMillis()})
 }
 
 // ToolCall 发射一条工具调用事件。内容统一为「工具名 参数摘要」，与前端解析约定一致。
@@ -335,7 +345,16 @@ func (a *StreamAdapter) run(ctx context.Context, opts RunOptions, resumeSession 
 			if event.Timestamp == 0 {
 				event.Timestamp = NowMillis()
 			}
-			eventCh <- event
+			proc.ObserveEvent(event)
+			select {
+			case eventCh <- event:
+			case <-ctx.Done():
+				// 消费者取消后仍读完 stdout，但不能在满事件通道上永久阻塞。
+				select {
+				case eventCh <- event:
+				default:
+				}
+			}
 		}
 
 		emit(NewEvent(EventStart))
@@ -346,9 +365,11 @@ func (a *StreamAdapter) run(ctx context.Context, opts RunOptions, resumeSession 
 
 		result := proc.WaitFor()
 		outcome := decoder.Outcome()
-		if outcome.FailureReason != "" || result.ScanErr != nil || result.WaitErr != nil || result.StdinErr != nil {
+		if proc.IdleStopped() || outcome.FailureReason != "" || result.ScanErr != nil || result.WaitErr != nil || result.StdinErr != nil {
 			reason := outcome.FailureReason
-			if reason == "" && result.StdinErr != nil {
+			if msg := proc.IdleStopMessage(); msg != "" {
+				reason = msg
+			} else if reason == "" && result.StdinErr != nil {
 				reason = "写入 " + displayName + " Prompt 失败: " + result.StdinErr.Error()
 			}
 			emit(ExecutorEvent{

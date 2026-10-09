@@ -175,6 +175,20 @@ Feel free to reach out for help or to provide suggestions for improving TeamsBoa
 
 ## Changelog
 
+### v0.1.7 (2026-10-09)
+
+- WeChat remote channel: bind via QR code scan, then view tasks, send instructions, and receive execution results directly in WeChat
+- Team board: sign in with your goteams account to sync team requirements to the local client
+- Kanban list view: switch between board and list modes
+- Cloud expert panels: fetched automatically after sign-in; members support local CLI and model configuration, including batch configuration
+- Client update check: automatic update checks, version comparison, download, installation, and restart to update
+- Vibe Coding: directly launch Codex CLI, Pi, Qoder, CodeBuddy, Claude Code, and other CLIs
+- Conversation list moved into the left sidebar, with a standalone new conversation page and an onboarding guide
+- Task cards show recent activity; tasks support viewing execution history, preserved when switching execution modes
+- Support migrating the client data directory to a new parent directory in Settings
+- Improved expert panel configuration UI and interactions
+- Various client experience improvements
+
 ### v0.1.6 (2026-09-18)
 
 - Expert panel mode: tasks can be assigned to an expert panel for execution
@@ -188,14 +202,6 @@ Feel free to reach out for help or to provide suggestions for improving TeamsBoa
 - Closing the client minimizes it by default; configurable in Config Center - Client
 - Tasks can switch the execution mode
 - Various client experience improvements
-
-### v0.1.5 (2026-09-04)
-
-- Pipelines can be duplicated, with batch CLI and model configuration
-- Conversations can be aborted
-- Tasks can switch the CLI and model used by the Agent
-- Copy-paste images when creating tasks or in conversations
-- Edit the Agent prompt while a task is running
 
 ## License
 

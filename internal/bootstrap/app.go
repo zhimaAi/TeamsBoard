@@ -22,6 +22,7 @@ import (
 	"goteams-client/internal/localserver"
 	"goteams-client/internal/secrets"
 	"goteams-client/internal/storage"
+	"goteams-client/internal/workspace"
 )
 
 // App is the main structure of the client application
@@ -33,6 +34,7 @@ type App struct {
 	skillsDir        string
 	codexSkillReady  bool
 	codexSkillReason string
+	vibeSkills       []localserver.VibeSkillStatus
 	cloud            *config.CloudConfig
 	secretStore      *secrets.DelegatingStore
 	bootstrapStore   secrets.Store
@@ -67,7 +69,9 @@ func New(ctx context.Context) (*App, error) {
 	applog.Info("正在初始化 GoTeams 客户端", "data_dir", app.dataDir)
 
 	// Load cloud connection configuration (from INI file, does not rely on database).
-	cloudCfg, err := loadCloudConfig()
+	// configDir 已经由 initDirs 内的 workspace.ResolveDataRoot 解析过，搬迁场景下
+	// 指向新数据根，磁盘配置文件必须从新位置读取。
+	cloudCfg, err := loadCloudConfig(app.configDir)
 	if err != nil {
 		return nil, fmt.Errorf("加载配置失败: %w", err)
 	}
@@ -77,7 +81,7 @@ func New(ctx context.Context) (*App, error) {
 	if err := app.acquireLockImpl(); err != nil {
 		return nil, fmt.Errorf("获取实例锁失败: %w", err)
 	}
-	app.codexSkillReady, app.codexSkillReason = app.installBuiltinSkills()
+	app.codexSkillReady, app.codexSkillReason, app.vibeSkills = app.installBuiltinSkills()
 
 	// 4. Initialize SecretStore.
 	store := secrets.NewDelegating()
@@ -176,6 +180,7 @@ func (a *App) Run(ctx context.Context) error {
 		SkillsRoot:       a.skillsDir,
 		CodexSkillReady:  a.codexSkillReady,
 		CodexSkillReason: a.codexSkillReason,
+		VibeSkills:       a.vibeSkills,
 		BaseProfileDir:   a.dataDir,
 		BootstrapStore:   a.bootstrapStore,
 		SecretStore:      a.secretStore,
@@ -198,6 +203,7 @@ func (a *App) Run(ctx context.Context) error {
 
 	//Restore the account session from the persistent login state (no need to log in again after restart)
 	a.server.RestoreSession(runCtx)
+	a.server.StartRemoteChannels(runCtx)
 
 	// Start the cloud session sync service: it periodically pushes the created/updated
 	// CLI session records of cloud tasks to the cloud, in per-task creation order.
@@ -265,14 +271,22 @@ func (a *App) Run(ctx context.Context) error {
 	return nil
 }
 
-// initDirs initializes ~/.goteams directory structure
+// initDirs initializes the data-root directory structure. The data root
+// defaults to ~/.goteams but may have been relocated by the workspace
+// setting; ResolveDataRoot resolves the pointer file left in HOME.
 func (a *App) initDirs() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
 
-	root := filepath.Join(home, ".goteams")
+	root, err := workspace.ResolveDataRoot()
+	if err != nil {
+		return err
+	}
+	if err := workspace.MarkDataRootStructure(root); err != nil {
+		return err
+	}
 	a.dataDir = filepath.Join(root, "data")
 	a.configDir = filepath.Join(root, "config")
 	a.runtimeDir = filepath.Join(root, "runtime")
@@ -299,7 +313,10 @@ func (a *App) initDirs() error {
 	return nil
 }
 
-// writeRuntimeInfo writes runtime information
+// writeRuntimeInfo writes runtime information. External skills always read the
+// stable path under the default data root. After a workspace relocation the
+// process also keeps its own copy beside the relocated data, so both paths
+// publish the same live loopback address.
 func (a *App) writeRuntimeInfo(addr string) error {
 	info := map[string]interface{}{
 		"address":      addr,
@@ -313,7 +330,28 @@ func (a *App) writeRuntimeInfo(addr string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(a.runtimeDir, "runtime.json"), data, 0600)
+	return writeRuntimeFiles(runtimeInfoPaths(a.runtimeDir), data)
+}
+
+func runtimeInfoPaths(runtimeDir string) []string {
+	primary := filepath.Join(runtimeDir, "runtime.json")
+	stable := filepath.Join(workspace.DefaultDataRoot(), "runtime", "runtime.json")
+	if filepath.Clean(primary) == filepath.Clean(stable) {
+		return []string{primary}
+	}
+	return []string{primary, stable}
+}
+
+func writeRuntimeFiles(paths []string, data []byte) error {
+	for _, path := range paths {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return fmt.Errorf("创建运行时目录失败: %w", err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			return fmt.Errorf("写入运行时信息失败: %w", err)
+		}
+	}
+	return nil
 }
 
 // generateTicket generates a one-time browser Ticket

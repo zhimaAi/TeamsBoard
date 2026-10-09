@@ -13,7 +13,7 @@ import (
 	"goteams-client/internal/bootstrap"
 )
 
-// Injected by Taskfile through -ldflags -X during build to facilitate tracking of product version.
+// Injected by tools/build through -ldflags -X during build; Version comes from desktop/package.json.
 var (
 	Version   = "dev"
 	Commit    = "unknown"

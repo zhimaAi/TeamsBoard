@@ -12,6 +12,7 @@ export const MANAGEABLE_MENU_KEYS = [
   'projects',
   'commands',
   'knowledge',
+  'remote-channels',
   'apis',
   'settings',
 ] as const
@@ -37,6 +38,20 @@ export const useAppStore = defineStore('app', () => {
 
   /** Left navigation menu order; tool center is fixed at the bottom and does not participate in sorting */
   const menuOrder = ref<string[]>([...MANAGEABLE_MENU_KEYS])
+
+  /** Sidebar collapsed state (completely hidden) */
+  const sidebarCollapsed = ref(
+    typeof window !== 'undefined' ? localStorage.getItem('goteams.sidebar.collapsed') === 'true' : false,
+  )
+
+  function setSidebarCollapsed(collapsed: boolean) {
+    sidebarCollapsed.value = collapsed
+    try {
+      localStorage.setItem('goteams.sidebar.collapsed', String(collapsed))
+    } catch {
+      // ignore
+    }
+  }
 
   /** Set cloud connection status */
   function setCloudStatus(status: CloudStatus) {
@@ -102,6 +117,7 @@ export const useAppStore = defineStore('app', () => {
     unreadTaskNotifications,
     menuEnabled,
     menuOrder,
+    sidebarCollapsed,
     setCloudStatus,
     setCliTaskCount,
     setUnreadTaskNotifications,
@@ -109,5 +125,6 @@ export const useAppStore = defineStore('app', () => {
     setMenuConfig,
     setMenuOrder,
     isMenuVisible,
+    setSidebarCollapsed,
   }
 })

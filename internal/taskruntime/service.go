@@ -20,10 +20,13 @@ import (
 )
 
 var (
-	ErrNotFound               = errors.New("task not found")
-	ErrTaskContextLocked      = errors.New("任务已开始，不能修改流水线、关联项目或任务目录")
-	ErrPipelineSnapshotLocked = errors.New("任务已经分配流水线，不能覆盖永久快照")
+	ErrNotFound                        = errors.New("task not found")
+	ErrTaskTitleAndDescriptionRequired = errors.New("任务标题与任务描述不能同时为空")
+	ErrTaskContextLocked               = errors.New("任务已开始，不能修改流水线、关联项目或任务目录")
+	ErrPipelineSnapshotLocked          = errors.New("任务已经分配流水线，不能覆盖永久快照")
 )
+
+const generatedTaskTitleMaxRunes = 20
 
 type SnapshotStep struct {
 	SourceStepID string `json:"source_step_id"`
@@ -103,9 +106,9 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (taskUUID string, 
 	if s.db == nil {
 		return "", fmt.Errorf("任务数据库未初始化")
 	}
-	in.Title = strings.TrimSpace(in.Title)
-	if in.Title == "" {
-		return "", fmt.Errorf("任务标题不能为空")
+	in.Title, err = resolveCreateTaskTitle(in.Title, in.Content)
+	if err != nil {
+		return "", err
 	}
 	if in.SourceType == "" {
 		in.SourceType = "local"
@@ -291,6 +294,23 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (taskUUID string, 
 	}
 	committed = true
 	return taskUUID, nil
+}
+
+func resolveCreateTaskTitle(title, content string) (string, error) {
+	title = strings.TrimSpace(title)
+	if title != "" {
+		return title, nil
+	}
+
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return "", ErrTaskTitleAndDescriptionRequired
+	}
+	runes := []rune(content)
+	if len(runes) > generatedTaskTitleMaxRunes {
+		runes = runes[:generatedTaskTitleMaxRunes]
+	}
+	return string(runes), nil
 }
 
 func (s *Service) Update(ctx context.Context, taskUUID string, in UpdateInput) error {
@@ -488,9 +508,9 @@ func (s *Service) AssignPipelineSelection(ctx context.Context, taskUUID, selecte
 	}
 	selectedPipelineUUID = strings.TrimSpace(selectedPipelineUUID)
 	selectedConfigJSON = strings.TrimSpace(selectedConfigJSON)
-	var taskDir, status, existingSnapshot, currentStep, executionMode string
-	err = s.db.QueryRowContext(ctx, `SELECT task_dir, status, pipeline_snapshot_uuid, current_step_uuid, execution_mode FROM gt_tasks WHERE uuid = ?`, taskUUID).
-		Scan(&taskDir, &status, &existingSnapshot, &currentStep, &executionMode)
+	var taskDir, existingSnapshot, currentStep, executionMode string
+	err = s.db.QueryRowContext(ctx, `SELECT task_dir, pipeline_snapshot_uuid, current_step_uuid, execution_mode FROM gt_tasks WHERE uuid = ?`, taskUUID).
+		Scan(&taskDir, &existingSnapshot, &currentStep, &executionMode)
 	if err == sql.ErrNoRows {
 		return ErrNotFound
 	}
@@ -500,7 +520,7 @@ func (s *Service) AssignPipelineSelection(ctx context.Context, taskUUID, selecte
 	if executionMode != "" && executionMode != ExecutionModePipeline {
 		return ErrExecutionModeConflict
 	}
-	if status == "done" || currentStep != "" {
+	if currentStep != "" {
 		return fmt.Errorf("任务已经开始，不能重新分配流水线")
 	}
 	if existingSnapshot != "" {
@@ -535,7 +555,7 @@ func (s *Service) AssignPipelineSelection(ctx context.Context, taskUUID, selecte
 	}
 	defer tx.Rollback()
 	var unchanged int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM gt_tasks WHERE uuid=? AND pipeline_snapshot_uuid='' AND current_step_uuid='' AND status<>'done' AND execution_mode IN ('', 'pipeline')`, taskUUID).Scan(&unchanged); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM gt_tasks WHERE uuid=? AND pipeline_snapshot_uuid='' AND current_step_uuid='' AND execution_mode IN ('', 'pipeline')`, taskUUID).Scan(&unchanged); err != nil {
 		return err
 	}
 	if unchanged != 1 {
@@ -566,7 +586,7 @@ func (s *Service) AssignPipelineSelection(ctx context.Context, taskUUID, selecte
 		selected_pipeline_uuid=CASE WHEN ?<>'' THEN ? ELSE selected_pipeline_uuid END,
 		selected_pipeline_config_json=CASE WHEN ?<>'' THEN ? ELSE selected_pipeline_config_json END,
 		execution_mode='pipeline', execution_tool='', updated_at=?
-		WHERE uuid=? AND pipeline_snapshot_uuid='' AND current_step_uuid='' AND status<>'done' AND execution_mode IN ('', 'pipeline')`,
+		WHERE uuid=? AND pipeline_snapshot_uuid='' AND current_step_uuid='' AND execution_mode IN ('', 'pipeline')`,
 		snapshotUUID, selectedPipelineUUID, selectedPipelineUUID, selectedConfigJSON, selectedConfigJSON, now, taskUUID)
 	if err != nil {
 		return err
@@ -732,6 +752,7 @@ func (s *Service) Delete(ctx context.Context, taskUUID string) error {
 	defer tx.Rollback()
 	for _, statement := range []string{
 		`DELETE FROM gt_task_notifications WHERE task_uuid = ?`,
+		`DELETE FROM gt_task_execution_history WHERE task_uuid = ?`,
 		`DELETE FROM gt_cli_sessions WHERE task_uuid = ?`,
 		`DELETE FROM gt_task_progress WHERE task_uuid = ?`,
 		`DELETE FROM gt_task_steps WHERE task_uuid = ?`,
@@ -766,14 +787,11 @@ func (s *Service) Start(ctx context.Context, taskUUID string) (string, error) {
 		return "", err
 	}
 	defer tx.Rollback()
-	var status, currentStepUUID, pipelineSnapshotUUID, expertSnapshotUUID, executionMode string
-	if err = tx.QueryRowContext(ctx, `SELECT status, current_step_uuid, pipeline_snapshot_uuid, expert_group_snapshot_uuid, execution_mode FROM gt_tasks WHERE uuid = ?`, taskUUID).Scan(&status, &currentStepUUID, &pipelineSnapshotUUID, &expertSnapshotUUID, &executionMode); err == sql.ErrNoRows {
+	var currentStepUUID, pipelineSnapshotUUID, expertSnapshotUUID, executionMode string
+	if err = tx.QueryRowContext(ctx, `SELECT current_step_uuid, pipeline_snapshot_uuid, expert_group_snapshot_uuid, execution_mode FROM gt_tasks WHERE uuid = ?`, taskUUID).Scan(&currentStepUUID, &pipelineSnapshotUUID, &expertSnapshotUUID, &executionMode); err == sql.ErrNoRows {
 		return "", ErrNotFound
 	} else if err != nil {
 		return "", err
-	}
-	if status == "done" {
-		return "", fmt.Errorf("任务已完成")
 	}
 	if currentStepUUID != "" {
 		return "", fmt.Errorf("任务已经开始")
@@ -817,7 +835,7 @@ func (s *Service) Start(ctx context.Context, taskUUID string) (string, error) {
 	if _, err = tx.ExecContext(ctx, `UPDATE gt_task_steps SET status = 'active', updated_at = ? WHERE uuid = ? AND status = 'pending'`, now, currentStepUUID); err != nil {
 		return "", err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE gt_tasks SET status = 'active', current_step_uuid = ?, current_step_completed = 0,
+	if _, err = tx.ExecContext(ctx, `UPDATE gt_tasks SET status = CASE WHEN status = 'done' THEN status ELSE 'active' END, current_step_uuid = ?, current_step_completed = 0,
 		started_at = CASE WHEN started_at = 0 THEN ? ELSE started_at END, updated_at = ? WHERE uuid = ?`, currentStepUUID, now, now, taskUUID); err != nil {
 		return "", err
 	}

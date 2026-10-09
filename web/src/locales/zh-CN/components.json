@@ -3,10 +3,15 @@
     "copied": "已复制",
     "copyFailed": "复制失败"
   },
+  "directory": {
+    "manualPlaceholder": "输入工作目录路径",
+    "useManual": "使用路径"
+  },
   "errors": {
     "selectDirectoryUnsupported": "当前环境不支持选择本地文件夹，请使用 TeamsBoard 桌面客户端",
     "openDirectoryUnsupported": "当前环境不支持打开本地文件夹，请使用 TeamsBoard 桌面客户端",
     "openCodexUnsupported": "当前环境不支持自动打开 Codex，请使用 TeamsBoard 桌面客户端",
+    "openVibeToolUnsupported": "当前环境不支持自动打开 CLI，请使用 TeamsBoard 桌面客户端",
     "desktopSettingsUnsupported": "当前环境不支持桌面客户端设置",
     "iconType": "仅支持 PNG、JPEG、WebP 图片",
     "iconSize": "图片大小不能超过 2MB",
@@ -23,7 +28,16 @@
     "attachmentDownloadFailed": "附件下载失败",
     "uploadUnavailable": "当前编辑器未启用图片粘贴",
     "uploadFailed": "图片粘贴失败",
-    "placeholder": "添加描述…"
+    "placeholder": "添加描述…",
+    "floatingToolbar": "编辑工具栏",
+    "bold": "加粗",
+    "italic": "斜体",
+    "strike": "删除线",
+    "inlineCode": "行内代码",
+    "link": "链接",
+    "quote": "引用",
+    "unorderedList": "无序列表",
+    "orderedList": "有序列表"
   },
   "placeholder": {
     "developing": "{title}功能开发中"

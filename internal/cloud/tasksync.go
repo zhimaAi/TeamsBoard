@@ -57,18 +57,31 @@ type PipelineTaskMessage struct {
 	Timestamp string `json:"timestamp"`
 }
 
+// PipelineTaskProcessEvent is one persisted execution-process event
+// (thinking, intermediate output, tool call, tool result, or permission request).
+// The final assistant reply stays in AssistantMessages; these events are the
+// timeline the local client shows above that reply.
+type PipelineTaskProcessEvent struct {
+	Sequence  int    `json:"sequence"`
+	Type      string `json:"type"`
+	Content   string `json:"content,omitempty"`
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	Timestamp int64  `json:"timestamp,omitempty"`
+}
+
 // PipelineTaskRound is one user question and AI reply within a step conversation.
 type PipelineTaskRound struct {
-	RoundNo           int                   `json:"round_no"`
-	SessionUUID       string                `json:"session_uuid"`
-	Status            string                `json:"status"`
-	UserMessage       string                `json:"user_message"`
-	AssistantMessages []PipelineTaskMessage `json:"assistant_messages"`
-	ErrorSummary      string                `json:"error_summary"`
-	Usage             PipelineTaskUsage     `json:"usage"`
-	StartedAt         *string               `json:"started_at"`
-	FinishedAt        *string               `json:"finished_at"`
-	DurationMs        int64                 `json:"duration_ms"`
+	RoundNo           int                        `json:"round_no"`
+	SessionUUID       string                     `json:"session_uuid"`
+	Status            string                     `json:"status"`
+	UserMessage       string                     `json:"user_message"`
+	AssistantMessages []PipelineTaskMessage      `json:"assistant_messages"`
+	Events            []PipelineTaskProcessEvent `json:"events,omitempty"`
+	ErrorSummary      string                     `json:"error_summary"`
+	Usage             PipelineTaskUsage          `json:"usage"`
+	StartedAt         *string                    `json:"started_at"`
+	FinishedAt        *string                    `json:"finished_at"`
+	DurationMs        int64                      `json:"duration_ms"`
 }
 
 // PipelineTaskConversationContent holds the full step conversation body pushed to the cloud.
@@ -84,6 +97,7 @@ type PipelineTaskConversationContent struct {
 // step-level session sync (PushPipelineTaskSession).
 type PipelineTaskSync struct {
 	LocalTaskUUID      string               `json:"local_task_uuid"`
+	ExecutionIndex     int                  `json:"execution_index"`
 	LocalRevision      int64                `json:"local_revision"`
 	ProjectionHash     string               `json:"projection_hash"`
 	WorkItem           PipelineTaskWorkItem `json:"work_item"`

@@ -73,10 +73,6 @@
               :enabled="isTypingRow(row)"
               @done="markRevealed(row.key)"
             />
-            <span
-              v-if="row.truncated"
-              class="exec-truncated"
-            >{{ truncatedHint(row.limit) }}</span>
           </div>
         </div>
 
@@ -96,10 +92,6 @@
               :enabled="isTypingRow(row)"
               @done="markRevealed(row.key)"
             />
-            <span
-              v-if="row.truncated"
-              class="exec-truncated"
-            >{{ truncatedHint(row.limit) }}</span>
           </div>
         </div>
 
@@ -168,10 +160,6 @@
             <p class="exec-result-label">{{ t('workflows.task.progress.processCallResult') }}</p>
             <p class="exec-row-text is-plain">
               {{ row.result }}
-              <span
-                v-if="row.truncated"
-                class="exec-truncated"
-              >{{ truncatedHint(row.limit) }}</span>
             </p>
           </div>
           <div
@@ -219,25 +207,33 @@ import { cliDisplayName } from './utils'
 import { useCliNames } from '@/composables/useCliNames'
 import TypewriterText from './TypewriterText.vue'
 
-const props = defineProps<{
-  taskUuid: string
-  sessionUuid: string
-  status?: string
-  cliType?: string
-  /** 本次会话使用的模型，来自 gt_task_progress.model_name */
-  modelName?: string
-  /** 本次会话的 token 用量；部分 CLI 不上报，此时为 0 */
-  inputTokens?: number
-  outputTokens?: number
-  totalTokens?: number
-}>()
+const props = withDefaults(
+  defineProps<{
+    taskUuid: string
+    sessionUuid: string
+    status?: string
+    cliType?: string
+    /** 本次会话使用的模型，来自 gt_task_progress.model_name */
+    modelName?: string
+    /** 本次会话的 token 用量；部分 CLI 不上报，此时为 0 */
+    inputTokens?: number
+    outputTokens?: number
+    totalTokens?: number
+    readOnly?: boolean
+    initialEvents?: SessionEventItem[]
+  }>(),
+  {
+    readOnly: false,
+    initialEvents: () => [],
+  },
+)
 
 const { t } = useAppI18n()
 
 // CLI 版本来自 cli-discovery 探测结果；模块级缓存，多张卡片只会请求一次
 const { cliVersion, ensureLoaded: ensureCliInfo } = useCliNames()
 onMounted(() => {
-  void ensureCliInfo()
+  if (!props.readOnly) void ensureCliInfo()
 })
 
 // 行展开控件：设计稿用方形 +/- 按钮。独立函数式组件，避免模板里每个行头重复写两个图标分支
@@ -249,11 +245,6 @@ const RowCaret = (caretProps: { open: boolean }) =>
 // 单步耗时展示上限：超出视为时间戳不连续，不展示以免误导
 const MAX_STEP_DURATION_MS = 60 * 60 * 1000
 
-// 与后端 orchestrator.go 的 sessionEventThinkingLimit / sessionEventToolLimit 对齐。
-// 命中上限说明内容已被截断，必须在界面上说明，否则用户会以为内容原本就这么长。
-const THINKING_LIMIT = 8192
-const TOOL_LIMIT = 4096
-
 interface ProcessRow {
   key: string
   kind: 'thinking' | 'output' | 'permission' | 'tool'
@@ -262,8 +253,6 @@ interface ProcessRow {
   args: string
   result: string
   durationText: string
-  truncated: boolean
-  limit: number
   /** 该行来自本次执行的实时流（而非历史回看），只有它才走打字机揭示 */
   live: boolean
 }
@@ -273,9 +262,9 @@ interface PermissionRequestPayload {
   tool_input?: string
 }
 
-const events = ref<SessionEventItem[]>([])
+const events = ref<SessionEventItem[]>([...props.initialEvents])
 const expanded = ref(false)
-const historyLoaded = ref(false)
+const historyLoaded = ref(props.readOnly)
 // 行展开状态：默认值由 isRowOpen 决定，用户点击后记住覆盖值
 const rowOverrides = ref(new Map<string, boolean>())
 // 本次执行实时流入的 sequence：只有它们走打字机。
@@ -356,12 +345,15 @@ onBeforeUnmount(() => {
 
 const running = computed(() => props.status === 'created' || props.status === 'running')
 const failed = computed(() => props.status === 'failed')
-const succeeded = computed(() => !running.value && !failed.value)
+const succeeded = computed(() => props.status === 'success')
 
 const stateText = computed(() => {
   if (running.value) return t('workflows.task.progress.processRunning')
   if (failed.value) return t('workflows.task.progress.processFailed')
-  return t('workflows.task.progress.processDone')
+  if (props.status === 'success') return t('workflows.task.progress.processDone')
+  if (props.status === 'stopped') return t('workflows.task.execution.stopped')
+  if (props.status === 'interrupted') return t('workflows.task.execution.interrupted')
+  return t('workflows.task.progress.processFailed')
 })
 const stateClass = computed(() => ({
   'is-running': running.value,
@@ -385,37 +377,21 @@ function formatDuration(startAt: number, endAt: number) {
   return `${seconds.toFixed(1)}s`
 }
 
-function limitFor(eventType: string) {
-  return eventType === 'thinking' ? THINKING_LIMIT : TOOL_LIMIT
-}
-
-// 按码点计数，与后端 truncate 的按 rune 截断保持一致
-function isTruncated(content: string, limit: number) {
-  return limit > 0 && Array.from(content).length >= limit
-}
-
-function truncatedHint(limit: number) {
-  return t('workflows.task.progress.processTruncated', { count: limit })
-}
-
 function newRow(
   key: string,
   kind: ProcessRow['kind'],
   content: string,
-  limit: number,
   live = false,
 ): ProcessRow {
   return {
     key,
     kind,
     content,
-    limit,
     live,
     name: '',
     args: '',
     result: '',
     durationText: '',
-    truncated: isTruncated(content, limit),
   }
 }
 
@@ -474,7 +450,6 @@ const rows = computed<ProcessRow[]>(() => {
         `thinking-${item.sequence}`,
         'thinking',
         content,
-        limitFor('thinking'),
         live.has(item.sequence),
       )
       const nextAt = nextTime.get(item.sequence)
@@ -490,7 +465,6 @@ const rows = computed<ProcessRow[]>(() => {
           `output-${item.sequence}`,
           'output',
           content,
-          limitFor('message'),
           live.has(item.sequence),
         ),
       )
@@ -500,15 +474,13 @@ const rows = computed<ProcessRow[]>(() => {
     if (type === 'permission_request') {
       const text = content || permissionText(item.event)
       if (!text) continue
-      result.push(
-        newRow(`permission-${item.sequence}`, 'permission', text, limitFor('permission_request')),
-      )
+      result.push(newRow(`permission-${item.sequence}`, 'permission', text))
       continue
     }
 
     if (type === 'tool_call') {
       const separator = content.indexOf(' ')
-      const row = newRow(`tool-${item.sequence}`, 'tool', '', 0)
+      const row = newRow(`tool-${item.sequence}`, 'tool', '')
       row.name = separator > 0 ? content.slice(0, separator) : content
       row.args = separator > 0 ? content.slice(separator + 1).replace(/\s+/g, ' ').trim() : ''
       result.push(row)
@@ -535,8 +507,6 @@ const rows = computed<ProcessRow[]>(() => {
 
     // 同一调用可能先有增量输出、再有终态结果，保留最后一次非空内容
     target.result = content
-    target.limit = limitFor('tool_result')
-    target.truncated = isTruncated(content, target.limit)
     const started = startedAt.get(target)
     if (started) target.durationText = formatDuration(started, eventTime(item))
   }
@@ -579,9 +549,10 @@ const usageText = computed(() => {
 })
 
 // CLI 版本号来自 cli-discovery 的探测结果。
+// 历史执行没有保存当时的 CLI 版本，禁止用当前机器版本冒充历史版本。
 // 各 CLI 的 --version 输出常带后缀（如 "2.1.273 (Claude Code)"），只保留版本号本身；取不到就不展示。
 const versionText = computed(() =>
-  cliVersion(props.cliType || '').replace(/\s*\(.*\)\s*$/, ''),
+  props.readOnly ? '' : cliVersion(props.cliType || '').replace(/\s*\(.*\)\s*$/, ''),
 )
 
 // 行默认展开态按「这行是否值得直接读」区分：输出行是过程里的结论性文本，默认展开；
@@ -634,7 +605,7 @@ function maxSequence() {
 }
 
 async function loadHistory() {
-  if (!props.sessionUuid) return
+  if (props.readOnly || !props.sessionUuid) return
   try {
     // 后端路由为 /tasks/sessions/:uuid/events，路径中不带 taskUuid；
     // 多带段会命中 404，导致任务完成后回看「执行过程」为空。
@@ -686,7 +657,7 @@ const connected = useLocalWSStatus()
 
 // 断线重连后 WS 订阅会丢失，恢复连接时重新订阅并补拉历史
 watch(connected, (value) => {
-  if (value && running.value) {
+  if (!props.readOnly && value && running.value) {
     subscribe()
     void loadHistory()
   }
@@ -695,6 +666,7 @@ watch(connected, (value) => {
 watch(
   () => props.status,
   (status, prev) => {
+    if (props.readOnly) return
     if (status === 'created' || status === 'running') {
       expanded.value = true
       followTail = true
@@ -723,6 +695,7 @@ interface ExecutorEventPayload {
 }
 
 onMessage('executor.event', (payload: Record<string, unknown>) => {
+  if (props.readOnly) return
   const sessionUuid = String(payload?.session_uuid || '')
   if (!sessionUuid || sessionUuid !== props.sessionUuid) return
   const raw = payload.event
@@ -753,7 +726,7 @@ onMessage('executor.event', (payload: Record<string, unknown>) => {
 function toggleExpanded() {
   expanded.value = !expanded.value
   // 首次展开时补拉历史事件（旧会话可能未订阅过实时流）
-  if (expanded.value && !historyLoaded.value) {
+  if (!props.readOnly && expanded.value && !historyLoaded.value) {
     void loadHistory()
   }
 }
@@ -1000,11 +973,6 @@ function toggleExpanded() {
   margin: 0;
   padding: 0 0 6px 19px;
   color: #185fa5;
-  font-size: 12px;
-}
-.exec-truncated {
-  display: block;
-  color: #b9bcc2;
   font-size: 12px;
 }
 .exec-empty {

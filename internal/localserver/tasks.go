@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ import (
 	"goteams-client/internal/executor"
 	"goteams-client/internal/expertgroup"
 	"goteams-client/internal/i18n"
+	"goteams-client/internal/knowledge"
 	"goteams-client/internal/pipeline"
 	"goteams-client/internal/protocol"
 	storagelog "goteams-client/internal/storage/log"
@@ -44,10 +46,24 @@ type TasksHandler struct {
 	skillsRoot       string
 	codexSkillReady  bool
 	codexSkillReason string
+	vibeSkills       map[string]VibeSkillStatus
+}
+
+// VibeSkillStatus records whether the bundled teamsboard Skill was installed
+// into one Vibe Coding tool's user skill directory.
+type VibeSkillStatus struct {
+	Tool   string
+	Root   string
+	Ready  bool
+	Reason string
 }
 
 // NewTasksHandler creates task handler
-func NewTasksHandler(sessionDB func() *sql.DB, orchestrator func() *workflow.Orchestrator, cloudClient func() *cloud.Client, wsHub *WSHub, taskRoot, skillsRoot string, codexSkillReady bool, codexSkillReason string) *TasksHandler {
+func NewTasksHandler(sessionDB func() *sql.DB, orchestrator func() *workflow.Orchestrator, cloudClient func() *cloud.Client, wsHub *WSHub, taskRoot, skillsRoot string, codexSkillReady bool, codexSkillReason string, vibeSkills []VibeSkillStatus) *TasksHandler {
+	indexed := make(map[string]VibeSkillStatus, len(vibeSkills))
+	for _, status := range vibeSkills {
+		indexed[status.Tool] = status
+	}
 	return &TasksHandler{
 		sessionDB:        sessionDB,
 		orchestrator:     orchestrator,
@@ -57,6 +73,7 @@ func NewTasksHandler(sessionDB func() *sql.DB, orchestrator func() *workflow.Orc
 		skillsRoot:       skillsRoot,
 		codexSkillReady:  codexSkillReady,
 		codexSkillReason: codexSkillReason,
+		vibeSkills:       indexed,
 	}
 }
 
@@ -96,18 +113,14 @@ func (h *TasksHandler) notifyTaskChanged(taskUUID string) {
 	h.wsHub.BroadcastTaskChanged(taskUUID)
 }
 
-// deleteTaskSync removes the cloud projection of a locally deleted task in the background.
+// deleteTaskSync is intentionally a no-op for cloud reporting.
+//
+// 需求 1896 边界：客户端任务及其执行过程全程本地化，但每一次运行上报到云端的
+// 执行记录/日志属于团队共享的审计数据，不能被任何一次本地删除带走。由此同一需求
+// 才能保留同一用户与不同用户的多次运行历史。这里仅清掉本地增量同步游标，避免已删
+// 任务的后续会话推送被误判为新任务；云端运行记录保持原样，直到云端侧另行归档。
 func (h *TasksHandler) deleteTaskSync(taskUUID string) {
-	if h.taskCloudClient() == nil {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := taskSyncPusher.DeleteTaskSync(ctx, h.taskCloudClient(), taskUUID); err != nil {
-			applog.Warn("[CloudSync] 删除云端任务投影失败", "task_uuid", taskUUID, "error", err.Error())
-		}
-	}()
+	taskSyncPusher.ForgetTask(taskUUID)
 }
 func (h *TasksHandler) taskCloudClient() *cloud.Client {
 	if h.cloudClient == nil {
@@ -132,6 +145,9 @@ func (h *TasksHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.POST("/:uuid/assign-pipeline", h.assignAndStartTask)
 	r.PUT("/:uuid/pipeline", h.assignTaskPipeline)
 	r.GET("/:uuid/progress", h.listTaskProgress)
+	r.GET("/:uuid/execution-history", h.listTaskExecutionHistory)
+	r.GET("/:uuid/execution-history/:history_uuid", h.getTaskExecutionHistory)
+	r.GET("/:uuid/activities/:activity_id", h.getTaskActivity)
 	r.POST("/:uuid/expert-messages", h.sendExpertMessage)
 	r.POST("/:uuid/steps/:step_uuid/questions", h.askStepQuestion)
 	r.POST("/:uuid/steps/:step_uuid/complete", h.completeStep)
@@ -141,6 +157,8 @@ func (h *TasksHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("/:uuid/files/content", h.getTaskFileContent)
 	r.GET("/:uuid/files/raw", h.getTaskAttachmentContent)
 	r.POST("/:uuid/files/content", h.saveTaskFileContent)
+	// S-IN-08: 超长引用内容唯一命名落盘到任务产出目录
+	r.POST("/:uuid/files/reference", h.spillReferenceFile)
 	r.POST("/:uuid/files/attachments", h.uploadTaskAttachment)
 	r.GET("/:uuid/sessions", h.listTaskSessions)
 	r.GET("/sessions/:uuid/events", h.listSessionEvents)
@@ -238,6 +256,7 @@ func (h *TasksHandler) snapshotFromPipeline(ctx context.Context, input pipelineA
 // RegisterTeamRoutes registers the only task APIs that require a cloud login.
 func (h *TasksHandler) RegisterTeamRoutes(r *gin.RouterGroup) {
 	r.GET("/my-work", h.listMyWork)
+	r.GET("/work-items/:workspaceId/:id", h.getTeamWorkItem)
 	r.GET("/pipelines", h.listTeamPipelines)
 	r.GET("/pipelines/:id/snapshot", h.getTeamPipelineSnapshot)
 	r.POST("/imports", h.importTeamTask)
@@ -412,7 +431,7 @@ func (h *TasksHandler) importTeamTask(c *gin.Context) {
 		SelectedPipelineConfigJSON: string(selectedConfig),
 	})
 	if err != nil {
-		i18n.LocalServerError(c, http.StatusConflict, err)
+		respondTaskCreateError(c, http.StatusConflict, err)
 		return
 	}
 	if body.Status == protocol.TaskStatusInProgress || body.Status == protocol.TaskStatusActive {
@@ -492,10 +511,14 @@ func (h *TasksHandler) listMyWork(c *gin.Context) {
 		return
 	}
 
-	assigned := make(map[string]string)
+	// The team board groups the work items by lane, so the bound local task's
+	// status is returned together with its uuid: without it the board would need
+	// a second (paginated) /tasks request and could misplace items that fall
+	// outside the first page.
+	assigned := make(map[string]localTaskRef)
 	cloudSourceKey := pipeline.CloudSourceKey(h.taskCloudClient().BaseURL())
 	rows, err := h.taskDB().Query(
-		`SELECT work_item_type, work_item_id, uuid FROM gt_tasks WHERE source_type = 'cloud' AND cloud_source_key = ? AND cloud_user_id = ?`,
+		`SELECT work_item_type, work_item_id, uuid, status FROM gt_tasks WHERE source_type = 'cloud' AND cloud_source_key = ? AND cloud_user_id = ?`,
 		cloudSourceKey, session.UserID,
 	)
 	if err != nil {
@@ -504,12 +527,13 @@ func (h *TasksHandler) listMyWork(c *gin.Context) {
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var workItemType, workItemID, taskUUID string
-		if err := rows.Scan(&workItemType, &workItemID, &taskUUID); err != nil {
+		var workItemType, workItemID string
+		var ref localTaskRef
+		if err := rows.Scan(&workItemType, &workItemID, &ref.uuid, &ref.status); err != nil {
 			i18n.LocalServerError(c, http.StatusInternalServerError, err)
 			return
 		}
-		assigned[workItemType+":"+workItemID] = taskUUID
+		assigned[workItemType+":"+workItemID] = ref
 	}
 	if err := rows.Err(); err != nil {
 		i18n.LocalServerError(c, http.StatusInternalServerError, err)
@@ -520,13 +544,75 @@ func (h *TasksHandler) listMyWork(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": result.List})
 }
 
-func annotateMyWorkItems(items []map[string]interface{}, assigned map[string]string) {
+func (h *TasksHandler) getTeamWorkItem(c *gin.Context) {
+	if h.taskCloudClient() == nil {
+		i18n.Error(c, http.StatusUnauthorized, "localserver_not_authenticated", "not_authenticated")
+		return
+	}
+	workspaceID, err := strconv.ParseInt(c.Param("workspaceId"), 10, 64)
+	if err != nil || workspaceID <= 0 {
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "request_invalid")
+		return
+	}
+	workItemID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || workItemID <= 0 {
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "request_invalid")
+		return
+	}
+	item, err := h.taskCloudClient().GetWorkItem(c.Request.Context(), workspaceID, workItemID)
+	if err != nil {
+		var apiErr *cloud.APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnauthorized {
+			i18n.Error(c, http.StatusUnauthorized, "localserver_cloud_session_expired", "cloud_session_expired")
+			return
+		}
+		i18n.LocalServerError(c, http.StatusBadGateway, err)
+		return
+	}
+	comments, err := h.taskCloudClient().ListWorkItemComments(c.Request.Context(), workspaceID, workItemID)
+	if err != nil {
+		applog.Warn("[TeamWork] 加载原始需求评论失败", "workspace_id", workspaceID, "work_item_id", workItemID, "error", err.Error())
+		comments = []map[string]interface{}{}
+	}
+	attachments, err := h.taskCloudClient().ListWorkItemAttachments(c.Request.Context(), workspaceID, workItemID)
+	if err != nil {
+		applog.Warn("[TeamWork] 加载原始需求附件失败", "workspace_id", workspaceID, "work_item_id", workItemID, "error", err.Error())
+		attachments = []map[string]interface{}{}
+	}
+	// 自定义字段只存字段值，选项型字段存的是选项 key，所以定义也要一并下发。
+	typeKey, _ := item["type"].(string)
+	customFields, err := h.taskCloudClient().ListWorkItemCustomFields(c.Request.Context(), workspaceID, typeKey)
+	if err != nil {
+		applog.Warn("[TeamWork] 加载原始需求自定义字段失败", "workspace_id", workspaceID, "work_item_id", workItemID, "error", err.Error())
+		customFields = []cloud.CustomFieldDefinition{}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"item":          item,
+		"comments":      comments,
+		"attachments":   attachments,
+		"custom_fields": customFields,
+	})
+}
+
+// localTaskRef identifies the local task bound to a cloud work item.
+type localTaskRef struct {
+	uuid   string
+	status string
+}
+
+// annotateMyWorkItems marks the work items that already have a bound local task.
+// local_task_uuid lets the client open the task; local_task_status lets the team
+// board place the work item into the matching lane.
+func annotateMyWorkItems(items []map[string]interface{}, assigned map[string]localTaskRef) {
 	for _, item := range items {
 		workItemType, _ := item["type"].(string)
 		workItemID := workItemIDString(item["id"])
-		if taskUUID := assigned[workItemType+":"+workItemID]; taskUUID != "" {
-			item["local_task_uuid"] = taskUUID
+		ref, ok := assigned[workItemType+":"+workItemID]
+		if !ok || ref.uuid == "" {
+			continue
 		}
+		item["local_task_uuid"] = ref.uuid
+		item["local_task_status"] = ref.status
 	}
 }
 
@@ -605,15 +691,24 @@ func (h *TasksHandler) listTasks(c *gin.Context) {
 		LEFT JOIN gt_pipelines sel ON sel.uuid=t.selected_pipeline_uuid
 		LEFT JOIN gt_task_expert_group_snapshots egs ON egs.uuid=t.expert_group_snapshot_uuid
 		LEFT JOIN gt_expert_groups eg ON eg.uuid=t.selected_expert_group_uuid`
-	var rows *sql.Rows
-	var err error
+	// 本地任务页签只看本地新建的任务。团队工作配置后在本地生成的任务 source_type=cloud，
+	// 只出现在团队工作里；不传 source_type 时仍返回全部，供团队看板按 uuid 取卡片。
+	localOnly := c.Query("source_type") == "local"
+	conditions := make([]string, 0, 2)
+	args := make([]any, 0, 3)
 	if status != "" {
-		query += ` WHERE t.status = ? ORDER BY t.created_at DESC LIMIT ? OFFSET ?`
-		rows, err = h.taskDB().Query(query, status, pageSize, offset)
-	} else {
-		query += ` ORDER BY t.created_at DESC LIMIT ? OFFSET ?`
-		rows, err = h.taskDB().Query(query, pageSize, offset)
+		conditions = append(conditions, `t.status = ?`)
+		args = append(args, status)
 	}
+	if localOnly {
+		conditions = append(conditions, `COALESCE(t.source_type, 'local') <> 'cloud'`)
+	}
+	if len(conditions) > 0 {
+		query += ` WHERE ` + strings.Join(conditions, ` AND `)
+	}
+	query += ` ORDER BY t.created_at DESC LIMIT ? OFFSET ?`
+	listArgs := append(append([]any{}, args...), pageSize, offset)
+	rows, err := h.taskDB().Query(query, listArgs...)
 	if err != nil {
 		i18n.LocalServerError(c, http.StatusInternalServerError, err)
 		return
@@ -621,33 +716,34 @@ func (h *TasksHandler) listTasks(c *gin.Context) {
 	defer rows.Close()
 
 	type TaskItem struct {
-		UUID                      string `json:"uuid"`
-		Title                     string `json:"title"`
-		Status                    string `json:"status"`
-		ExecutionStatus           string `json:"execution_status"`
-		AgentID                   string `json:"agent_id"`
-		WorkItemType              string `json:"work_item_type"`
-		WorkItemID                string `json:"work_item_id"`
-		CreatedAt                 int64  `json:"created_at"`
-		UpdatedAt                 int64  `json:"updated_at"`
-		ContentSnapshot           string `json:"content_snapshot"`
-		AgentNameSnapshot         string `json:"agent_name_snapshot"`
-		ProjectUUID               string `json:"project_uuid"`
-		ProjectName               string `json:"project_name"`
-		ProjectIcon               string `json:"project_icon"`
-		SelectedPipelineUUID      string `json:"selected_pipeline_uuid"`
-		PipelineSnapshotUUID      string `json:"pipeline_snapshot_uuid"`
-		PipelineNameSnapshot      string `json:"pipeline_name_snapshot"`
-		PipelineAvatarSnapshot    string `json:"pipeline_avatar_snapshot"`
-		ExecutionMode             string `json:"execution_mode"`
-		ExecutionTool             string `json:"execution_tool"`
-		SelectedExpertGroupUUID   string `json:"selected_expert_group_uuid"`
-		ExpertGroupSnapshotUUID   string `json:"expert_group_snapshot_uuid"`
-		ExpertGroupNameSnapshot   string `json:"expert_group_name_snapshot"`
-		ExpertGroupAvatarSnapshot string `json:"expert_group_avatar_snapshot"`
-		Priority                  string `json:"priority"`
-		PlannedStartDate          string `json:"planned_start_date"`
-		PlannedEndDate            string `json:"planned_end_date"`
+		UUID                      string              `json:"uuid"`
+		Title                     string              `json:"title"`
+		Status                    string              `json:"status"`
+		ExecutionStatus           string              `json:"execution_status"`
+		AgentID                   string              `json:"agent_id"`
+		WorkItemType              string              `json:"work_item_type"`
+		WorkItemID                string              `json:"work_item_id"`
+		CreatedAt                 int64               `json:"created_at"`
+		UpdatedAt                 int64               `json:"updated_at"`
+		ContentSnapshot           string              `json:"content_snapshot"`
+		AgentNameSnapshot         string              `json:"agent_name_snapshot"`
+		ProjectUUID               string              `json:"project_uuid"`
+		ProjectName               string              `json:"project_name"`
+		ProjectIcon               string              `json:"project_icon"`
+		SelectedPipelineUUID      string              `json:"selected_pipeline_uuid"`
+		PipelineSnapshotUUID      string              `json:"pipeline_snapshot_uuid"`
+		PipelineNameSnapshot      string              `json:"pipeline_name_snapshot"`
+		PipelineAvatarSnapshot    string              `json:"pipeline_avatar_snapshot"`
+		ExecutionMode             string              `json:"execution_mode"`
+		ExecutionTool             string              `json:"execution_tool"`
+		SelectedExpertGroupUUID   string              `json:"selected_expert_group_uuid"`
+		ExpertGroupSnapshotUUID   string              `json:"expert_group_snapshot_uuid"`
+		ExpertGroupNameSnapshot   string              `json:"expert_group_name_snapshot"`
+		ExpertGroupAvatarSnapshot string              `json:"expert_group_avatar_snapshot"`
+		Priority                  string              `json:"priority"`
+		PlannedStartDate          string              `json:"planned_start_date"`
+		PlannedEndDate            string              `json:"planned_end_date"`
+		LatestActivity            *taskLatestActivity `json:"latest_activity,omitempty"`
 	}
 
 	items := make([]TaskItem, 0)
@@ -681,11 +777,28 @@ func (h *TasksHandler) listTasks(c *gin.Context) {
 		}
 	}
 
+	activityTargets := make([]taskActivityTarget, 0, len(items))
+	for index := range items {
+		activityTargets = append(activityTargets, taskActivityTarget{
+			UUID: items[index].UUID, Status: items[index].Status, ExecutionMode: items[index].ExecutionMode,
+		})
+	}
+	latestActivities, err := loadLatestTaskActivities(c.Request.Context(), h.taskDB(), activityTargets)
+	if err != nil {
+		i18n.LocalServerError(c, http.StatusInternalServerError, err)
+		return
+	}
+	for index := range items {
+		items[index].LatestActivity = latestActivities[items[index].UUID]
+	}
+
 	var total int64
-	countQuery := `SELECT COUNT(*) FROM gt_tasks`
-	if status != "" {
-		countQuery += ` WHERE status = ?`
-		err = h.taskDB().QueryRow(countQuery, status).Scan(&total)
+	countQuery := `SELECT COUNT(*) FROM gt_tasks t`
+	if len(conditions) > 0 {
+		countQuery += ` WHERE ` + strings.Join(conditions, ` AND `)
+	}
+	if len(args) > 0 {
+		err = h.taskDB().QueryRow(countQuery, args...).Scan(&total)
 	} else {
 		err = h.taskDB().QueryRow(countQuery).Scan(&total)
 	}
@@ -702,8 +815,30 @@ func (h *TasksHandler) listTasks(c *gin.Context) {
 	})
 }
 
+func (h *TasksHandler) getTaskActivity(c *gin.Context) {
+	taskUUID := strings.TrimSpace(c.Param("uuid"))
+	activityID := strings.TrimSpace(c.Param("activity_id"))
+	if taskUUID == "" || activityID == "" {
+		i18n.Error(c, http.StatusNotFound, "localserver_task_not_found", "task_not_found")
+		return
+	}
+	activity, err := loadTaskActivityDetail(c.Request.Context(), h.taskDB(), taskUUID, activityID)
+	if errors.Is(err, sql.ErrNoRows) {
+		i18n.Error(c, http.StatusNotFound, "localserver_activity_not_found", "activity_not_found")
+		return
+	}
+	if err != nil {
+		i18n.LocalServerError(c, http.StatusInternalServerError, err)
+		return
+	}
+	c.JSON(http.StatusOK, activity)
+}
+
 // getTask task details
 func (h *TasksHandler) getTask(c *gin.Context) {
+	if err := h.refreshPendingPipelineExecution(c.Request.Context(), c.Param("uuid")); err != nil {
+		applog.Warn("[LocalServer] 补齐待开始流水线执行配置失败", "task_uuid", c.Param("uuid"), "error", err.Error())
+	}
 	task, err := h.loadTaskDetail(c.Request.Context(), c.Param("uuid"))
 	if err == sql.ErrNoRows {
 		i18n.Error(c, http.StatusNotFound, "localserver_task_not_found", "task_not_found")
@@ -724,10 +859,10 @@ func (h *TasksHandler) loadTaskDetail(ctx context.Context, taskUUID string) (map
 	var executionMode, executionTool string
 	var priority, plannedStartDate, plannedEndDate string
 	var currentStepCompleted bool
-	var createdAt, updatedAt int64
+	var createdAt, updatedAt, workspaceID int64
 	err := h.taskDB().QueryRowContext(ctx,
 		`SELECT t.uuid, t.title, t.content_snapshot, t.status, t.execution_status, t.source_type, t.cloud_agent_id, t.cli_type,
-		        t.work_item_type, t.work_item_id, t.work_dir, t.task_dir, t.current_step_uuid, t.current_step_completed,
+		        t.work_item_type, t.work_item_id, COALESCE(t.workspace_id,0), t.work_dir, t.task_dir, t.current_step_uuid, t.current_step_completed,
 		        t.selected_pipeline_uuid, t.pipeline_snapshot_uuid, t.execution_mode, t.execution_tool, COALESCE(NULLIF(p.name,''), sel.name, ''),
 		        COALESCE(NULLIF(p.avatar,''), sel.avatar, ''), t.selected_expert_group_uuid, t.expert_group_snapshot_uuid,
 		        COALESCE(egs.name, eg.name, ''), COALESCE(egs.avatar, eg.avatar, ''), t.project_uuid, COALESCE(pr.name,''), COALESCE(pr.icon,''),
@@ -738,7 +873,7 @@ func (h *TasksHandler) loadTaskDetail(ctx context.Context, taskUUID string) (map
 		 LEFT JOIN gt_expert_groups eg ON eg.uuid=t.selected_expert_group_uuid
 		 LEFT JOIN gt_projects pr ON pr.uuid=t.project_uuid WHERE t.uuid = ?`,
 		taskUUID).Scan(
-		&uuid, &title, &description, &status, &execStatus, &sourceType, &agentID, &cliType, &workItemType, &workItemID,
+		&uuid, &title, &description, &status, &execStatus, &sourceType, &agentID, &cliType, &workItemType, &workItemID, &workspaceID,
 		&workDir, &taskDir, &currentStepUUID, &currentStepCompleted, &selectedPipelineUUID, &pipelineSnapshotUUID, &executionMode, &executionTool, &pipelineName,
 		&pipelineAvatar, &selectedExpertGroupUUID, &expertGroupSnapshotUUID, &expertGroupName, &expertGroupAvatar,
 		&projectUUID, &projectName, &projectIcon, &priority, &plannedStartDate, &plannedEndDate, &createdAt, &updatedAt,
@@ -766,6 +901,7 @@ func (h *TasksHandler) loadTaskDetail(ctx context.Context, taskUUID string) (map
 		"cli_type":                     cliType,
 		"work_item_type":               workItemType,
 		"work_item_id":                 workItemID,
+		"workspace_id":                 workspaceID,
 		"work_dir":                     workDir,
 		"task_dir":                     taskDir,
 		"current_step_uuid":            currentStepUUID,
@@ -980,10 +1116,8 @@ func (h *TasksHandler) createTask(c *gin.Context) {
 	if executionMode == "" && strings.TrimSpace(body.PipelineUUID) != "" {
 		executionMode = taskruntime.ExecutionModePipeline
 	}
-	if body.CreateNotification && executionMode == "" {
-		executionMode = taskruntime.ExecutionModePipeline
-		executionTool = ""
-	}
+	// create_notification 不再强制 pipeline 模式：无流水线的配置任务（如团队需求
+	// 配置后仅创建不启动）保持无模式，由通用通知块只写创建通知。
 	if err := taskruntime.ValidateExecutionTarget(executionMode, executionTool, body.PipelineUUID, body.ExpertGroupUUID); err != nil {
 		i18n.LocalServerError(c, http.StatusBadRequest, err)
 		return
@@ -1040,12 +1174,21 @@ func (h *TasksHandler) createTask(c *gin.Context) {
 			i18n.LocalServerErrorWith(c, status, buildErr, gin.H{"code": code})
 			return
 		}
-		if validateErr := taskruntime.ValidateSnapshotFull(&preparedSnapshot); validateErr != nil {
+		// 显式 pending 是团队需求配置：先记下流水线，CLI/模型可以稍后在详情里补。
+		// 只有对话页未传状态、创建后立刻启动时，才要求每个 Agent 都已配好 CLI 和模型。
+		startImmediately := strings.TrimSpace(body.Status) == ""
+		validateSnapshot := taskruntime.ValidateSnapshot
+		if startImmediately {
+			validateSnapshot = taskruntime.ValidateSnapshotFull
+		}
+		if validateErr := validateSnapshot(&preparedSnapshot); validateErr != nil {
 			i18n.LocalServerErrorWith(c, http.StatusBadRequest, validateErr, gin.H{"code": "pipeline_incomplete"})
 			return
 		}
 		preparedSnapshotReady = true
-		requestedStatus = "active"
+		if startImmediately {
+			requestedStatus = "active"
+		}
 	}
 	initialStatus := requestedStatus
 	if requestedStatus == "active" && executionMode == "" {
@@ -1067,7 +1210,7 @@ func (h *TasksHandler) createTask(c *gin.Context) {
 		ExecutionMode:           executionMode, ExecutionTool: executionTool, ExecutionModel: executionModel,
 	})
 	if err != nil {
-		i18n.LocalServerError(c, http.StatusBadRequest, err)
+		respondTaskCreateError(c, http.StatusBadRequest, err)
 		return
 	}
 	if err := h.appendDraftTaskAttachments(c.Request.Context(), taskUUID, body.Description, body.Attachments); err != nil {
@@ -1146,6 +1289,22 @@ func (h *TasksHandler) createTask(c *gin.Context) {
 
 		taskDetail, detailErr := h.loadTaskDetail(c.Request.Context(), taskUUID)
 		if detailErr != nil {
+			// 详情加载失败也不能丢创建通知：对话列表按通知分组，缺了这条记录
+			// 新建任务会在列表里不可见（直到首次执行），体验上就是「刚建的任务不见了」。
+			// 兜底直接从任务主表取标题写入基础通知。
+			var fallbackTitle string
+			_ = h.taskDB().QueryRowContext(c.Request.Context(), `SELECT title FROM gt_tasks WHERE uuid = ?`, taskUUID).Scan(&fallbackTitle)
+			if fallbackTitle != "" {
+				if _, insertErr := h.taskDB().ExecContext(c.Request.Context(),
+					`INSERT INTO gt_task_notifications
+					 (uuid, task_uuid, task_step_uuid, step_order, progress_uuid, session_uuid,
+					  terminal_status, title, summary, is_read, is_archived, created_at)
+					 VALUES (?, ?, '', 0, '', ?, 'running', ?, '任务已创建并开始执行', 1, 0, ?)`,
+					uuid.New().String(), taskUUID, uuid.New().String(), fallbackTitle, time.Now().UnixMilli()); insertErr != nil {
+					applog.Warn("[createTask] 兑底写入创建通知失败", "task_uuid", taskUUID, "error", insertErr.Error())
+				}
+			}
+			h.notifyTaskChanged(taskUUID)
 			c.JSON(http.StatusCreated, gin.H{"uuid": taskUUID, "warning": i18n.T(c, "localserver_task_created_warning")})
 			return
 		}
@@ -1179,9 +1338,13 @@ func (h *TasksHandler) createTask(c *gin.Context) {
 		}
 
 		taskDetail["notification"] = buildTaskCreatedNotification(taskUUID, taskTitle, firstStepName, sessionUUID)
+		h.notifyTaskChanged(taskUUID)
 		c.JSON(http.StatusCreated, taskDetail)
 		return
 	}
+	// 任务已落库，需要通知已打开的看板/对话列表重新拉取；缺这一步时新建任务
+	// 只能靠重新挂载视图（切页/刷新）才出现，看起来就像「刚建的任务不见了」。
+	h.notifyTaskChanged(taskUUID)
 	c.JSON(http.StatusCreated, gin.H{"uuid": taskUUID})
 }
 
@@ -1255,6 +1418,14 @@ func (h *TasksHandler) updateTask(c *gin.Context) {
 	c.JSON(http.StatusOK, task)
 }
 
+func respondTaskCreateError(c *gin.Context, defaultStatus int, err error) {
+	if errors.Is(err, taskruntime.ErrTaskTitleAndDescriptionRequired) {
+		i18n.Error(c, http.StatusBadRequest, "localserver_task_title_or_description_required", "task_title_or_description_required")
+		return
+	}
+	i18n.LocalServerError(c, defaultStatus, err)
+}
+
 // buildTaskCreatedNotification builds the "task created and started" notification
 // carried in the create-task response. It is returned in memory only and not persisted.
 func buildTaskCreatedNotification(taskUUID, taskTitle, firstStepName, sessionUUID string) gin.H {
@@ -1324,6 +1495,9 @@ func (h *TasksHandler) updateTaskStatus(c *gin.Context) {
 		if assignErr := h.ensureTaskPipelineAssigned(c.Request.Context(), taskUUID, pipelineAssignmentInput{PipelineUUID: body.PipelineUUID, StepConfigs: body.StepConfigs}); assignErr != nil {
 			i18n.LocalServerError(c, http.StatusConflict, assignErr)
 			return
+		}
+		if refreshErr := h.refreshPendingPipelineExecution(c.Request.Context(), taskUUID); refreshErr != nil {
+			applog.Warn("[LocalServer] 启动前补齐流水线执行配置失败", "task_uuid", taskUUID, "error", refreshErr.Error())
 		}
 		sessionUUID, err := h.startTaskExecution(c.Request.Context(), taskUUID, "")
 		if err != nil {
@@ -1421,6 +1595,9 @@ func (h *TasksHandler) startTask(c *gin.Context) {
 			i18n.LocalServerError(c, http.StatusConflict, err)
 			return
 		}
+		if refreshErr := h.refreshPendingPipelineExecution(c.Request.Context(), c.Param("uuid")); refreshErr != nil {
+			applog.Warn("[LocalServer] 启动前补齐流水线执行配置失败", "task_uuid", c.Param("uuid"), "error", refreshErr.Error())
+		}
 	}
 	sessionUUID, err := h.startTaskExecution(c.Request.Context(), c.Param("uuid"), c.GetHeader("X-Request-ID"))
 	if err != nil {
@@ -1433,6 +1610,68 @@ func (h *TasksHandler) startTask(c *gin.Context) {
 	}
 	h.pushTaskSync(c.Param("uuid"))
 	c.JSON(http.StatusAccepted, gin.H{"session_uuid": sessionUUID})
+}
+
+// refreshPendingPipelineExecution copies CLI and model from the live pipeline
+// onto an unstarted task snapshot. Configuring the pipeline after the task was
+// created must show up in the task detail and be usable when the task starts.
+// Steps that already have an execution config are left unchanged, and a task
+// that has already started keeps its frozen snapshot.
+func (h *TasksHandler) refreshPendingPipelineExecution(ctx context.Context, taskUUID string) error {
+	if h.taskDB() == nil {
+		return nil
+	}
+	var status, currentStep, selectedPipeline, snapshotUUID, executionMode string
+	err := h.taskDB().QueryRowContext(ctx, `SELECT status, current_step_uuid, selected_pipeline_uuid, pipeline_snapshot_uuid, execution_mode
+		FROM gt_tasks WHERE uuid=?`, taskUUID).Scan(&status, &currentStep, &selectedPipeline, &snapshotUUID, &executionMode)
+	if err == sql.ErrNoRows || status == "done" || currentStep != "" || snapshotUUID == "" || strings.TrimSpace(selectedPipeline) == "" {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if executionMode != "" && executionMode != taskruntime.ExecutionModePipeline {
+		return nil
+	}
+	var missing int
+	if err = h.taskDB().QueryRowContext(ctx, `SELECT COUNT(*) FROM gt_task_steps
+		WHERE task_uuid=? AND (TRIM(COALESCE(cli_type,''))='' OR TRIM(COALESCE(model_name,''))='')`, taskUUID).Scan(&missing); err != nil {
+		return err
+	}
+	if missing == 0 {
+		return nil
+	}
+	pipe, err := pipeline.NewService(h.taskDB()).Get(ctx, selectedPipeline)
+	if err != nil {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	for _, step := range pipe.Steps {
+		cliType := strings.TrimSpace(step.CLIType)
+		modelName := strings.TrimSpace(step.ModelName)
+		if cliType == "" && modelName == "" {
+			continue
+		}
+		ids := make([]string, 0, 2)
+		if id := strings.TrimSpace(step.UUID); id != "" {
+			ids = append(ids, id)
+		}
+		if id := strings.TrimSpace(step.CloudStepID); id != "" && id != strings.TrimSpace(step.UUID) {
+			ids = append(ids, id)
+		}
+		for _, id := range ids {
+			if _, err = h.taskDB().ExecContext(ctx, `UPDATE gt_task_steps
+				SET cli_type=CASE WHEN TRIM(COALESCE(cli_type,''))='' AND ?<>'' THEN ? ELSE cli_type END,
+				    model_name=CASE WHEN TRIM(COALESCE(model_name,''))='' AND ?<>'' THEN ? ELSE model_name END,
+				    updated_at=?
+				WHERE task_uuid=? AND (TRIM(COALESCE(cli_type,''))='' OR TRIM(COALESCE(model_name,''))='')
+				  AND (source_step_id=? OR cloud_step_id=? OR local_step_uuid=?)`,
+				cliType, cliType, modelName, modelName, now, taskUUID, id, id, id); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (h *TasksHandler) ensureTaskPipelineAssigned(ctx context.Context, taskUUID string, input pipelineAssignmentInput) error {
@@ -1678,11 +1917,17 @@ func (h *TasksHandler) switchExecutionMode(c *gin.Context, taskUUID string, inpu
 		return
 	}
 	defer switchLease.Close()
+	if !guardRemoteExecutionMutation(c, h.taskDB(), taskUUID) {
+		return
+	}
 	if err = switchLease.StopTaskSessions(ctx); err != nil {
 		applog.Warn("[execution-switch] 终止当前执行失败", "task_uuid", taskUUID, "error", err)
 		i18n.Error(c, http.StatusConflict, "localserver_execution_switch_stop_failed", "execution_switch_stop_failed")
 		return
 	}
+	// 本地切换会删掉当前步骤和会话。先把这一次执行的 Token 与对话封存到云端，
+	// 切换事务再把 execution_index +1，后续推送写入新的云端运行记录。
+	h.flushTaskExecution(ctx, taskUUID)
 
 	if err = switchService.SwitchExecution(ctx, taskUUID, replacement); err != nil {
 		h.writeExecutionModeError(c, err)
@@ -1690,6 +1935,7 @@ func (h *TasksHandler) switchExecutionMode(c *gin.Context, taskUUID string, inpu
 	}
 	if input.Mode == taskruntime.ExecutionModeVibeCoding {
 		if err = h.ensureVibeCodingConversation(ctx, taskUUID, i18n.T(c, "localserver_vibe_coding_assigned_activity"), false); err != nil {
+			h.pushTaskSync(taskUUID)
 			i18n.LocalServerError(c, http.StatusInternalServerError, err)
 			return
 		}
@@ -1708,6 +1954,7 @@ func (h *TasksHandler) switchExecutionMode(c *gin.Context, taskUUID string, inpu
 			response["status"] = "pending"
 			response["start_status"] = "failed"
 			response["start_error"] = i18n.T(c, "localserver_execution_switch_start_failed")
+			h.pushTaskSync(taskUUID)
 			h.notifyTaskChanged(taskUUID)
 			c.JSON(http.StatusOK, response)
 			return
@@ -1720,8 +1967,22 @@ func (h *TasksHandler) switchExecutionMode(c *gin.Context, taskUUID string, inpu
 	if input.Mode == taskruntime.ExecutionModeExpertGroup {
 		response["expert_group_uuid"] = input.ExpertGroupUUID
 	}
+	h.pushTaskSync(taskUUID)
 	h.notifyTaskChanged(taskUUID)
 	c.JSON(http.StatusOK, response)
+}
+
+func (h *TasksHandler) flushTaskExecution(ctx context.Context, taskUUID string) {
+	client := h.taskCloudClient()
+	db := h.taskDB()
+	if client == nil || db == nil {
+		return
+	}
+	flushCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if err := cloudsync.FlushTaskExecution(flushCtx, db, client, taskUUID); err != nil {
+		applog.Warn("[execution-switch] 封存当前执行到云端失败，切换后仍会保留已成功上报的记录", "task_uuid", taskUUID, "error", err)
+	}
 }
 
 func (h *TasksHandler) startTaskExecutionForSwitch(ctx context.Context, taskUUID, requestID string, switchLease *workflow.TaskExecutionSwitch) (string, error) {
@@ -1965,6 +2226,36 @@ func (h *TasksHandler) listTaskProgress(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }
 
+func (h *TasksHandler) listTaskExecutionHistory(c *gin.Context) {
+	items, err := taskruntime.NewService(h.taskDB(), h.taskRoot).ListExecutionHistory(
+		c.Request.Context(), strings.TrimSpace(c.Param("uuid")),
+	)
+	if errors.Is(err, taskruntime.ErrNotFound) {
+		i18n.Error(c, http.StatusNotFound, "localserver_task_not_found", "task_not_found")
+		return
+	}
+	if err != nil {
+		i18n.LocalServerError(c, http.StatusInternalServerError, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (h *TasksHandler) getTaskExecutionHistory(c *gin.Context) {
+	detail, err := taskruntime.NewService(h.taskDB(), h.taskRoot).GetExecutionHistory(
+		c.Request.Context(), strings.TrimSpace(c.Param("uuid")), strings.TrimSpace(c.Param("history_uuid")),
+	)
+	if errors.Is(err, taskruntime.ErrExecutionHistoryNotFound) {
+		i18n.Error(c, http.StatusNotFound, "localserver_execution_history_not_found", "execution_history_not_found")
+		return
+	}
+	if err != nil {
+		i18n.LocalServerError(c, http.StatusInternalServerError, err)
+		return
+	}
+	c.JSON(http.StatusOK, detail)
+}
+
 func (h *TasksHandler) sendExpertMessage(c *gin.Context) {
 	var body struct {
 		Content        string `json:"content"`
@@ -2017,6 +2308,17 @@ func (h *TasksHandler) sendExpertMessage(c *gin.Context) {
 // deleteTask delete task (cascade deletion of sub-table data)
 func (h *TasksHandler) deleteTask(c *gin.Context) {
 	taskUUID := c.Param("uuid")
+	if orchestrator := h.orchestrator(); orchestrator != nil {
+		lease, err := orchestrator.BeginTaskExecutionSwitch(taskUUID)
+		if err != nil {
+			i18n.LocalServerError(c, http.StatusInternalServerError, err)
+			return
+		}
+		defer lease.Close()
+	}
+	if !guardRemoteExecutionMutation(c, h.taskDB(), taskUUID) {
+		return
+	}
 
 	//Refuse to delete tasks with active Sessions to prevent the CLI process from becoming an orphan that cannot be terminated.
 	// If the query fails, an error must be reported directly: swallowing the error will make activeCount always 0, and the protection will be in vain.
@@ -2046,6 +2348,10 @@ func (h *TasksHandler) deleteTask(c *gin.Context) {
 
 	// First delete the subtable that references the task uuid, and then delete the main task table to avoid foreign key constraint errors.
 	if _, err := tx.Exec(`DELETE FROM gt_task_notifications WHERE task_uuid = ?`, taskUUID); err != nil {
+		i18n.LocalServerError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if _, err := tx.Exec(`DELETE FROM gt_task_execution_history WHERE task_uuid = ?`, taskUUID); err != nil {
 		i18n.LocalServerError(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -2102,6 +2408,7 @@ func (h *TasksHandler) deleteTask(c *gin.Context) {
 	}
 
 	h.deleteTaskSync(taskUUID)
+	h.notifyTaskChanged(taskUUID)
 	c.JSON(http.StatusOK, gin.H{"uuid": taskUUID, "deleted": true})
 }
 
@@ -2593,6 +2900,166 @@ func (h *TasksHandler) saveTaskFileContent(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"path": body.Path, "saved": true})
 }
 
+// spillReferenceFile 把超长引用内容唯一命名落盘到任务产出目录（S-IN-08 / S-DA-12 / S-UI-23）。
+// POST /api/local/tasks/:uuid/files/reference  body {file_name, content}
+//
+// 落盘位置为任务根目录（与 GET /tasks/:uuid/files 的根一致），文件名由源文件名去扩展名后
+// 消毒并追加「-引用」后缀；同名时依次尝试 -2 / -3 … 最多 999 次，任何情况下都不覆盖既有产出文件。
+func (h *TasksHandler) spillReferenceFile(c *gin.Context) {
+	taskUUID := c.Param("uuid")
+
+	var body struct {
+		FileName string `json:"file_name"`
+		Content  string `json:"content"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		i18n.LocalServerError(c, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(body.FileName) == "" {
+		i18n.Error(c, http.StatusBadRequest, "localserver_reference_name_required", "localserver_reference_name_required")
+		return
+	}
+	if body.Content == "" {
+		i18n.Error(c, http.StatusBadRequest, "localserver_reference_content_required", "localserver_reference_content_required")
+		return
+	}
+
+	var taskDir string
+	err := h.taskDB().QueryRow(`SELECT task_dir FROM gt_tasks WHERE uuid=?`, taskUUID).Scan(&taskDir)
+	if err == sql.ErrNoRows {
+		i18n.Error(c, http.StatusNotFound, "localserver_task_not_found", "task_not_found")
+		return
+	}
+	if err != nil {
+		i18n.LocalServerError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if strings.TrimSpace(taskDir) == "" {
+		i18n.Error(c, http.StatusNotFound, "localserver_file_path_empty", "task_directory_empty")
+		return
+	}
+
+	// 复用 safeTaskFilePath 的安全边界语义校验任务根目录（符号链接 / 越界）
+	root, err := h.safeTaskFilePath(taskDir, ".")
+	if err != nil {
+		i18n.LocalServerError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	// S-DA-12 / Minor-3: 唯一命名 + O_CREATE|O_EXCL 原子创建，绝不覆盖既有产出文件
+	relativePath, err := createReferenceFile(root, body.FileName, body.Content)
+	if err != nil {
+		if errors.Is(err, errReferenceNameInvalid) {
+			i18n.LocalServerError(c, http.StatusBadRequest, err)
+			return
+		}
+		// 边界 E13 / S-UI-23：命名耗尽或写盘失败必须返回明确错误，前端据此提示，不静默丢失引用内容
+		applog.Warn("引用内容落盘失败", "task_uuid", taskUUID, "file_name", body.FileName, "error", err)
+		i18n.Error(c, http.StatusInternalServerError, "localserver_reference_write_failed", "localserver_reference_write_failed")
+		return
+	}
+	absPath := filepath.Join(root, relativePath)
+
+	c.JSON(http.StatusOK, gin.H{
+		"path":          relativePath,
+		"absolute_path": absPath,
+		"size":          len(body.Content),
+	})
+}
+
+// referenceSpillSuffix 引用落盘文件名的固定后缀（S-DA-12）。
+const referenceSpillSuffix = "-引用"
+
+// referenceSpillMaxAttempts 唯一命名的最大尝试次数（-2 ~ -999）。
+const referenceSpillMaxAttempts = 999
+
+// errReferenceNameExhausted 表示在任务目录内无法为引用内容生成唯一文件名。
+var errReferenceNameExhausted = errors.New("引用落盘文件名尝试次数已耗尽")
+
+// errReferenceNameInvalid 表示引用文件名不合法（空名或消毒后仍含路径分隔符）。
+// 该错误属于入参错误（400），与写盘失败（500）区分，避免客户端误判为可重试的服务端故障。
+var errReferenceNameInvalid = errors.New("引用文件名无效")
+
+// referenceRelName 生成第 attempt 次尝试的落盘文件名（attempt=1 即无后缀序号）。
+// 扩展名保留源文件的 md/txt；其它类型统一落为 .md。文件名经 knowledge.SanitizeFileName 消毒，
+// 因此不会包含路径分隔符。
+func referenceRelName(fileName string, attempt int) (string, error) {
+	trimmed := strings.TrimSpace(fileName)
+	if trimmed == "" {
+		return "", fmt.Errorf("%w: 引用文件名不能为空", errReferenceNameInvalid)
+	}
+	sourceExt := filepath.Ext(trimmed)
+	ext := strings.ToLower(sourceExt)
+	if ext != ".md" && ext != ".txt" {
+		ext = ".md"
+	}
+	base := knowledge.SanitizeFileName(strings.TrimSuffix(trimmed, sourceExt))
+
+	name := base + referenceSpillSuffix + ext
+	if attempt > 1 {
+		name = fmt.Sprintf("%s%s-%d%s", base, referenceSpillSuffix, attempt, ext)
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return "", fmt.Errorf("%w: 文件路径无效: %s", errReferenceNameInvalid, name)
+	}
+	return name, nil
+}
+
+// createReferenceFile 在任务产出目录内以 O_CREATE|O_EXCL 原子创建引用落盘文件（S-DA-12 / Minor-3）。
+//
+// 「判断名字是否可用」与「创建文件」在同一系统调用内完成，因此并发请求不会互相覆盖或互相顶掉：
+// 撞名（ErrExist）时依次尝试 -2 / -3 … 最多 referenceSpillMaxAttempts 次；其它错误立即返回，
+// 不做重试掩盖。写入失败时只删除本次创建出来的空文件，绝不触碰既有产出。返回的是相对 root 的文件名。
+func createReferenceFile(root, fileName, content string) (string, error) {
+	if _, err := referenceRelName(fileName, 1); err != nil {
+		return "", err
+	}
+
+	for attempt := 1; attempt <= referenceSpillMaxAttempts; attempt++ {
+		name, err := referenceRelName(fileName, attempt)
+		if err != nil {
+			return "", err
+		}
+		absPath := filepath.Join(root, name)
+		// S-DA-12: 不覆盖既有产出；越界（理论上消毒后不可能）时视为入参错误
+		if !pathWithinDirectory(root, absPath) {
+			return "", fmt.Errorf("%w: 文件路径不在任务目录范围内", errReferenceNameInvalid)
+		}
+
+		// 探测与写入合并为一次原子创建（Minor-3）：O_EXCL 保证本进程之外的创建者也不会被覆盖。
+		f, err := os.OpenFile(absPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				continue // 名字已被占用（可能是普通文件或目录），换下一个候选名
+			}
+			// Windows 上 O_EXCL 撞目录返回的是「is a directory」而非 ErrExist，
+			// 因此这里额外用 Lstat 判定「名字确实被占用」→ 继续换名；确属写盘失败才返回。
+			if _, statErr := os.Lstat(absPath); statErr == nil {
+				continue
+			}
+			return "", err
+		}
+
+		if _, err := f.WriteString(content); err != nil {
+			_ = f.Close()
+			// 只清理本次创建物；失败也不影响既有文件
+			if rmErr := os.Remove(absPath); rmErr != nil {
+				applog.Warn("引用落盘失败后清理临时文件失败", "path", name, "error", rmErr)
+			}
+			return "", err
+		}
+		if err := f.Close(); err != nil {
+			if rmErr := os.Remove(absPath); rmErr != nil {
+				applog.Warn("引用落盘失败后清理临时文件失败", "path", name, "error", rmErr)
+			}
+			return "", err
+		}
+		return name, nil
+	}
+	return "", errReferenceNameExhausted
+}
+
 // isReadableFileType checks if the file extension is a supported readable type (text or image).
 func isReadableFileType(ext string) bool {
 	return isTextFileType(ext) || isImageFileType(ext)
@@ -3008,7 +3475,7 @@ type taskLaneRow struct {
 func (h *TasksHandler) listTaskLanes(c *gin.Context) {
 	rows, err := h.taskDB().Query(`
 		SELECT l.id, l.lane_key, l.title, l.color, l.sort_order, l.is_hidden,
-		       (SELECT COUNT(*) FROM gt_tasks t WHERE t.status = l.lane_key) AS task_count
+		       (SELECT COUNT(*) FROM gt_tasks t WHERE t.status = l.lane_key AND COALESCE(t.source_type, 'local') <> 'cloud') AS task_count
 		FROM gt_task_lanes l
 		ORDER BY l.sort_order`)
 	if err != nil {

@@ -3,6 +3,7 @@ package main
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -28,7 +29,7 @@ func main() {
 		fatal("-goos and -goarch are required")
 	}
 
-	version := gitValue(*modRoot, []string{"describe", "--tags", "--always", "--dirty"}, "dev")
+	version := desktopPackageVersion(*modRoot)
 	commit := gitValue(*modRoot, []string{"rev-parse", "--short", "HEAD"}, "unknown")
 	buildTime := time.Now().UTC().Format(time.RFC3339)
 
@@ -138,6 +139,23 @@ func gitValue(dir string, args []string, fallback string) string {
 		return fallback
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func desktopPackageVersion(root string) string {
+	data, err := os.ReadFile(filepath.Join(root, "desktop", "package.json"))
+	if err != nil {
+		fatal("read desktop/package.json: %v", err)
+	}
+	var pkg struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		fatal("parse desktop/package.json: %v", err)
+	}
+	if pkg.Version == "" {
+		fatal("desktop/package.json has no version")
+	}
+	return pkg.Version
 }
 
 func fatal(format string, values ...any) {

@@ -8,6 +8,37 @@ export interface TaskBoardLane {
   task_count: number
 }
 
+export type BoardLayoutMode = 'board' | 'list'
+
+export type BoardListActionKind = 'configure' | 'detail'
+
+export interface BoardListAction {
+  kind: BoardListActionKind
+  label: string
+}
+
+export interface BoardListFilter {
+  key: string
+  label: string
+  color: string
+}
+
+export interface BoardListRow {
+  key: string
+  title: string
+  status: string
+  statusLabel: string
+  statusColor: string
+  priority?: string | number
+  executorName: string
+  executorAvatar?: string
+  updatedAt?: number | string
+  activity?: TaskLatestActivity
+  actions: BoardListAction[]
+  taskUuid?: string
+  workItemKey?: string
+}
+
 export interface TaskBoardTask {
   uuid: string
   title: string
@@ -36,6 +67,23 @@ export interface TaskBoardTask {
   priority?: string
   planned_end_date?: number | string
   blocked_reason?: string
+  latest_activity?: TaskLatestActivity
+}
+
+export type TaskActivityStatus = 'running' | 'completed' | 'error'
+export type TaskActivityActor = 'user' | 'tool' | 'system'
+
+export interface TaskLatestActivity {
+  id: string
+  status: TaskActivityStatus
+  actor: TaskActivityActor
+  kind: string
+  preview: string
+  occurred_at: number
+}
+
+export interface TaskActivityDetail extends Omit<TaskLatestActivity, 'preview'> {
+  content: string
 }
 
 export type TaskViewMode = 'drawer' | 'modal' | 'new-window'

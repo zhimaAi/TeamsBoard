@@ -1,8 +1,5 @@
 import type { ConfigProviderProps } from 'ant-design-vue/es/config-provider'
 
-/** Client version number */
-export const CLIENT_VERSION = '0.1.0'
-
 export const THEME_COLORS = {
   primary: '#3157E2',
   primarySoft: '#E5EFFF',

@@ -36,7 +36,7 @@ func (o *Orchestrator) HandleCrashRecovery() error {
 	rows.Close()
 	for _, value := range items {
 		_, _ = o.db.Exec(`UPDATE gt_cli_sessions SET error_message = ? WHERE uuid = ?`, "客户端异常退出，CLI 会话已中断", value.sessionUUID)
-		o.finishSession(value.sessionUUID, value.taskUUID, value.stepKey, SessionStatusInterrupted, "", 0, 0, "")
+		o.finishSession(value.sessionUUID, value.taskUUID, value.stepKey, SessionStatusInterrupted, "", 0, 0, "", nil)
 	}
 	for _, value := range pendingRoutes {
 		var childCount int

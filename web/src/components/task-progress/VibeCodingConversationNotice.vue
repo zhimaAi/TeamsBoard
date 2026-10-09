@@ -28,11 +28,11 @@
         type="button"
         class="notice-open-button"
         :disabled="opening"
-        :aria-label="t('workflows.task.detail.openInCodex')"
+        :aria-label="openLabel || t('workflows.task.detail.openInCodex')"
         @click="emit('open')"
       >
         <ExportOutlined aria-hidden="true" />
-        <span>{{ t('workflows.task.detail.openInCodex') }}</span>
+        <span>{{ openLabel || t('workflows.task.detail.openInCodex') }}</span>
       </button>
     </div>
   </div>
@@ -48,10 +48,12 @@ withDefaults(
     toolName: string
     showOpenButton?: boolean
     opening?: boolean
+    openLabel?: string
   }>(),
   {
     showOpenButton: false,
     opening: false,
+    openLabel: '',
   },
 )
 const emit = defineEmits<{ open: [] }>()

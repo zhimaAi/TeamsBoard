@@ -1,14 +1,23 @@
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import apiClient from '@/api/client'
+import { useAuthStore } from '@/stores/auth'
 import type { ExpertGroup } from '@/types/pipeline'
 
 export const useExpertGroupStore = defineStore('expert-group', () => {
-  const items = ref<ExpertGroup[]>([])
+  const authStore = useAuthStore()
+  const allItems = ref<ExpertGroup[]>([])
   const loading = ref(false)
   const loaded = ref(false)
   const error = ref('')
   let loadPromise: Promise<ExpertGroup[]> | undefined
+
+  // 登出隐藏云端团队专家团（source_type=cloud）；本地私有专家团始终可见。
+  const items = computed(() =>
+    authStore.cloudLoggedIn
+      ? allItems.value
+      : allItems.value.filter((item) => item.source_type !== 'cloud'),
+  )
 
   async function load(force = false) {
     if (loadPromise) return loadPromise
@@ -17,7 +26,7 @@ export const useExpertGroupStore = defineStore('expert-group', () => {
     error.value = ''
     loadPromise = apiClient.get<{ items: ExpertGroup[] }>('/expert-groups')
       .then((result) => {
-        items.value = (result.items || []).map((item) => ({ ...item, members: item.members || [] }))
+        allItems.value = (result.items || []).map((item) => ({ ...item, members: item.members || [] }))
         loaded.value = true
         return items.value
       })
@@ -34,13 +43,13 @@ export const useExpertGroupStore = defineStore('expert-group', () => {
 
   function upsert(item: ExpertGroup) {
     const normalized = { ...item, members: item.members || [] }
-    const index = items.value.findIndex((current) => current.uuid === item.uuid)
-    if (index >= 0) items.value[index] = normalized
-    else items.value.push(normalized)
+    const index = allItems.value.findIndex((current) => current.uuid === item.uuid)
+    if (index >= 0) allItems.value[index] = normalized
+    else allItems.value.push(normalized)
   }
 
   function remove(uuid: string) {
-    items.value = items.value.filter((item) => item.uuid !== uuid)
+    allItems.value = allItems.value.filter((item) => item.uuid !== uuid)
   }
 
   return { items, loading, loaded, error, load, upsert, remove }

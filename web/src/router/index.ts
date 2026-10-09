@@ -10,7 +10,7 @@ const routes: RouteRecordRaw[] = [
       {
         path: '',
         name: 'home',
-        redirect: '/board',
+        redirect: '/tasks/new',
       },
       {
         path: 'workbench',
@@ -69,6 +69,12 @@ const routes: RouteRecordRaw[] = [
         meta: { titleKey: 'routes.taskDetail', title: '任务详情', menu: 'workflows',contentLayout: 'custom', isScroll: false},
       },
       {
+        path: 'tasks/new',
+        name: 'tasks-new',
+        component: () => import('@/views/tasks/TaskNotifications.vue'),
+        meta: { titleKey: 'routes.tasks', title: '新对话', menu: 'tasks', contentLayout: 'custom', isScroll: false },
+      },
+      {
         path: 'tasks',
         name: 'tasks',
         component: () => import('@/views/tasks/TaskNotifications.vue'),
@@ -78,7 +84,7 @@ const routes: RouteRecordRaw[] = [
         path: 'agents',
         name: 'agents',
         component: () => import('@/views/agents/AgentPipelines.vue'),
-        meta: { titleKey: 'routes.agents', title: '专家流水线', menu: 'agents', keepAlive: true },
+        meta: { titleKey: 'routes.agents', title: 'agent员工', menu: 'agents', keepAlive: true },
       },
       {
         path: 'projects',
@@ -99,6 +105,12 @@ const routes: RouteRecordRaw[] = [
         name: 'apis',
         component: () => import('@/views/apis/ApiManage.vue'),
         meta: { titleKey: 'routes.apis', title: '接口管理', menu: 'apis' },
+      },
+      {
+        path: 'remote-channels',
+        name: 'remote-channels',
+        component: () => import('@/views/remote-channels/RemoteChannels.vue'),
+        meta: { titleKey: 'routes.remoteChannels', title: '远程通道', menu: 'remote-channels', contentLayout: 'custom', isScroll: false },
       },
       // Configuration center (first-level menu, use tab to switch sub-items within the page)
       {

@@ -200,6 +200,21 @@
   "auth_account_manager_missing": {
     "other": "Account manager is not initialized"
   },
+  "auth_browser_login_callback_invalid": {
+    "other": "The browser sign-in callback is incomplete"
+  },
+  "auth_browser_login_exchange_failed": {
+    "other": "The browser sign-in credential has expired. Please sign in again"
+  },
+  "auth_browser_login_session_missing": {
+    "other": "The browser sign-in session is missing or already finished. Please start again"
+  },
+  "auth_browser_login_start_failed": {
+    "other": "Could not start browser sign-in. Check your network and retry"
+  },
+  "auth_browser_login_state_required": {
+    "other": "The browser sign-in session id is required"
+  },
   "auth_cloud_url_invalid": {
     "other": "Invalid cloud address"
   },
@@ -343,6 +358,57 @@
   },
   "configcenter_connection_ok": {
     "other": "Connection successful"
+  },
+  "configcenter_workspace_confirm_required": {
+    "other": "Please confirm the relocation notice first"
+  },
+  "configcenter_workspace_desktop_only": {
+    "other": "Only the desktop client can change the workspace"
+  },
+  "configcenter_workspace_dir_changed": {
+    "other": "The target directory was modified before relocation; aborted"
+  },
+  "configcenter_workspace_dir_not_dir": {
+    "other": "The target path is not a directory"
+  },
+  "configcenter_workspace_dir_not_empty": {
+    "other": "The target directory is not empty; choose an empty directory"
+  },
+  "configcenter_workspace_dir_not_exist": {
+    "other": "The target directory does not exist; create it first"
+  },
+  "configcenter_workspace_dir_required": {
+    "other": "Please choose a target directory"
+  },
+  "configcenter_workspace_inside_current": {
+    "other": "The target directory cannot be inside the current workspace"
+  },
+  "configcenter_workspace_invalid": {
+    "other": "Invalid target directory"
+  },
+  "configcenter_workspace_move_failed": {
+    "other": "Failed to relocate the workspace; check the logs"
+  },
+  "configcenter_workspace_not_writable": {
+    "other": "The target directory is not writable"
+  },
+  "configcenter_workspace_resolve_failed": {
+    "other": "Cannot resolve the current workspace; check the disk and retry"
+  },
+  "configcenter_workspace_restart_first": {
+    "other": "Workspace already relocated; restart the client before making more changes"
+  },
+  "configcenter_workspace_root_forbidden": {
+    "other": "The target directory cannot be a drive root"
+  },
+  "configcenter_workspace_same_dir": {
+    "other": "The target directory is the same as the current workspace"
+  },
+  "configcenter_workspace_system_forbidden": {
+    "other": "The target directory cannot be inside a system directory"
+  },
+  "configcenter_workspace_target_has_data": {
+    "other": "A .goteams directory already exists under the target; choose an empty directory to avoid overwriting"
   },
   "configcenter_database_lookup_failed": {
     "other": "Failed to read database configuration"
@@ -551,6 +617,27 @@
   "knowledge_title_required": {
     "other": "title is required"
   },
+  "knowledge_root_not_writable": {
+    "other": "Knowledge root directory is not writable or has no permission, please choose a writable directory"
+  },
+  "knowledge_root_set_failed": {
+    "other": "Failed to save the knowledge root configuration (files were migrated to the new directory); please retry"
+  },
+  "knowledge_root_scan_warning": {
+    "other": "The knowledge root was migrated, but rebuilding the index failed; please refresh or rescan manually"
+  },
+  "knowledge_folder_mode_invalid": {
+    "other": "Invalid delete mode, only keep (keep files) or purge (delete all) is supported"
+  },
+  "knowledge_folder_root_not_deletable": {
+    "other": "Root folder cannot be deleted"
+  },
+  "knowledge_document_ext_invalid": {
+    "other": "Invalid document extension, only md or txt is supported"
+  },
+  "knowledge_scan_failed": {
+    "other": "Failed to scan knowledge directory"
+  },
   "knowledge_trash_document_not_found": {
     "other": "Document not found in trash"
   },
@@ -566,8 +653,23 @@
   "knowledge_uuid_required": {
     "other": "uuid is required"
   },
+  "knowledge_root_mode_invalid": {
+    "other": "Invalid knowledge root switch mode; only \"migrate\" is supported"
+  },
+  "knowledge_root_target_invalid": {
+    "other": "The target directory cannot be the current knowledge root or its subdirectory"
+  },
+  "knowledge_root_migrate_conflict": {
+    "other": "The target directory contains items with the same names; migration was aborted and the previous configuration is unchanged"
+  },
+  "knowledge_root_migrate_failed": {
+    "other": "Failed to migrate the knowledge root; rollback was attempted and the previous configuration is unchanged"
+  },
   "localserver_active_sessions": {
     "other": "The task still has running CLI sessions. Stop them before deleting it."
+  },
+  "localserver_activity_not_found": {
+    "other": "Task activity not found"
   },
   "localserver_agent_upload_local_only": {
     "other": "Only local agents support avatar uploads"
@@ -637,15 +739,21 @@
   "localserver_codex_skill_not_managed": {
     "other": "A teamsboard Skill with the same name is not managed by TeamsBoard. Codex features are disabled to avoid overwriting it."
   },
+  "localserver_vibe_cli_not_found": {
+    "other": "The CLI was not found. Install it and add it to PATH."
+  },
   "localserver_codex_task_prompt": {
-    "description": "SkillPath and TaskUUID identify the managed TeamsBoard task.",
-    "other": "[$teamsboard]({{.SkillPath}})\n\nUse the teamsboard Skill to handle the following local TeamsBoard task.\nTask UUID: {{.TaskUUID}}\nKeep this conversation bound to the task and follow the Skill's per-turn sync rules until the conversation ends."
+    "description": "SkillPath, TaskUUID and Tool identify the managed TeamsBoard task.",
+    "other": "[$teamsboard]({{.SkillPath}})\n\nUse the teamsboard Skill to handle the following local TeamsBoard task.\nTask UUID: {{.TaskUUID}}\nTool: {{.Tool}}\nThe binding request type must equal the tool. For Codex, read thread_id only from the CODEX_THREAD_ID environment variable (on Windows, $env:CODEX_THREAD_ID). That value is supplied by the current session. Do not guess or scan old sessions. When it is empty, skip binding, still report the final reply, and omit thread_id. Claude Code, CodeBuddy and Qoder use the current session ID; Pi uses the session ID shown by /session.\nKeep this conversation bound to the task and follow the Skill's per-turn sync rules until the conversation ends."
   },
   "localserver_current_session_unavailable": {
     "other": "The current agent has no CLI session to continue"
   },
   "localserver_database_not_ready": {
     "other": "The local task database is not ready"
+  },
+  "localserver_execution_history_not_found": {
+    "other": "Execution history not found"
   },
   "localserver_execution_mode_conflict": {
     "other": "The task is already assigned to another execution mode"
@@ -790,6 +898,12 @@
   "localserver_pipeline_required": {
     "other": "Please select a pipeline"
   },
+  "localserver_pipeline_step_content_required": {
+    "other": "Each pipeline agent needs a name and a prompt"
+  },
+  "localserver_pipeline_step_execution_required": {
+    "other": "Configure a CLI and model for each pipeline agent before starting"
+  },
   "localserver_pipeline_upload_local_only": {
     "other": "Only local pipelines support icon uploads"
   },
@@ -811,6 +925,15 @@
   "localserver_readable_file_type": {
     "description": "Unsupported file extension; FileType is the extension.",
     "other": "Files of type {{.FileType}} cannot be read; only text and image files are supported"
+  },
+  "localserver_reference_content_required": {
+    "other": "Reference content is required"
+  },
+  "localserver_reference_name_required": {
+    "other": "Reference file name is required"
+  },
+  "localserver_reference_write_failed": {
+    "other": "Failed to save the referenced content; check disk space and permissions"
   },
   "localserver_request_invalid": {
     "other": "Invalid request"
@@ -852,13 +975,16 @@
     "other": "The task was created, but its details could not be loaded"
   },
   "localserver_task_not_codex": {
-    "other": "The task is not assigned to Vibe Coding / Codex"
+    "other": "The task is not assigned to Vibe Coding"
   },
   "localserver_task_not_found": {
     "other": "Task not found"
   },
   "localserver_task_not_vibe_coding": {
     "other": "The task is not assigned to Vibe Coding"
+  },
+  "localserver_task_title_or_description_required": {
+    "other": "Task title and description cannot both be empty"
   },
   "localserver_task_uuid_invalid": {
     "other": "Invalid task UUID"
@@ -870,10 +996,10 @@
     "other": "Assigned to Vibe Coding"
   },
   "localserver_vibe_session_thread_id_invalid": {
-    "other": "The Codex thread_id must be a valid UUID"
+    "other": "The session ID is invalid"
   },
   "localserver_vibe_session_type_invalid": {
-    "other": "Only Codex session binding is currently supported"
+    "other": "This Vibe Coding tool does not support session binding"
   },
   "localserver_vibe_session_type_mismatch": {
     "other": "The session type does not match the task's Vibe Coding tool"
@@ -898,6 +1024,160 @@
   },
   "localserver_workspace_unavailable": {
     "other": "The task workspace directory is unavailable"
+  },
+  "remote_wechat_busy": {
+    "other": "An execution is in progress for {{.Task}}. Wait for it to finish before sending another message."
+  },
+  "remote_wechat_codex_empty": {
+    "other": "Codex finished this turn without a text result."
+  },
+  "remote_wechat_codex_executable_unavailable": {
+    "other": "The TeamsBoard backend cannot find the Codex command. Check the Codex installation or restart TeamsBoard and try again."
+  },
+  "remote_wechat_codex_failed": {
+    "other": "The Codex turn did not finish successfully. Check the session in the client."
+  },
+  "remote_wechat_codex_input": {
+    "other": "This Codex turn needs your input, and the WeChat channel has requested an interruption. Check the thread in the client."
+  },
+  "remote_wechat_codex_recovery_uncertain": {
+    "other": "The Codex run could not be checked after repeated attempts, so automatic recovery has stopped. Its outcome is uncertain; check the task in the client before continuing."
+  },
+  "remote_wechat_codex_writer_locked": {
+    "other": "Another process currently holds this Codex thread's writer lock, so WeChat cannot send a message. Try again after it releases the thread."
+  },
+  "remote_wechat_config_cli": {
+    "other": "The task execution setup is incomplete. Select a CLI tool in TeamsBoard."
+  },
+  "remote_wechat_config_codex_binding": {
+    "other": "The task execution setup is incomplete. Bind a valid Codex session in TeamsBoard."
+  },
+  "remote_wechat_config_expert": {
+    "other": "The task execution setup is incomplete. Configure an available expert group in TeamsBoard."
+  },
+  "remote_wechat_config_mode": {
+    "other": "The task execution setup is incomplete. Choose a supported execution mode in TeamsBoard."
+  },
+  "remote_wechat_config_model": {
+    "other": "The task execution setup is incomplete. Select a model in TeamsBoard."
+  },
+  "remote_wechat_config_pipeline": {
+    "other": "The task execution setup is incomplete. Complete the pipeline and its step settings in TeamsBoard."
+  },
+  "remote_wechat_config_step": {
+    "other": "The task execution setup is incomplete. Configure an executable task step in TeamsBoard."
+  },
+  "remote_wechat_config_workspace": {
+    "other": "The task execution setup is incomplete. Set an available workspace directory in TeamsBoard."
+  },
+  "remote_wechat_connect_failed": {
+    "other": "Could not connect WeChat. Refresh the QR code and try again."
+  },
+  "remote_wechat_connected": {
+    "other": "WeChat is already connected"
+  },
+  "remote_wechat_disconnect_failed": {
+    "other": "Could not disconnect WeChat"
+  },
+  "remote_wechat_dispatch_failed": {
+    "other": "Could not send the instruction. Try again later or check the client logs."
+  },
+  "remote_wechat_dispatch_uncertain": {
+    "other": "Codex may have started this instruction, but the client did not receive a run ID. Check the session in the client before sending it again."
+  },
+  "remote_wechat_empty_tasks": {
+    "other": "There are no {{.Status}} tasks.\n{{.Help}}"
+  },
+  "remote_wechat_final_empty": {
+    "other": "The task finished without a text result."
+  },
+  "remote_wechat_help": {
+    "other": "Use /task -a for all tasks, /task -r (or /task) for running tasks, /task -f for completed tasks, or /task -e for blocked tasks. Send @ followed by a task ID to select it."
+  },
+  "remote_wechat_id_invalid": {
+    "other": "Invalid task ID.\n{{.Help}}"
+  },
+  "remote_wechat_last_none": {
+    "other": "No final result yet"
+  },
+  "remote_wechat_list": {
+    "one": "You have {{.Count}} {{.Status}} task:\n\n{{.Tasks}}\n\n{{.Help}}",
+    "other": "You have {{.Count}} {{.Status}} tasks:\n\n{{.Tasks}}\n\n{{.Help}}"
+  },
+  "remote_wechat_login_not_found": {
+    "other": "The QR login session was not found"
+  },
+  "remote_wechat_login_not_waiting": {
+    "other": "This QR login session does not need a verification code"
+  },
+  "remote_wechat_message_too_long": {
+    "other": "The message is too long. Shorten it and try again."
+  },
+  "remote_wechat_no_binding": {
+    "other": "Which task would you like to use?\n\n{{.Help}}"
+  },
+  "remote_wechat_params_invalid": {
+    "other": "Unsupported /task option.\n{{.Help}}"
+  },
+  "remote_wechat_processing_failed": {
+    "other": "Could not process the instruction. Check whether it ran in the client before deciding to retry."
+  },
+  "remote_wechat_qr_error": {
+    "other": "Could not get a WeChat login QR code"
+  },
+  "remote_wechat_qr_render_error": {
+    "other": "Could not render the WeChat login QR code"
+  },
+  "remote_wechat_result": {
+    "other": "#{{.ID}} {{.Task}} result for this run:\n\n{{.Result}}\n\nSend @{{.ID}} to select this task and continue."
+  },
+  "remote_wechat_result_unavailable": {
+    "other": "Could not retrieve the result for this run. Check the task execution history in the client."
+  },
+  "remote_wechat_secret_error": {
+    "other": "Could not remove the WeChat credential. Try again."
+  },
+  "remote_wechat_send_ack": {
+    "other": "Switched to {{.Task}} and sent: {{.Message}}\n\nI will send the final result when it is ready. You cannot send another message to this task while it is running. Send @ followed by a task ID to switch tasks."
+  },
+  "remote_wechat_state_error": {
+    "other": "Could not read the WeChat connection state"
+  },
+  "remote_wechat_status_all": {
+    "other": "all"
+  },
+  "remote_wechat_status_blocked": {
+    "other": "blocked"
+  },
+  "remote_wechat_status_done": {
+    "other": "completed"
+  },
+  "remote_wechat_status_running": {
+    "other": "running"
+  },
+  "remote_wechat_switch": {
+    "other": "Switched to {{.Task}}. Its most recent final result is:\n{{.Result}}\n\nYou can now send messages directly to this task. Send @ followed by a task ID to switch tasks."
+  },
+  "remote_wechat_task_deleted_title": {
+    "other": "Deleted task"
+  },
+  "remote_wechat_task_missing": {
+    "other": "The task was not found or has been deleted.\n{{.Help}}"
+  },
+  "remote_wechat_uncertain": {
+    "other": "The client restarted while your last instruction was being processed. Its execution state is uncertain. Check the task in the client before sending it again."
+  },
+  "remote_wechat_uncertain_ack_missing": {
+    "other": "This uncertain run was not found or has already been handled. Refresh the remote channels page."
+  },
+  "remote_wechat_uncertain_action_required": {
+    "other": "A remote instruction's outcome is still uncertain. Review and acknowledge it on the Remote channels page before changing or deleting the task."
+  },
+  "remote_wechat_uncertain_blocked": {
+    "other": "This task has a remote instruction with an uncertain outcome. Review and acknowledge it on the Remote channels page in the client before sending another instruction."
+  },
+  "remote_wechat_verify_invalid": {
+    "other": "Enter the verification code shown in WeChat"
   },
   "taskgit_branch_invalid": {
     "other": "The Git branch is invalid or does not exist"

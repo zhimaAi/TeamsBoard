@@ -8,76 +8,27 @@
       {{ t('workflows.board.listSettings') }}
     </button>
 
-    <ASpin :spinning="loading">
+    <ASpin v-if="props.viewMode === 'board'" :spinning="loading">
       <div class="lanes scrollbar--subtle">
         <section
           v-for="lane in visibleLanes"
           :key="lane.lane_key"
           class="lane"
           :class="{ 'drag-over': dragOverLane === lane.lane_key }"
-          :style="{ '--lane-background': laneBackground(lane) }"
+          :style="{ '--lane-background': laneBackground(lane.lane_key) }"
           @dragover="onDragOver"
           @dragenter="onDragEnter(lane.lane_key)"
           @dragleave="onDragLeave($event, lane.lane_key)"
           @drop="onDrop($event, lane.lane_key)"
         >
-          <div class="lane-header">
-            <span class="lane-title">
-              <span class="lane-label">
-                <span
-                  class="lane-dot"
-                  :style="{ background: lane.color }"
-                />
-                {{ laneTitle(lane) }}
-              </span>
-              <span class="lane-count">{{ grouped[lane.lane_key]?.length || 0 }}</span>
-            </span>
-            <a-popover
-              :open="colorPickerLaneKey === lane.lane_key"
-              trigger="click"
-              placement="bottomRight"
-              :arrow="false"
-              destroy-tooltip-on-hide
-              overlay-class-name="lane-color-popover"
-              @open-change="handleColorPickerOpenChange(lane.lane_key, $event)"
-            >
-              <template #content>
-                <div class="lane-color-panel">
-                  <p>{{ t('workflows.board.changeBackground') }}</p>
-                  <div class="lane-color-presets">
-                    <button
-                      v-for="color in laneBackgroundPresets"
-                      :key="color"
-                      type="button"
-                      class="lane-color-swatch"
-                      :class="{ selected: isLaneBackgroundSelected(lane, color) }"
-                      :style="{ backgroundColor: color }"
-                      :aria-label="t('workflows.board.setBackground', { color })"
-                      :aria-pressed="isLaneBackgroundSelected(lane, color)"
-                      @click="setLaneBackground(lane, color)"
-                    />
-                    <button type="button" class="lane-color-swatch reset-color" :aria-label="t('workflows.board.resetBackground')" @click="resetLaneBackground(lane)">
-                      <img :src="noColorIcon" alt="" />
-                    </button>
-                  </div>
-                  <div class="custom-color-row">
-                    <p>{{ t('workflows.board.customColor') }}</p>
-                    <label class="lane-color-swatch custom-color-swatch" :style="{ backgroundColor: laneBackground(lane) }">
-                      <input
-                        type="color"
-                        :value="laneBackground(lane)"
-                        :aria-label="t('workflows.board.chooseCustomBackground', { lane: laneTitle(lane) })"
-                        @input="setCustomLaneBackground(lane, $event)"
-                      />
-                    </label>
-                  </div>
-                </div>
-              </template>
-              <button type="button" class="lane-color-btn" :aria-label="t('workflows.board.setLaneBackground', { lane: laneTitle(lane) })">
-                <span class="lane-more-icon" aria-hidden="true"><img :src="ellipsisDotIcon" alt="" /><img :src="ellipsisDotIcon" alt="" /><img :src="ellipsisDotIcon" alt="" /></span>
-              </button>
-            </a-popover>
-          </div>
+          <BoardLaneHeader
+            :title="taskLaneTitle(lane)"
+            :color="lane.color"
+            :count="grouped[lane.lane_key]?.length || 0"
+            :background="laneBackground(lane.lane_key)"
+            @set-background="setLaneBackground(lane.lane_key, $event)"
+            @reset-background="resetLaneBackground(lane.lane_key)"
+          />
 
           <div class="task-list scrollbar--subtle">
             <TaskBoardCard
@@ -103,6 +54,16 @@
         </section>
       </div>
     </ASpin>
+
+    <TaskListView
+      v-else
+      :rows="listRows"
+      :filters="listFilters"
+      :loading="loading"
+      row-clickable
+      @action="handleListAction"
+      @row-click="handleListRowClick"
+    />
 
     <TaskBoardSettingsModal
       v-model:open="settingsVisible"
@@ -169,6 +130,7 @@
       :preferred-pipeline-uuid="pendingAssignTask?.selected_pipeline_uuid || ''"
 	  :preferred-expert-group-uuid="pendingAssignTask?.selected_expert_group_uuid || ''"
       :initial-cli-type="pendingAssignTask?.execution_mode === 'cli' ? pendingAssignTask?.execution_tool || '' : ''"
+      :initial-vibe-tool="pendingAssignTask?.execution_mode === 'vibe_coding' ? pendingAssignTask?.execution_tool || '' : ''"
       :initial-model-name="pendingAssignTask?.execution_mode === 'cli' ? pendingAssignTask?.execution_model || '' : ''"
       mode="board"
       @assigned="load"
@@ -183,22 +145,37 @@ import { useRouter } from 'vue-router'
 import apiClient from '@/api/client'
 import AssignExecutionModeModal from '@/components/AssignExecutionModeModal.vue'
 import CreateLocalTaskModal from '@/components/CreateLocalTaskModal.vue'
-import type { TaskBoardLane, TaskBoardTask, TaskViewMode } from '@/types/task-board'
+import { useLaneBackgrounds } from '@/composables/useLaneBackgrounds'
+import { useTaskExecutionDisplay } from '@/composables/useTaskExecutionDisplay'
+import { taskLaneKey, taskLaneTitle } from '@/utils/taskLane'
+import type {
+  BoardLayoutMode,
+  BoardListActionKind,
+  BoardListFilter,
+  BoardListRow,
+  TaskBoardLane,
+  TaskBoardTask,
+  TaskLatestActivity,
+  TaskViewMode,
+} from '@/types/task-board'
 import TaskDetail from '@/views/workflows/TaskDetail.vue'
-import ellipsisDotIcon from '@/assets/ellipsis-dot.svg'
-import noColorIcon from '@/assets/no-color.svg'
+import BoardLaneHeader from './BoardLaneHeader.vue'
 import EmptyIssueIcon from './EmptyIssueIcon.vue'
 import TaskBoardCard from './TaskBoardCard.vue'
+import TaskListView from './TaskListView.vue'
 import TaskBoardSettingsModal from './TaskBoardSettingsModal.vue'
 import { useAppI18n } from '@/i18n'
 import { useLocalWS } from '@/composables/useLocalWebSocket'
 
 const { t } = useAppI18n()
+const props = withDefaults(defineProps<{
+  viewMode?: BoardLayoutMode
+}>(), {
+  viewMode: 'board',
+})
+const { executionName, executionAvatar } = useTaskExecutionDisplay()
 
 const TASK_VIEW_MODE_STORAGE_KEY = 'goteams.workflows.task-view-mode'
-const LANE_BACKGROUND_STORAGE_KEY = 'goteams.workflows.board-lane-backgrounds.v1'
-const DEFAULT_LANE_BACKGROUND = '#fbfbfc'
-const laneBackgroundPresets = ['#fff7cd', '#e7f0ff', '#e8f9ef', '#f1f2f4', DEFAULT_LANE_BACKGROUND]
 
 function readTaskViewMode(): TaskViewMode {
   try {
@@ -210,17 +187,6 @@ function readTaskViewMode(): TaskViewMode {
     // 浏览器禁用本地存储时，仍使用默认查看模式。
   }
   return 'new-window'
-}
-
-function readLaneBackgrounds(): Record<string, string> {
-  try {
-    const storedBackgrounds = JSON.parse(window.localStorage.getItem(LANE_BACKGROUND_STORAGE_KEY) || '{}') as Record<string, unknown>
-    return Object.fromEntries(Object.entries(storedBackgrounds).filter((entry): entry is [string, string] => (
-      typeof entry[1] === 'string' && /^#[0-9a-f]{6}$/i.test(entry[1])
-    )))
-  } catch {
-    return {}
-  }
 }
 
 const router = useRouter()
@@ -239,17 +205,97 @@ const dragOverLane = ref<string | null>(null)
 const createModalOpen = ref(false)
 const createStatus = ref('')
 const settingsVisible = ref(false)
-const colorPickerLaneKey = ref<string | null>(null)
-const laneBackgrounds = ref<Record<string, string>>(readLaneBackgrounds())
+const laneBackgrounds = useLaneBackgrounds()
 
 const visibleLanes = computed(() => allLanes.value.filter((lane) => !lane.is_hidden))
+
+const listFilters = computed<BoardListFilter[]>(() => {
+  const active = visibleLanes.value.find((lane) => taskLaneKey(lane.lane_key) === 'active')
+  const ordered = active
+    ? [active, ...visibleLanes.value.filter((lane) => lane.id !== active.id)]
+    : visibleLanes.value
+  return ordered.map((lane) => ({
+    key: lane.lane_key,
+    label: taskLaneTitle(lane),
+    color: lane.color,
+  }))
+})
+
+const listRows = computed<BoardListRow[]>(() => {
+  const laneByKey = new Map(visibleLanes.value.map((lane) => [lane.lane_key, lane]))
+  return tasks.value.flatMap((task) => {
+    const lane = laneByKey.get(taskLaneKey(task.status))
+    if (!lane) return []
+    const needsConfiguration = !task.execution_mode
+    return [{
+      key: task.uuid,
+      title: task.title,
+      status: lane.lane_key,
+      statusLabel: taskLaneTitle(lane),
+      statusColor: lane.color,
+      priority: task.priority,
+      executorName: executionName(task),
+      executorAvatar: executionAvatar(task),
+      updatedAt: task.updated_at,
+      activity: task.latest_activity,
+      actions: [{
+        kind: needsConfiguration ? 'configure' : 'detail',
+        label: needsConfiguration
+          ? t('teamwork.board.configure')
+          : t('workflows.board.taskDetails'),
+      }],
+      taskUuid: task.uuid,
+    }]
+  })
+})
 
 const grouped = computed(() => Object.fromEntries(
   visibleLanes.value.map((lane) => [
     lane.lane_key,
-    tasks.value.filter((task) => laneStatus(task.status) === lane.lane_key),
+    tasks.value.filter((task) => taskLaneKey(task.status) === lane.lane_key),
   ]),
 ))
+
+interface RealtimeActivityEntry {
+  activity: TaskLatestActivity
+  revision: number
+}
+
+const realtimeActivities = new Map<string, RealtimeActivityEntry>()
+let loadRequestVersion = 0
+
+function eventActivityRef(activity: TaskLatestActivity) {
+  const match = /^event:([^:]+):(\d+)$/.exec(activity.id)
+  if (!match) return undefined
+  return { sessionUuid: match[1], sequence: Number(match[2]) }
+}
+
+function latestActivity(
+  serverActivity: TaskLatestActivity | undefined,
+  realtimeActivity: TaskLatestActivity | undefined,
+) {
+  if (!serverActivity) return realtimeActivity
+  if (!realtimeActivity) return serverActivity
+  if (serverActivity.occurred_at !== realtimeActivity.occurred_at) {
+    return serverActivity.occurred_at > realtimeActivity.occurred_at
+      ? serverActivity
+      : realtimeActivity
+  }
+
+  const serverTerminal = serverActivity.status !== 'running'
+  const realtimeTerminal = realtimeActivity.status !== 'running'
+  if (serverTerminal !== realtimeTerminal) return serverTerminal ? serverActivity : realtimeActivity
+
+  const serverRef = eventActivityRef(serverActivity)
+  const realtimeRef = eventActivityRef(realtimeActivity)
+  if (serverRef && realtimeRef && serverRef.sessionUuid === realtimeRef.sessionUuid) {
+    if (serverRef.sequence !== realtimeRef.sequence) {
+      return serverRef.sequence > realtimeRef.sequence ? serverActivity : realtimeActivity
+    }
+  }
+
+  return realtimeActivity
+}
 
 onMounted(load)
 
@@ -263,43 +309,74 @@ useLocalWS('task.changed', () => {
   })
 })
 
-function laneStatus(status: string) {
-  if (status === 'todo') return 'pending'
-  if (['in_progress', 'running', 'developing', 'developed'].includes(status)) return 'active'
-  if (status === 'completed') return 'done'
-  return status
-}
+useLocalWS('executor.activity', (data: {
+  task_uuid?: string
+  activity_id?: string
+  status?: 'running'
+  actor?: 'tool'
+  kind?: string
+  event_type?: string
+  preview?: string
+  content?: string
+  at?: number
+}) => {
+  const taskUuid = String(data.task_uuid || '').trim()
+  const occurredAt = Number(data.at || 0)
+  const preview = String(data.preview || data.content || '').trim()
+  const kind = data.kind || data.event_type
+  if (!taskUuid || !data.activity_id || !kind || occurredAt <= 0) return
+  const activity: TaskLatestActivity = {
+    id: data.activity_id,
+    status: data.status || 'running',
+    actor: data.actor || 'tool',
+    kind,
+    preview,
+    occurred_at: occurredAt,
+  }
+  const cached = realtimeActivities.get(taskUuid)
+  const cachedActivity = latestActivity(cached?.activity, activity) || activity
+  realtimeActivities.set(taskUuid, {
+    activity: cachedActivity,
+    revision: (cached?.revision || 0) + 1,
+  })
 
-function laneTitle(lane: TaskBoardLane) {
-  const key = lane.lane_key.toLowerCase()
-  if (['pending', 'todo'].includes(key) || ['待开始', '待启动', '待规划'].includes(lane.title)) {
-    return t('workflows.task.status.pending')
-  }
-  if (['active', 'in_progress', 'running', 'developing', 'developed'].includes(key) || lane.title === '进行中') {
-    return t('workflows.task.status.inProgress')
-  }
-  if (['blocked'].includes(key) || lane.title === '已阻塞') {
-    return t('workflows.task.status.blocked')
-  }
-  if (['done', 'completed'].includes(key) || ['已完成', '完成'].includes(lane.title)) {
-    return t('workflows.task.status.done')
-  }
-  return lane.title
-}
+  const task = tasks.value.find((item) => item.uuid === taskUuid)
+  if (task) task.latest_activity = latestActivity(task.latest_activity, activity)
+})
 
 async function load() {
+  const requestVersion = ++loadRequestVersion
+  const revisionSnapshot = new Map(
+    [...realtimeActivities].map(([taskUuid, entry]) => [taskUuid, entry.revision]),
+  )
   loading.value = true
   try {
     const [taskResponse, laneResponse] = await Promise.all([
-      apiClient.get<{ items: TaskBoardTask[] }>('/tasks', { page_size: 100 }),
+      apiClient.get<{ items: TaskBoardTask[] }>('/tasks', { page_size: 100, source_type: 'local' }),
       apiClient.get<{ items: TaskBoardLane[] }>('/tasks/task-lanes'),
     ])
-    tasks.value = taskResponse.items || []
+    if (requestVersion !== loadRequestVersion) return
+
+    // 团队工作配置后生成的任务带 work_item_id。本地任务页只保留本地新建的任务。
+    const loadedTasks = (taskResponse.items || []).filter((task) => !String(task.work_item_id || '').trim())
+    for (const task of loadedTasks) {
+      const realtime = realtimeActivities.get(task.uuid)
+      if (realtime && realtime.revision > (revisionSnapshot.get(task.uuid) || 0)) {
+        task.latest_activity = latestActivity(task.latest_activity, realtime.activity)
+      }
+    }
+    tasks.value = loadedTasks
     allLanes.value = laneResponse.items || []
+    const loadedTaskUuids = new Set(loadedTasks.map((task) => task.uuid))
+    for (const taskUuid of realtimeActivities.keys()) {
+      if (!loadedTaskUuids.has(taskUuid)) realtimeActivities.delete(taskUuid)
+    }
   } catch (error) {
-    message.error(error instanceof Error ? error.message : t('workflows.board.loadFailed'))
+    if (requestVersion === loadRequestVersion) {
+      message.error(error instanceof Error ? error.message : t('workflows.board.loadFailed'))
+    }
   } finally {
-    loading.value = false
+    if (requestVersion === loadRequestVersion) loading.value = false
   }
 }
 
@@ -382,44 +459,22 @@ function openCreate(status?: string) {
   createModalOpen.value = true
 }
 
-function laneBackground(lane: TaskBoardLane) {
-  return laneBackgrounds.value[lane.lane_key] || DEFAULT_LANE_BACKGROUND
+function laneBackground(laneKey: string) {
+  return laneBackgrounds.backgroundOf(laneKey)
 }
 
-function isLaneBackgroundSelected(lane: TaskBoardLane, color: string) {
-  return laneBackground(lane).toLowerCase() === color.toLowerCase()
+function setLaneBackground(laneKey: string, color: string) {
+  laneBackgrounds.set(laneKey, color)
 }
 
-function persistLaneBackgrounds() {
-  try {
-    window.localStorage.setItem(LANE_BACKGROUND_STORAGE_KEY, JSON.stringify(laneBackgrounds.value))
-  } catch {
-    // 本地存储不可用时，仅保留当前页面会话内的颜色设置。
-  }
+function resetLaneBackground(laneKey: string) {
+  laneBackgrounds.reset(laneKey)
 }
 
-function setLaneBackground(lane: TaskBoardLane, color: string) {
-  laneBackgrounds.value = { ...laneBackgrounds.value, [lane.lane_key]: color }
-  persistLaneBackgrounds()
-}
-
-function resetLaneBackground(lane: TaskBoardLane) {
-  const backgrounds = { ...laneBackgrounds.value }
-  delete backgrounds[lane.lane_key]
-  laneBackgrounds.value = backgrounds
-  persistLaneBackgrounds()
-}
-
-function setCustomLaneBackground(lane: TaskBoardLane, event: Event) {
-  setLaneBackground(lane, (event.target as HTMLInputElement).value)
-}
-
-function handleColorPickerOpenChange(laneKey: string, open: boolean) {
-  colorPickerLaneKey.value = open ? laneKey : null
-}
-
-function onTaskCreated(taskUuid: string) {
+function onTaskCreated(taskUuid: string, options?: { openChat?: boolean }) {
   void load()
+  // CLI 任务由创建弹窗跳到对话页。这里再打开任务详情会把那次跳转取消掉。
+  if (options?.openChat) return
   void router.push(`/board/task/${taskUuid}`)
 }
 
@@ -434,6 +489,22 @@ function openTask(taskUuid: string) {
   selectedTaskUuid.value = taskUuid
   if (taskViewMode.value === 'drawer') taskDrawerOpen.value = true
   else taskModalOpen.value = true
+}
+
+function handleListAction(row: BoardListRow, action: BoardListActionKind) {
+  if (!row.taskUuid) return
+  if (action === 'configure') {
+    const task = tasks.value.find((item) => item.uuid === row.taskUuid)
+    if (!task) return
+    pendingAssignTask.value = task
+    assignModalOpen.value = true
+    return
+  }
+  openTask(row.taskUuid)
+}
+
+function handleListRowClick(row: BoardListRow) {
+  if (row.taskUuid) openTask(row.taskUuid)
 }
 
 function closeTaskPreview() {
@@ -506,170 +577,6 @@ function handleSettingsSaved(viewMode: TaskViewMode) {
 .lane.drag-over {
   border-color: #3157e2;
   box-shadow: inset 0 0 0 1px #3157e2;
-}
-
-.lane-header {
-  display: flex;
-  height: 50px;
-  min-height: 50px;
-  box-sizing: border-box;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 12px 11px;
-}
-
-.lane-title {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: #262626;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 22px;
-}
-
-.lane-label {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.lane-dot {
-  width: 9px;
-  min-width: 9px;
-  height: 9px;
-  border-radius: 4.5px;
-}
-
-.lane-count {
-  display: inline-flex;
-  width: 22px;
-  min-width: 22px;
-  height: 22px;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border-radius: 11px;
-  color: #8c95a8;
-  background: #edeff2;
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 14px;
-}
-
-.lane-color-btn {
-  display: inline-flex;
-  width: 24px;
-  height: 24px;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.lane-color-btn:hover,
-.lane-color-btn:focus-visible {
-  outline: none;
-  background: #e4e6eb;
-}
-
-.lane-color-btn:focus-visible,
-.lane-color-swatch:focus-visible {
-  box-shadow: 0 0 0 2px #3157e2;
-}
-
-.lane-more-icon {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.lane-more-icon img {
-  width: 2px;
-  height: 2px;
-}
-
-.lane-color-panel {
-  width: 240px;
-  box-sizing: border-box;
-  padding: 16px;
-}
-
-.lane-color-panel > p,
-.custom-color-row > p {
-  margin: 0;
-  color: #262626;
-  font-size: 14px;
-  line-height: 22px;
-}
-
-.lane-color-presets {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.lane-color-swatch {
-  position: relative;
-  display: inline-flex;
-  width: 28px;
-  height: 28px;
-  box-sizing: border-box;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid #d9d9d9;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.lane-color-swatch.selected::after {
-  position: absolute;
-  inset: -5px;
-  border: 2px solid #3157e2;
-  border-radius: 6px;
-  content: '';
-  pointer-events: none;
-}
-
-.reset-color {
-  padding: 0;
-  background: #fff;
-}
-
-.reset-color img {
-  width: 16px;
-  height: 16px;
-}
-
-.custom-color-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 14px;
-}
-
-.custom-color-swatch {
-  overflow: hidden;
-}
-
-.custom-color-swatch input {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  padding: 0;
-  border: 0;
-  opacity: 0;
-  cursor: pointer;
-}
-
-:global(.lane-color-popover .ant-popover-inner) {
-  padding: 0;
-  border-radius: 16px;
-  box-shadow: 0 6px 30px 5px rgba(0,0,0,.05), 0 16px 24px 2px rgba(0,0,0,.04), 0 8px 10px -5px rgba(0,0,0,.08);
 }
 
 .task-list {

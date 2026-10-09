@@ -335,7 +335,14 @@ func (s *Service) AddStep(ctx context.Context, pipelineUUID string, input StepIn
 
 func (s *Service) UpdateStep(ctx context.Context, pipelineUUID, stepUUID string, input StepInput) (*Step, error) {
 	if _, ok := DefaultStore().Get(pipelineUUID); ok {
-		return DefaultStore().UpdateStep(pipelineUUID, stepUUID, input.CLIType, input.ModelName)
+		step, err := DefaultStore().UpdateStep(pipelineUUID, stepUUID, input.CLIType, input.ModelName)
+		if err != nil {
+			return nil, err
+		}
+		if err = s.saveCloudStepExecution(ctx, pipelineUUID, step.UUID, step.CLIType, step.ModelName); err != nil {
+			return nil, err
+		}
+		return step, nil
 	}
 	var sourceType string
 	err := s.db.QueryRowContext(ctx, `SELECT source_type FROM gt_pipelines WHERE uuid = ?`, pipelineUUID).Scan(&sourceType)
@@ -416,7 +423,23 @@ func (s *Service) BatchUpdateStepExecution(ctx context.Context, pipelineUUID str
 	}
 
 	if _, ok := DefaultStore().Get(pipelineUUID); ok {
-		return DefaultStore().BatchUpdateStepExecution(pipelineUUID, stepUUIDs, input.CLIType, input.ModelName)
+		updated, err := DefaultStore().BatchUpdateStepExecution(pipelineUUID, stepUUIDs, input.CLIType, input.ModelName)
+		if err != nil {
+			return nil, err
+		}
+		selected := make(map[string]struct{}, len(stepUUIDs))
+		for _, stepUUID := range stepUUIDs {
+			selected[stepUUID] = struct{}{}
+		}
+		for _, step := range updated.Steps {
+			if _, keep := selected[step.UUID]; !keep {
+				continue
+			}
+			if err = s.saveCloudStepExecution(ctx, pipelineUUID, step.UUID, step.CLIType, step.ModelName); err != nil {
+				return nil, err
+			}
+		}
+		return updated, nil
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -590,11 +613,71 @@ func CloudSourceKey(baseURL string) string {
 }
 
 // SyncCloud refreshes the in-memory cloud pipeline cache for the supplied cloud
-// endpoint. Cloud pipelines are never persisted to the local database; a restart
-// drops the cache until the next sync. Task execution never reads this cache
-// after making its immutable snapshot.
+// endpoint. The cloud payload does not include the CLI and model chosen on this
+// client, so those values are restored from gt_cloud_pipeline_step_execution.
 func (s *Service) SyncCloud(ctx context.Context, sourceKey string, items []CloudPipeline) ([]Pipeline, error) {
-	return DefaultStore().ReplaceAll(sourceKey, items)
+	pipes, err := DefaultStore().ReplaceAll(sourceKey, items)
+	if err != nil {
+		return nil, err
+	}
+	for i := range pipes {
+		if err = s.overlayCloudStepExecution(ctx, &pipes[i]); err != nil {
+			return nil, err
+		}
+		DefaultStore().ApplyStepExecution(pipes[i].UUID, pipes[i].Steps)
+	}
+	return pipes, nil
+}
+
+func (s *Service) saveCloudStepExecution(ctx context.Context, pipelineUUID, stepUUID, cliType, modelName string) error {
+	if s.db == nil {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO gt_cloud_pipeline_step_execution
+		(pipeline_uuid, step_uuid, cli_type, model_name, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(pipeline_uuid, step_uuid) DO UPDATE SET
+			cli_type=excluded.cli_type, model_name=excluded.model_name, updated_at=excluded.updated_at`,
+		strings.TrimSpace(pipelineUUID), strings.TrimSpace(stepUUID), strings.TrimSpace(cliType), strings.TrimSpace(modelName), time.Now().UnixMilli())
+	if err != nil {
+		return fmt.Errorf("保存云端流水线执行配置失败: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) overlayCloudStepExecution(ctx context.Context, pipe *Pipeline) error {
+	if s.db == nil || pipe == nil {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT step_uuid, cli_type, model_name FROM gt_cloud_pipeline_step_execution WHERE pipeline_uuid=?`, pipe.UUID)
+	if err != nil {
+		return fmt.Errorf("读取云端流水线执行配置失败: %w", err)
+	}
+	defer rows.Close()
+	saved := make(map[string]Step)
+	for rows.Next() {
+		var step Step
+		if err = rows.Scan(&step.UUID, &step.CLIType, &step.ModelName); err != nil {
+			return err
+		}
+		saved[step.UUID] = step
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	for i := range pipe.Steps {
+		step, ok := saved[pipe.Steps[i].UUID]
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(step.CLIType) != "" {
+			pipe.Steps[i].CLIType = step.CLIType
+		}
+		if strings.TrimSpace(step.ModelName) != "" {
+			pipe.Steps[i].ModelName = step.ModelName
+		}
+	}
+	return nil
 }
 
 // CleanupLegacyCloudPipelines removes cloud-sourced pipeline rows left by older

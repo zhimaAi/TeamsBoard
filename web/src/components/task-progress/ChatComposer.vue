@@ -7,13 +7,17 @@
 	</div>
     <DocumentMentionMenu
       ref="documentMentionMenuRef"
-      :open="documentMentionOpen"
+      :open="documentMentionOpen || fragmentPreviewState.open"
+      :mode="fragmentPreviewState.open ? 'preview' : 'picker'"
       :query="documentMentionQuery"
       :items="documentMentionMatches"
       :status="documentMentionStatus"
       :error="documentMentionError"
-      @close="dismissDocumentMention"
+      :knowledge-entry="knowledgeMentionEntry"
+      :fragment="fragmentPreviewState.open ? fragmentPreviewState : null"
+      @close="onDocumentMentionClose"
       @select="insertDocumentReference"
+      @select-knowledge="openKnowledgePicker"
       @retry="reloadDocumentMention"
     />
     <div
@@ -63,7 +67,13 @@
           <span
             v-for="(token, index) in mentionTokens"
             :key="index"
-            :class="{ 'mention-token': token.reference }"
+            :class="{
+              'mention-token': token.reference,
+              'mention-token-invalid': token.invalid,
+              'mention-token-fragment': token.isFragment,
+              'mention-token-clickable': token.isFragment,
+            }"
+            @mousedown="onMentionTokenClick(token)"
           >
             <template v-if="token.reference">
               <svg
@@ -103,27 +113,32 @@
         />
       </div>
       <div class="composer-toolbar">
+        <input
+          ref="fileInputRef"
+          class="attachment-file-input"
+          type="file"
+          multiple
+          tabindex="-1"
+          aria-hidden="true"
+          @change="handleFileSelection"
+        />
         <div class="composer-tools">
-          <input
-            ref="fileInputRef"
-            class="attachment-file-input"
-            type="file"
-            multiple
-            tabindex="-1"
-            aria-hidden="true"
-            @change="handleFileSelection"
+          <!--
+            加号菜单：将「附件 / 产出文档 / 知识库」三个入口收到一起，
+            按钮太多在窄窗口容易挤出换行；点击加号展开下拉菜单再选具体操作。
+            只有整体不可用（fullyDisabled）时才禁用菜单触发器；
+            「产出文档」依赖任务步骤上下文，没有 documentsStep 时自动隐藏；
+            「知识库」「附件」不依赖 taskUuid，可以在没有任务上下文的场景下使用
+            （例如基于知识库和附件创建任务）。
+          -->
+          <ComposerPlusMenu
+            :disabled="fullyDisabled"
+            :show-task-documents="Boolean(documentsStep) && !fullyDisabled"
+            :show-knowledge="true"
+            @attachment="fileInputRef?.click()"
+            @documents="taskDocumentsOpen = true"
+            @knowledge="openKnowledgePicker"
           />
-          <button
-            type="button"
-            class="tool-button"
-            :disabled="fullyDisabled || !taskUuid || !canAsk || isSavingPastedImages"
-            :title="t('workflows.task.progress.uploadFile')"
-            :aria-label="t('workflows.task.progress.uploadFile')"
-            @click="fileInputRef?.click()"
-          >
-            <PaperClipOutlined class="tool-button-icon" />
-            <span>{{ t('workflows.task.progress.attachment') }}</span>
-          </button>
           <button
             v-if="showWorkDirectory"
             type="button"
@@ -191,18 +206,6 @@
               alt=""
             />{{ t('workflows.task.progress.agentPrompt') }}
           </button>
-          <button
-            type="button"
-            class="tool-button"
-			:disabled="fullyDisabled || !taskUuid || !documentsStep"
-            @click="taskDocumentsOpen = true"
-          >
-            <img
-              class="tool-button-icon"
-              :src="documentIcon"
-              alt=""
-            />{{ t('workflows.task.progress.documents') }}
-          </button>
         </div>
         <div class="composer-actions">
           <button
@@ -260,12 +263,22 @@
 	  :current-step="documentsStep"
       @reference="handleDrawerReference"
     />
+    <!-- S-UI-19/20: 两个入口（# 菜单固定项 / 工具按钮）共用的「从资料库中选择」选择器 -->
+    <KnowledgeDocumentPickerModal
+      v-model:open="knowledgePickerOpen"
+      :referenced-uuids="knowledgeReferencedUuids"
+      @confirm="insertKnowledgeReferences"
+    />
+    <p v-if="invalidKnowledgeReferenceNames.length" class="composer-hint composer-hint-error">
+      <span>{{ t('workflows.task.progress.referenceInvalid') }}</span>
+      <span>{{ invalidKnowledgeReferenceNames.join('、') }}</span>
+    </p>
     <p v-if="disabledReason" class="composer-hint">{{ disabledReason }}</p>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   CloseOutlined,
   FolderOpenOutlined,
@@ -276,25 +289,41 @@ import {
 import { message } from 'ant-design-vue'
 import agentIcon from '@/assets/icons/task-composer-agent.svg'
 import cliIcon from '@/assets/icons/task-composer-cli.svg'
-import documentIcon from '@/assets/icons/task-composer-document.svg'
 import { useChatRuntimeDefaults } from '@/composables/useChatRuntimeDefaults'
 import { useCliModelOptions } from '@/composables/useCliModelOptions'
 import { useTaskImageAttachments } from '@/composables/useTaskImageAttachments'
+import {
+  buildKnowledgeFolderPaths,
+  buildKnowledgeReferenceBlock,
+  countCharacters,
+  KNOWLEDGE_REFERENCE_CHAR_LIMIT,
+  loadKnowledgeReferenceContent,
+  spillKnowledgeReference,
+  validateKnowledgeReference,
+} from '@/composables/useKnowledgeReferences'
 import { normalizeClipboardText } from '@/utils/clipboard'
 import type { ChatComposerSubmission } from '@/types/task-attachments'
 import type { PipelineStep } from '@/types/pipeline'
+import type { KnowledgeReferenceDraft, KnowledgeReferenceFragment } from '@/types/knowledge-reference'
+import type { KnowledgeDocument } from '@/api/knowledge'
+import { listKnowledgeFolders } from '@/api/knowledge'
+import { useKnowledgeReferenceStore } from '@/stores/knowledge-reference'
 import AgentPromptDrawer from './AgentPromptDrawer.vue'
 import CliRuntimePicker from './CliRuntimePicker.vue'
+import ComposerPlusMenu from './ComposerPlusMenu.vue'
 import DocumentMentionMenu from './DocumentMentionMenu.vue'
+import KnowledgeDocumentPickerModal from './KnowledgeDocumentPickerModal.vue'
 import TaskDocumentsDrawer from './TaskDocumentsDrawer.vue'
 import GitBranchPicker from './GitBranchPicker.vue'
 import {
   collectMarkerRanges,
   matchDocumentMentionFiles,
   resolveDocumentMentionContext,
+  resolveDocumentMentionPreview,
   splitDocumentMentionTokens,
+  collectDocumentMentionBlocks,
 } from './documentMention'
-import type { DocumentMentionContext, DocumentMentionRange } from './documentMention'
+import type { DocumentMentionContext, DocumentMentionMarker, DocumentMentionRange } from './documentMention'
 import type { MentionableTaskFile, TaskFileNode } from '@/types/task-files'
 import { useTaskFilesIndex } from '@/composables/useTaskFilesIndex'
 import { useAppI18n } from '@/i18n'
@@ -356,6 +385,8 @@ const emit = defineEmits<{
 
 const agentPromptOpen = ref(false)
 const taskDocumentsOpen = ref(false)
+// S-UI-19: 「从资料库中选择」选择器（# 菜单固定项与工具按钮共用）
+const knowledgePickerOpen = ref(false)
 const textareaRef = ref<HTMLTextAreaElement>()
 const inputLayerRef = ref<HTMLElement>()
 const isComposing = ref(false)
@@ -367,6 +398,7 @@ const {
   entry: documentMentionIndex,
   bind: bindDocumentMentionIndex,
   load: loadDocumentMentionIndex,
+  invalidate: invalidateDocumentMentionIndex,
 } = useTaskFilesIndex()
 const expertMentionOpen = ref(false)
 const expertMentionStart = ref(0)
@@ -387,6 +419,18 @@ const branchChanging = ref(false)
  * 不在正文里的登记本身无害 —— 渲染区间按正文匹配，序列化也是按标记替换。
  */
 const documentReferences = ref<DocumentReference[]>([])
+// S-UI-13: 选中片段预览状态（点击输入框里的片段胶囊触发，DocumentMentionMenu 用 'preview' 模式展示）
+const fragmentPreviewState = reactive({
+  open: false,
+  marker: '',
+  name: '',
+  fragmentText: '',
+})
+// S-UI-13: 知识库页「添加给 Agent」投递过来的待发引用（跨页队列，绑定任务后消费）
+const knowledgeReferenceStore = useKnowledgeReferenceStore()
+// 知识库文件夹「位置」路径：引用来源需要，首次用到时按 S-IN-11 复用既有 /knowledge/folders 加载一次
+const knowledgeFolderPaths = ref<Map<number, string>>(new Map())
+let knowledgeFolderPathsPending: Promise<Map<number, string>> | null = null
 const {
   items: attachmentItems,
   remove: removeAttachment,
@@ -476,20 +520,40 @@ const documentMentionMatches = computed(() =>
       )
     : [],
 )
+/** S-UI-18: `#` 菜单里置顶的「知识库」固定项；无任务上下文时不展示（CX-5） */
+const knowledgeMentionEntry = computed(() =>
+  documentMentionAvailable.value ? { label: t('workflows.task.progress.knowledge') } : null,
+)
 /**
  * 输入框渲染层的分段：已登记的引用标记渲染成标签块，其余按原文本显示。
  * 末尾补一个换行，避免文本以换行结尾时渲染层比 textarea 少一行而错位。
+ * S-UI-22：失效的知识库引用额外标记，胶囊呈现为失效态。
  */
-const mentionTokens = computed(() => [
-  ...splitDocumentMentionTokens(
-    props.modelValue,
-    documentReferences.value.map((reference) => ({
-      marker: reference.marker,
-      name: reference.name,
-    })),
-  ),
-  { text: '\n', reference: false },
-])
+const mentionTokens = computed(() => {
+  const invalidMarkers = new Set(
+    documentReferences.value
+      .filter((reference) => reference.kind === 'knowledge' && reference.knowledge.invalid)
+      .map((reference) => reference.marker),
+  )
+  return [
+    ...splitDocumentMentionTokens(
+      props.modelValue,
+      documentReferences.value.map((reference) => ({
+        marker: reference.marker,
+        name: reference.name,
+        // 知识库选中片段 → 渲染层走「· 选」标记；整篇 / 任务产出文件无 fragment → 视为整篇
+        isFragment:
+          reference.kind === 'knowledge' && Boolean(reference.knowledge.fragment),
+        // S-UI-13：悬浮 tooltip 展示选中内容
+        fragmentText:
+          reference.kind === 'knowledge' ? reference.knowledge.fragment?.text : undefined,
+      })),
+    ).map((token) =>
+      token.reference && invalidMarkers.has(token.text) ? { ...token, invalid: true } : token,
+    ),
+    { text: '\n', reference: false },
+  ]
+})
 
 /**
  * 已登记引用标记在正文里的区间。内联胶囊在视觉上是一个整体，
@@ -503,16 +567,67 @@ const documentReferenceRanges = computed(() =>
 )
 
 /**
- * 命中才弹出：候选为空直接隐藏，不再出现「空列表 + 无匹配提示」的中间态。
- * 加载中同样不弹出，等索引就绪后由这个 computed 自动补上，避免先弹后收的闪烁。
+ * 手输 / 粘贴时能命中并自动登记的「可选文件」候选池。
+ *
+ * 与 documentReferences 的差别：
+ * - documentReferences：当前正文里已经登记的引用，是渲染胶囊的唯一依据。
+ * - mentionCandidateMap：手输 `#[name]` 时能查到「这一类文件可能可被引用」的来源，
+ *   用于把恰好写对的 #[xxx] 自动补登到 documentReferences。
+ *
+ * 与正文无关：删除正文里的 marker 不会清空候选池；候选池只随数据源更新而变化。
+ *
+ * 多源汇聚（按 name 去重，重复时优先用更早出现的源）：
+ * 1. 任务产出文件（documentMentionIndex.files）：`/tasks/{uuid}/files` 接口返回的
+ *    全量可引用文件，是用户手输引用最常见的命中目标。
+ * 2. 知识库已登记引用（documentReferences 中 kind='knowledge' 的项）：覆盖
+ *    知识库选择器 / 投递草稿已落地的文档，复制粘贴已渲染好的 #[xxx] 也能命中。
+ *
+ * 为什么不包含附件：附件在文档中以 `![](attachments/...)` 的 Markdown 形式存在，
+ * 不走 #[xxx] 引用体系；手输 `#[image.png]` 命中后没有对应的渲染分支，会造成
+ * 「显示像引用、提交时无法替换」的旧问题。如果未来要支持「手输文件名引用附件」，
+ * 再扩展 kind='attachment' 渲染分支并把 attachmentItems 接入候选池。
  */
-const documentMentionOpen = computed(() => {
-  if (!documentMentionContext.value || !documentMentionAvailable.value) return false
-  const status = documentMentionIndex.value.status
-  if (status === 'error') return true
-  if (status !== 'ready') return false
-  return documentMentionMatches.value.length > 0
+interface MentionCandidate {
+  kind: 'task-file' | 'knowledge'
+  name: string
+  /** task-file 的本地绝对路径；提交时替换 marker 使用 */
+  absolutePath?: string
+  /** 知识库引用对应的文档 UUID；提交时按 UUID 取文档全文 / 选中片段 */
+  uuid?: string
+}
+
+const mentionCandidateMap = computed<Map<string, MentionCandidate>>(() => {
+  const map = new Map<string, MentionCandidate>()
+  // 1. 任务产出文件：候选池的主要来源
+  for (const file of documentMentionIndex.value.files) {
+    if (map.has(file.name)) continue
+    map.set(file.name, {
+      kind: 'task-file',
+      name: file.name,
+      absolutePath: file.absolute_path,
+    })
+  }
+  // 2. 知识库已登记引用：覆盖"复制粘贴已渲染的 #[xxx]"场景；首次手输仍需走选择器
+  for (const reference of documentReferences.value) {
+    if (reference.kind !== 'knowledge') continue
+    if (map.has(reference.name)) continue
+    map.set(reference.name, {
+      kind: 'knowledge',
+      name: reference.name,
+      uuid: reference.knowledge.uuid,
+    })
+  }
+  return map
 })
+
+/**
+ * S-UI-18 / CF-6：只要存在 # 上下文且有任务上下文就打开——「知识库」是固定项，
+ * 与文件候选是否命中无关；候选为空、索引加载中或加载失败时菜单也要能出现
+ * （加载态与失败态由菜单内部呈现）。
+ */
+const documentMentionOpen = computed(
+  () => Boolean(documentMentionContext.value) && documentMentionAvailable.value,
+)
 let runtimeRequestId = 0
 let documentReferenceSequence = 0
 const COMPOSER_MIN_HEIGHT = 66
@@ -560,12 +675,57 @@ function selectExpertMember(member: { uuid: string; name: string; avatar?: strin
   })
 }
 
-interface DocumentReference {
+/**
+ * 已登记的引用。两种来源共用同一套标记（`#[名称]`）与胶囊渲染，
+ * 但提交语义不同：产出文件替换为绝对路径（现状不变），知识库引用替换为引用块（S-UI-22）。
+ */
+interface TaskFileDocumentReference {
   id: string
   marker: string
   name: string
+  kind: 'task-file'
   absolutePath: string
 }
+
+interface KnowledgeDocumentReference {
+  id: string
+  marker: string
+  name: string
+  kind: 'knowledge'
+  knowledge: {
+    uuid: string
+    filePath: string
+    folderPath: string
+    /** 选中片段；null 表示整篇文档 */
+    fragment: KnowledgeReferenceFragment | null
+    /** 提交前校验失败（文档已入回收站或磁盘文件不存在）→ 胶囊显示「引用失效」 */
+    invalid: boolean
+  }
+}
+
+type DocumentReference = TaskFileDocumentReference | KnowledgeDocumentReference
+
+/** 已在输入框里引用过的知识库文档（选择器据此标注「已引用」并禁用重复勾选） */
+const knowledgeReferencedUuids = computed(() =>
+  documentReferences.value
+    .filter((reference) => reference.kind === 'knowledge')
+    .map((reference) => reference.knowledge.uuid),
+)
+
+/** S-UI-22: 失效引用必须可见，不静默丢弃 */
+const invalidKnowledgeReferenceNames = computed(() =>
+  documentReferences.value
+    .filter((reference) => reference.kind === 'knowledge' && reference.knowledge.invalid)
+    .map((reference) => reference.name),
+)
+
+/**
+ * S-UI-13: 选中片段标记的「· 选」后缀文案。
+ * 同步写入 marker 文本与渲染层标签，因此必须放在 setup 作用域内通过 computed 取值；
+ * 切换语言时 marker 不会自动重建，但现有引用已经带的是历史语言的角标，
+ * 重新插入 / 失效校验刷新后会自然走新语言，属于可接受行为。
+ */
+const fragmentBadge = computed(() => t('workflows.task.progress.referenceFragmentBadge'))
 
 function resizeTextarea() {
   const textarea = textareaRef.value
@@ -578,7 +738,110 @@ function resizeTextarea() {
   syncInputLayer()
 }
 
-/** 渲染层与 textarea 是两层独立元素，滚动位置只能靠 JS 手动对齐 */
+/**
+ * 点中胶囊时立即开 fragment preview 的兜底入口。
+ *
+ * 现在挂在 @mousedown 上，没有 .prevent：让 textarea 正常拿到 mousedown 的默认行为
+ * （focus + caret 设置），避免过去 .prevent 让 caret 在视觉上「消失」。
+ *
+ * 主路径仍交给 syncFragmentPreview（基于 caret 的 selectionchange 同步）：
+ * - 点中胶囊：onMentionTokenClick 立即开 preview → 同一帧 click → selectionchange
+ *   → caret 落进 marker 区间 → sync 命中并保持开。
+ * - 点中 capsule 外的位置：handleDocumentMousedown 命中 tokenEl，跳过同步；click 再把
+ *   caret 挪到 marker 外 → sync 不命中 → preview 关闭。
+ *
+ * 数据源统一走 documentReferences，不再走 token.fragmentText 那条之前丢字段的链路。
+ */
+function onMentionTokenClick(token: {
+  reference?: boolean
+  text?: string
+}) {
+  // 兜底路径（与 selectionchange 主路径并存）：这里只打开 preview，不修改正文档、不动 selection，
+  // 把"点中哪个 marker"的语义直接落到 fragmentPreviewState。
+  if (!token.reference) return
+  if (!token.text) return
+  const reference = documentReferences.value.find((ref) => ref.marker === token.text)
+  if (!reference || reference.kind !== 'knowledge' || !reference.knowledge.fragment) return
+  // 同步设置 preview 状态；下一步 click + selectionchange 会再次调用 syncFragmentPreview，
+  // 若 caret 仍落在这个 marker 内则保持开，否则会被 sync 关掉——这是正确的最终态。
+  fragmentPreviewState.open = true
+  fragmentPreviewState.marker = reference.marker
+  fragmentPreviewState.fragmentText = reference.knowledge.fragment.text ?? ''
+  fragmentPreviewState.name = reference.name
+}
+
+/**
+ * 片段预览的单一开关决策点：所有会让 caret 变化的事件（click、keydown、input、paste、
+ * 程序设置 selection）汇集到 selectionchange，最终都调用这一个函数判断 preview
+ * 是开还是关。
+ *
+ * 决策规则：
+ * 1. picker 开着时强制关 preview（互斥），避免 picker 被 preview 遮挡。
+ * 2. caret 落在某个已登记的 #[...] 区间内时开 preview；
+ *    区间外则关，确保点击/方向键/退格等所有路径都能立刻关闭。
+ * 3. 用户点 marker 之外的位置时立刻关，不再依赖 mousedown 路径。
+ *
+ * 数据源统一走 documentReferences，避免之前 token.fragmentText 在渲染层链路里丢字段的问题。
+ */
+function syncFragmentPreview() {
+  // 互斥：picker 开着就强制关 preview，让位给 picker
+  if (documentMentionContext.value) {
+    if (fragmentPreviewState.open) closeFragmentPreview()
+    return
+  }
+  const textarea = textareaRef.value
+  if (!textarea) {
+    if (fragmentPreviewState.open) closeFragmentPreview()
+    return
+  }
+  const selectionStart = textarea.selectionStart ?? 0
+  const selectionEnd = textarea.selectionEnd ?? selectionStart
+  const markers: DocumentMentionMarker[] = documentReferences.value.map((entry) => ({
+    marker: entry.marker,
+    name: entry.name,
+    isFragment: entry.kind === 'knowledge' && Boolean(entry.knowledge.fragment),
+    fragmentText:
+      entry.kind === 'knowledge' ? entry.knowledge.fragment?.text : undefined,
+  }))
+  // 用区间交集判断：单点 caret 落在 marker 内，以及整段 marker 被选中，两种情形都命中
+  const matched = resolveDocumentMentionPreview(
+    textarea.value,
+    selectionStart,
+    selectionEnd,
+    markers,
+  )
+  if (!matched) {
+    if (fragmentPreviewState.open) closeFragmentPreview()
+    return
+  }
+  const reference = documentReferences.value.find(
+    (ref) => ref.marker === matched.marker.marker,
+  )
+  if (!reference || reference.kind !== 'knowledge' || !reference.knowledge.fragment) {
+    if (fragmentPreviewState.open) closeFragmentPreview()
+    return
+  }
+  // 命中同一个 marker：不重复写状态；命中不同 marker：刷新为最新内容
+  if (
+    fragmentPreviewState.open &&
+    fragmentPreviewState.marker === reference.marker
+  ) {
+    return
+  }
+  fragmentPreviewState.open = true
+  fragmentPreviewState.marker = reference.marker
+  // 即便 fragment.text 为空也允许开预览：弹窗内部自行处理空片段的展示。
+  fragmentPreviewState.fragmentText = reference.knowledge.fragment.text ?? ''
+  fragmentPreviewState.name = reference.name
+}
+
+function closeFragmentPreview() {
+  fragmentPreviewState.open = false
+  fragmentPreviewState.marker = ''
+  fragmentPreviewState.fragmentText = ''
+  fragmentPreviewState.name = ''
+}
+
 function syncInputLayer() {
   const textarea = textareaRef.value
   const layer = inputLayerRef.value
@@ -762,10 +1025,70 @@ function refreshDocumentMention(event: MouseEvent) {
   void loadDocumentMentionIndex()
 }
 
+/**
+ * 把正文中「恰好写对」的 #[xxx] 块自动登记到引用表。
+ *
+ * 渲染层（splitDocumentMentionTokens）只把 documentReferences 里登记过的 marker
+ * 当成标签块。手输、粘贴、外部 v-model 注入的 #[xxx] 在被登记之前都只能以纯文本显示，
+ * 这会让用户误以为没引用成功、或不得不每次都走候选菜单。
+ *
+ * 对账策略：
+ * - 数据源统一走 mentionCandidateMap（产出文件 + 知识库已登记），与 documentReferences 解耦。
+ * - 跳过 documentReferences 已登记的 marker（候选菜单、工具按钮、知识库投递已经覆盖这条路径）。
+ * - 从块文本里剥掉去重序号后缀（`· N`），按 name 在候选池里精确查找命中项。
+ * - 仅 kind='task-file' 的命中项按 buildDocumentMarker 的去重规则补登；kind='knowledge'
+ *   的命中项已存在于 documentReferences（粘贴时 documentReferences 里已有对应登记），
+ *   跳过以避免重复。
+ * - 不动正文档、不改写光标，避免输入抖动；marker 文本与生成结果不一致就跳过登记。
+ * - 命中不到（拼写错误、文件已删、首次手输未走选择器的知识库文档）按用户意图保持原文本。
+ */
+function reconcileDocumentReferences(value: string) {
+  if (!documentMentionAvailable.value) return
+  const candidates = mentionCandidateMap.value
+  if (!candidates.size) return
+  const blocks = collectDocumentMentionBlocks(value)
+  if (!blocks.length) return
+  // 已登记 marker 集合：候选菜单路径已先 push 再 insertMarkerText，本轮不会再登记同一项；
+  // 加上本轮内的 push，避免同一段文本在两次 handleInput 间被重复登记。
+  const registeredMarkers = new Set(
+    documentReferences.value.map((reference) => reference.marker),
+  )
+  for (const block of blocks) {
+    const marker = value.slice(block.start, block.end)
+    if (!marker || registeredMarkers.has(marker)) continue
+    // 把 #[label] 剥成 label，再去掉去重序号后缀（任务文件 marker 最多带"· N"）。
+    const label = marker.startsWith('#[') && marker.endsWith(']')
+      ? marker.slice(2, -1)
+      : marker
+    const name = label.replace(/\s·\s\d+$/, '').trim()
+    if (!name) continue
+    const candidate = candidates.get(name)
+    if (!candidate) continue
+    // knowledge 命中项的 marker 必已登记在 documentReferences（候选池来自它），
+    // 上面的 registeredMarkers 检查已覆盖；这里再显式跳过 task-file 之外的 kind
+    if (candidate.kind !== 'task-file') continue
+    // 与候选菜单共用 buildDocumentMarker：fragment=null 表示任务产出文件，按 task-file 去重
+    const registered = buildDocumentMarker(name, null, fragmentBadge.value)
+    // marker 文本必须与生成结果完全一致才登记，避免悄悄改写用户已写的 marker
+    if (registered !== marker) continue
+    documentReferences.value.push({
+      id: crypto.randomUUID(),
+      marker: registered,
+      name,
+      kind: 'task-file',
+      absolutePath: candidate.absolutePath || '',
+    })
+    registeredMarkers.add(registered)
+  }
+}
+
 function handleComposerClick(event: MouseEvent) {
   refreshDocumentMention(event)
   // 先算引用上下文再整块选中：点进胶囊内部时菜单本来也不该弹（查询词以 [ 开头）
   selectMarkerAtCaret()
+  // preview 的开关统一交给 syncFragmentPreview：
+  // click 之后 selectionchange 会带着最新的 caret 再调一次同步，
+  // 这里不再手动触发，避免出现"click 开、mousedown 关"的来回闪烁。
 }
 
 /** 用户按 Esc 主动收起：记住当前上下文，改词之前不再自动弹出 */
@@ -773,6 +1096,20 @@ function dismissDocumentMention() {
   const context = documentMentionContext.value
   documentMentionDismissed.value = context ? { ...context } : null
   documentMentionContext.value = null
+}
+
+/**
+ * DocumentMentionMenu 关闭事件统一入口：
+ * - 预览模式：清空 fragmentPreviewState
+ * - 选文件/选知识库：触发的是 picker 自身流程，不会走到这里；
+ *   主动关闭走 dismissDocumentMention 保留用户的"不再弹出"意图。
+ */
+function onDocumentMentionClose() {
+  if (fragmentPreviewState.open) {
+    closeFragmentPreview()
+    return
+  }
+  dismissDocumentMention()
 }
 
 /** 选中引用、提交消息或切换会话时的程序性关闭，不抑制后续弹出 */
@@ -785,41 +1122,51 @@ function reloadDocumentMention() {
   void loadDocumentMentionIndex(true)
 }
 
-/** 在指定位置插入 #[名称] 引用标记 */
-function insertDocumentMarker(file: MentionableTaskFile, context: DocumentMentionContext) {
+/** S-UI-13: 知识库选中片段 vs 整篇文档的标记差异：
+ * 选中片段在标签后追加「· 选」肉眼可见地与整篇区分；
+ * 整篇与选中片段各自单独计数去重序号，互不干扰。
+ * 标记文本是 textarea 文本与渲染层共用的字面量，加字符只会让两者等宽同步变宽，
+ * 不会破坏渲染层与 textarea 的逐字对齐约束。
+ */
+function buildDocumentMarker(
+  name: string,
+  fragment: KnowledgeReferenceFragment | null,
+  fragmentBadge: string,
+) {
+  const hasFragment = Boolean(fragment)
+  const duplicateCount = documentReferences.value.filter(
+    (reference) =>
+      reference.name === name &&
+      (reference.kind !== 'knowledge' ||
+        Boolean(reference.knowledge.fragment) === hasFragment),
+  ).length
+  const label = hasFragment ? `${name} · ${fragmentBadge}` : name
+  return duplicateCount ? `#[${label} · ${++documentReferenceSequence}]` : `#[${label}]`
+}
+
+/**
+ * 把标记文本插入到指定区间，并补足前后的空格分隔。
+ *
+ * 优先走原生插入命令。直接改 value（emit 新值让 Vue 回写）会清空原生撤销栈，
+ * 用户刚插进来的引用就没法 Cmd+Z 撤掉，连插入之前的输入历史也会一起丢掉。
+ * 命令触发的原生 input 事件会走 handleInput，正文与渲染层随之更新。
+ */
+function insertMarkerText(marker: string, start: number, end: number) {
   const textarea = textareaRef.value
   const value = textarea?.value ?? props.modelValue
-  const start = Math.min(context.start, value.length)
-  const end = Math.min(Math.max(context.end, start), value.length)
-  const before = value.slice(0, start)
-  const after = value.slice(end)
+  const insertStart = Math.min(start, value.length)
+  const insertEnd = Math.min(Math.max(end, insertStart), value.length)
+  const before = value.slice(0, insertStart)
+  const after = value.slice(insertEnd)
   const leadingSpace = before && !/\s$/.test(before) ? ' ' : ''
   const trailingSpace = after && !/^\s/.test(after) ? ' ' : ''
-  const name = file.name || basenameFromPath(file.absolute_path)
-  const duplicateCount = documentReferences.value.filter(
-    (reference) => reference.name === name,
-  ).length
-  const marker = duplicateCount ? `#[${name} · ${++documentReferenceSequence}]` : `#[${name}]`
   const inserted = `${leadingSpace}${marker}${trailingSpace}`
-  const caret = start + inserted.length
-  // 先登记引用再落笔：登记表只追加，插入过程中的 input 事件不会把它冲掉
-  documentReferences.value.push({
-    id: crypto.randomUUID(),
-    marker,
-    name,
-    absolutePath: file.absolute_path,
-  })
-  closeDocumentMention()
+  const caret = insertStart + inserted.length
 
-  /*
-   * 优先走原生插入命令。直接改 value（emit 新值让 Vue 回写）会清空原生撤销栈，
-   * 用户刚插进来的引用就没法 Cmd+Z 撤掉，连插入之前的输入历史也会一起丢掉。
-   * 命令触发的原生 input 事件会走 handleInput，正文与渲染层随之更新。
-   */
   let applied = false
   if (textarea) {
     textarea.focus()
-    textarea.setSelectionRange(start, end)
+    textarea.setSelectionRange(insertStart, insertEnd)
     applied = document.execCommand('insertText', false, inserted)
   }
   if (!applied) {
@@ -834,10 +1181,141 @@ function insertDocumentMarker(file: MentionableTaskFile, context: DocumentMentio
   })
 }
 
+/** 在指定位置插入 #[名称] 引用标记（Agent 产出文件，行为与原实现逐项一致） */
+function insertDocumentMarker(file: MentionableTaskFile, context: DocumentMentionContext) {
+  const name = file.name || basenameFromPath(file.absolute_path)
+  const marker = buildDocumentMarker(name, null, fragmentBadge.value)
+  // 先登记引用再落笔：登记表只追加，插入过程中的 input 事件不会把它冲掉
+  documentReferences.value.push({
+    id: crypto.randomUUID(),
+    marker,
+    name,
+    kind: 'task-file',
+    absolutePath: file.absolute_path,
+  })
+  closeDocumentMention()
+  insertMarkerText(marker, context.start, context.end)
+}
+
 function insertDocumentReference(file: MentionableTaskFile) {
   const context = documentMentionContext.value
   if (!context) return
   insertDocumentMarker(file, context)
+}
+
+/** 知识库文档的真实文件名：优先用 file_path 末段，取不到时退化用标题 + 扩展名 */
+function knowledgeDocumentName(document: KnowledgeDocument) {
+  return basenameFromPath(document.file_path) || `${document.title}.${document.ext}`
+}
+
+/** 按需加载一次文件夹路径表；失败时退化为默认文件夹，不阻断引用（位置仅用于提示来源） */
+async function loadKnowledgeFolderPaths() {
+  if (knowledgeFolderPaths.value.size) return knowledgeFolderPaths.value
+  if (!knowledgeFolderPathsPending) {
+    knowledgeFolderPathsPending = listKnowledgeFolders()
+      .then((result) => buildKnowledgeFolderPaths(result.data || []))
+      .catch(() => new Map<number, string>())
+      .then((paths) => {
+        knowledgeFolderPaths.value = paths
+        knowledgeFolderPathsPending = null
+        return paths
+      })
+  }
+  return knowledgeFolderPathsPending
+}
+
+/** 引用来源路径：根为 teamsboard；folder_id = 0（默认文件夹）直接取默认文件夹名 */
+function knowledgeFolderPath(folderID: number) {
+  // S-IN-12：folder_id = 0 或 map 中查不到时 folder 为空字符串，拼接时跳过空段
+  // 避免出现「知识库 /  / 文件名」的痕迹；map 自身已按 S-IN-11 跳过空 name 节点。
+  const folder = folderID ? knowledgeFolderPaths.value.get(folderID) || '' : ''
+  const segments = [t('knowledge.breadcrumbRoot'), folder].filter((segment) => segment.trim())
+  return segments.join(' / ')
+}
+
+/** S-UI-19/20：选择器确认后把选中文档逐个登记为知识库引用并插入标记 */
+async function insertKnowledgeReferences(documents: KnowledgeDocument[]) {
+  if (!documents.length) return
+  // 位置路径用于引用来源，取不到时退化为默认文件夹，不阻断插入
+  await loadKnowledgeFolderPaths()
+  const markers: string[] = []
+  for (const document of documents) {
+    const name = knowledgeDocumentName(document)
+    const marker = buildDocumentMarker(name, null, fragmentBadge.value)
+    documentReferences.value.push({
+      id: crypto.randomUUID(),
+      marker,
+      name,
+      kind: 'knowledge',
+      knowledge: {
+        uuid: document.uuid,
+        filePath: document.file_path,
+        // 整篇引用（fragment = null）：提交时取文档全文
+        folderPath: knowledgeFolderPath(document.folder_id),
+        fragment: null,
+        invalid: false,
+      },
+    })
+    markers.push(marker)
+  }
+  closeDocumentMention()
+  knowledgePickerOpen.value = false
+  const textarea = textareaRef.value
+  const value = textarea?.value ?? props.modelValue
+  const caret = textarea
+    ? Math.min(textarea.selectionStart ?? value.length, value.length)
+    : value.length
+  // 从 textarea 当前状态重新解析 # 块位置，覆盖用户从 # 菜单和工具按钮两条路径。
+  // - 用户从 # 菜单进入：光标停在 #query 末尾，context 非空 → 替换 #query。
+  // - 用户从工具按钮进入：光标在任意位置，context 多半为 null → 走 caret 路径直接插入。
+  // 走实时计算而不是缓存，避免模态框打开期间 documentMentionContext 已被清空
+  // 或者用户编辑了正文导致缓存与实际值不一致时丢替换。
+  const context = resolveDocumentMentionContext(value, caret)
+  if (context) {
+    insertMarkerText(markers.join(' '), context.start, context.end)
+    return
+  }
+  // 一次插入全部标记：逐条插入会读到尚未回写的正文，导致位置错乱
+  insertMarkerText(markers.join(' '), caret, caret)
+}
+
+/** S-UI-18/19：`#` 菜单固定项与工具按钮共用的入口 */
+function openKnowledgePicker() {
+  closeDocumentMention()
+  knowledgePickerOpen.value = true
+}
+
+/**
+ * S-UI-13: 消费知识库页投递的待发引用。
+ * 草稿不带任务上下文（知识库页没有任务可选），绑定任一任务后即被消费；
+ * 无 taskUuid（新会话）时不消费，留在队列里等有任务上下文的输入框。
+ */
+function applyKnowledgeReferenceDraft(draft: KnowledgeReferenceDraft) {
+  const marker = buildDocumentMarker(draft.title, draft.fragment, fragmentBadge.value)
+  documentReferences.value.push({
+    id: crypto.randomUUID(),
+    marker,
+    name: draft.title,
+    kind: 'knowledge',
+    knowledge: {
+      uuid: draft.uuid,
+      filePath: draft.filePath,
+      folderPath: draft.folderPath,
+      fragment: draft.fragment,
+      invalid: false,
+    },
+  })
+  return draft.instruction ? `${marker} ${draft.instruction}` : marker
+}
+
+function consumeKnowledgeReferenceDrafts() {
+  if (!props.taskUuid) return
+  const drafts = knowledgeReferenceStore.consume()
+  if (!drafts.length) return
+  const additions = drafts.map(applyKnowledgeReferenceDraft)
+  const base = props.modelValue.trim()
+  emit('update:modelValue', [base, ...additions].filter(Boolean).join('\n'))
+  void nextTick(resizeTextarea)
 }
 
 /** 产出文档抽屉里点「引用到输入框」：不依赖 # 触发上下文，直接在光标处插入标记 */
@@ -951,9 +1429,91 @@ function attachmentMarkdownText() {
 function serializeDocumentReferences(value: string) {
   let serialized = value
   for (const reference of documentReferences.value) {
+    // S-UI-21: 产出文件引用行为不变（标记 → 绝对路径）；知识库引用由下方的引用块流程处理
+    if (reference.kind !== 'task-file') continue
     serialized = serialized.split(reference.marker).join(reference.absolutePath)
   }
   return serialized
+}
+
+/**
+ * S-UI-23 / S-IN-08：按长度选择引用形态。
+ * 未超限时直接内联正文；超限时落盘为产出文件并把说明写回 `display_content`（可感知，不静默改形态）。
+ * 落盘失败返回 null，由调用方中止提交（边界 E13）。
+ */
+async function buildKnowledgeReferenceContent(
+  reference: KnowledgeDocumentReference,
+  content: string,
+): Promise<{ content: string; displayNote: string; spilledPath: string } | null> {
+  const block = {
+    name: reference.name,
+    folderPath: reference.knowledge.folderPath,
+    fragment: reference.knowledge.fragment,
+    content,
+  }
+  if (countCharacters(content) <= KNOWLEDGE_REFERENCE_CHAR_LIMIT) {
+    return { content: buildKnowledgeReferenceBlock(block), displayNote: '', spilledPath: '' }
+  }
+  try {
+    const spilled = await spillKnowledgeReference(props.taskUuid, reference.name, content)
+    // 新产出文件立刻进入「产出文档」索引，用户切到抽屉即可看到
+    invalidateDocumentMentionIndex(props.taskUuid)
+    return {
+      content: buildKnowledgeReferenceBlock({ ...block, spilledPath: spilled.absolute_path }),
+      displayNote: t('workflows.task.progress.referenceSpillNote', {
+        name: reference.name,
+        path: spilled.path,
+      }),
+      spilledPath: spilled.path,
+    }
+  } catch (error) {
+    message.error(
+      error instanceof Error && error.message
+        ? error.message
+        : t('workflows.task.progress.referenceSpillFailed'),
+    )
+    return null
+  }
+}
+
+/**
+ * S-UI-22 / S-IN-09：提交前处理知识库引用。
+ *
+ * 1. 有效性校验（`/knowledge/documents/:uuid/path` 的 `exists`）；失效则标记胶囊失效并中止提交；
+ * 2. 取内容（选中片段 / 整篇）；
+ * 3. 超过 10000 码点则落盘为产出文件；
+ * 4. 用引用块替换正文中的 `#[标记]`。
+ *
+ * 返回 null 表示提交已中止（已给出提示）。
+ */
+async function resolveKnowledgeReferences(promptContent: string, displayContent: string) {
+  let content = promptContent
+  let display = displayContent
+  for (const reference of documentReferences.value) {
+    if (reference.kind !== 'knowledge') continue
+    if (!content.includes(reference.marker)) continue
+
+    const validation = await validateKnowledgeReference(reference.knowledge.uuid)
+    if (!validation.valid) {
+      reference.knowledge.invalid = true
+      message.warning(t('workflows.task.progress.referenceInvalid'))
+      return null
+    }
+    reference.knowledge.invalid = false
+
+    const text = await loadKnowledgeReferenceContent(
+      reference.knowledge.uuid,
+      reference.knowledge.fragment,
+    )
+    const resolved = await buildKnowledgeReferenceContent(reference, text)
+    if (!resolved) return null
+    content = content.split(reference.marker).join(resolved.content)
+    if (resolved.displayNote) {
+      display = `${display}\n\n${resolved.displayNote}`
+      message.info(t('workflows.task.progress.referenceSpilled', { path: resolved.spilledPath }))
+    }
+  }
+  return { content, displayContent: display }
 }
 
 async function handleSubmit() {
@@ -967,12 +1527,15 @@ async function handleSubmit() {
       (props.startMode ? t('workflows.task.progress.startProcessing') : '')
     // 附件在正文里没有位置，统一追加到消息末尾；只有附件、没有文字时附件就是全部内容
     const displayContent = [rawContent, attachmentMarkdownText()].filter(Boolean).join('\n')
+    // 产出文件引用先按现状序列化；知识库引用再做校验 / 取值 / 落盘 / 替换
     const promptContent = serializeDocumentReferences(displayContent)
+    const resolved = await resolveKnowledgeReferences(promptContent, displayContent)
+    if (!resolved) return
     emit('submit', {
-      content: promptContent.trim(),
-      // 聊天记录展示原始输入（保留 #[名称] 标记）：绝对路径只有 CLI 需要，
+      content: resolved.content.trim(),
+      // 聊天记录展示原始输入（保留 #[名称] 标记）：绝对路径与引用正文只有 CLI 需要，
       // 不应该跟着落进会话记录里
-      display_content: displayContent.trim(),
+      display_content: resolved.displayContent.trim(),
       config: {
         cli_type: selectedCliType.value,
         model_name: selectedModelName.value,
@@ -1079,19 +1642,56 @@ function handleModelChange(model: string) {
   cliPickerOpen.value = false
 }
 
-onMounted(resizeTextarea)
+onMounted(() => {
+  resizeTextarea()
+  // S-UI-13: 点击组件外部任意位置关闭片段预览。
+  // mousedown 比 click 更早触发，能在用户聚焦其他控件之前完成关闭，避免闪烁。
+  document.addEventListener('mousedown', handleDocumentMousedown)
+  // selectionchange 是浏览器原生的「光标 / 选区变化」事件，覆盖 click、方向键、
+  // Backspace、Delete、粘贴、程序设置 selection 等所有路径，
+  // 是 preview 跟随 caret 同步最稳的事件源。
+  document.addEventListener('selectionchange', syncFragmentPreview)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('mousedown', handleDocumentMousedown)
+  document.removeEventListener('selectionchange', syncFragmentPreview)
+})
+
+/**
+ * S-UI-13: 点击组件外部任意位置关闭片段预览。
+ * mousedown 比 click 更早触发，能在用户聚焦其他控件之前完成关闭，避免闪烁。
+ *
+ * 决策不再直接 closeFragmentPreview，而是交给 syncFragmentPreview 统一处理：
+ * - 点中菜单 / 片段胶囊：跳过同步，由 click + selectionchange 自然决定（caret 落在 marker 上则保持开）。
+ * - 其他位置：触发一次同步，未命中 marker 即关。
+ * 这避免了过去「mousedown 关、click 又开」在点中 marker 时造成的闪烁。
+ */
+function handleDocumentMousedown(event: MouseEvent) {
+  const target = event.target as Node | null
+  if (!target) return
+  const menu = documentMentionMenuRef.value?.menuRef
+  const tokenEl = (target as Element).closest?.('.mention-token-clickable')
+  if (menu?.contains(target)) return
+  if (tokenEl) return
+  // 其他位置：提前同步一次，click 期间 selectionchange 再调一次，最终态由 sync 决定
+  syncFragmentPreview()
+}
 
 watch(
   runtimeIdentity,
   () => {
     closeDocumentMention()
     cliPickerOpen.value = false
+    knowledgePickerOpen.value = false
     documentReferences.value = []
     clearImageAttachments()
     bindDocumentMentionIndex(props.taskUuid)
     // 挂载即预取产出文件列表，用户真正输入 # 时过滤已退化为内存计算
     void loadDocumentMentionIndex()
     void initialiseRuntimeConfig()
+    // S-UI-13: 消费知识库页投递过来的待发引用
+    consumeKnowledgeReferenceDrafts()
   },
   { immediate: true },
 )
@@ -1112,7 +1712,32 @@ watch(
 
 watch(
   () => props.modelValue,
-  () => nextTick(resizeTextarea),
+  (value) => {
+    nextTick(resizeTextarea)
+    // 同步清理「既不在 value 里、候选池里也没同名」的引用：
+    // - 不在 value 里但候选池里仍有同名（task-file 还在 files / knowledge 引用由选择器管理），
+    //   用户大概率是剪切走 marker 准备粘贴到别处，保留登记让粘贴后能直接渲染。
+    //   渲染层按 marker 字符串在 value 里精确匹配，保留登记即可命中，无需再次 push。
+    // - 真正无效的（文件被删后 files 刷新、candidate 清空）会被剪掉。
+    const candidates = mentionCandidateMap.value
+    const stillValidIds = new Set(
+      documentReferences.value
+        .filter((r) => value.includes(r.marker) || candidates.has(r.name))
+        .map((r) => r.id),
+    )
+    if (stillValidIds.size < documentReferences.value.length) {
+      documentReferences.value = documentReferences.value.filter((r) => stillValidIds.has(r.id))
+    }
+    // 手输 / 粘贴 / 外部 v-model 修改：把恰好写对的 #[xxx] 补登到引用表（首次出现的 marker）
+    reconcileDocumentReferences(value)
+  },
+)
+
+// 候选池（产出文件 / 知识库已登记）任一变化时立即对账，捕捉 files 加载完成、
+// 知识库选择器新登记等场景下的「恰好写对」的 #[xxx]
+watch(
+  () => mentionCandidateMap.value,
+  () => reconcileDocumentReferences(props.modelValue),
 )
 
 function resetAfterSubmit() {
@@ -1238,6 +1863,26 @@ defineExpose({ resetAfterSubmit })
 .mention-token-syntax {
   color: transparent;
   -webkit-text-stroke: 0;
+}
+/*
+ * S-UI-13: 知识库选中片段引用，与整篇文档引用做视觉区分。
+ * 同样只允许改颜色与背景：Primary Soft #E5EFFF + 主蓝文字，提示「这里是选中片段而非整篇」。
+ * 标记里的「· 选」文本由 marker 字面量承载，肉眼也可识别，这里再用颜色强化。
+ * 必须先于 .mention-token-invalid 声明——提交校验失败时无效态会盖在片段态之上，
+ * 避免把「已失效的选中片段」错误地显示为主蓝配色。
+ */
+.mention-token-fragment {
+  color: #3157e2;
+  background: #e5efff;
+}
+/*
+ * S-UI-22: 失效的知识库引用（文档已删除 / 磁盘文件不存在）。
+ * 只允许改颜色与背景——字号、字重、内边距、字距都会破坏渲染层与 textarea 的逐字对齐。
+ * 必须先于 .mention-token-invalid 之外的最后一道声明，确保无效态视觉优先。
+ */
+.mention-token-invalid {
+  color: #fb363f;
+  background: #fef2f2;
 }
 .mention-token-label {
   white-space: pre;
@@ -1522,6 +2167,12 @@ defineExpose({ resetAfterSubmit })
   color: #9ca3af;
   line-height: 1.4;
 }
+/* S-UI-22: 失效引用提示常驻显示，直到引用被删除或重新提交成功 */
+.composer-hint-error {
+  display: flex;
+  gap: 6px;
+  color: #fb363f;
+}
 @media (max-width: 720px) {
   .chat-composer {
     padding: 8px 16px 16px;
@@ -1546,5 +2197,16 @@ defineExpose({ resetAfterSubmit })
   .tool-button {
     transition: none;
   }
+}
+
+/*
+ * S-UI-13: 选中片段胶囊增加点击态。
+ * 父容器 .composer-input-layer 整体 pointer-events: none 防止遮挡 textarea，
+ * 片段胶囊需要单独重新开启 pointer-events 才能响应 click 打开预览；
+ * pointer 改为手指，提示可点击查看选中内容。
+ */
+.mention-token-clickable {
+  pointer-events: auto;
+  cursor: pointer;
 }
 </style>

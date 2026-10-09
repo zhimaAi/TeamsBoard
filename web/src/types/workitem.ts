@@ -25,5 +25,10 @@ export interface MyWorkItem extends CloudWorkItem {
   is_done?: boolean | number | string
   created_at?: number | string
   updated_at?: number | string
+  /** 云端工作项创建人姓名，「我的工作」列表原样带回。 */
+  creator_name?: string
+  /** 已绑定本地任务时由后端回填的任务 uuid；未绑定的工作项没有该字段。 */
   local_task_uuid?: string
+  /** 已绑定本地任务时由后端回填的任务状态，取值同看板泳道：pending/active/done/blocked。 */
+  local_task_status?: string
 }

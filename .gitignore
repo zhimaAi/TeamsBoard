@@ -6,9 +6,20 @@ dist/
 *test.cjs
 signing.config.json
 *test.go
-
+# 思考过程产生的文档
+think_docs/
 # JetBrains
 .idea
 
 # Vditor 运行时资源由 Vite 从 node_modules 复制，不入库
 web/public/vditor/
+
+# workflow-one 本地工作流运行态（sqlite/runs/attachments），不入库
+.workflow-one/
+
+docs/teamflow/
+
+logs/
+.cursor/
+node_modules/
+

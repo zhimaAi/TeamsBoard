@@ -44,6 +44,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.db,
 		r.fsys,
 		goose.WithTableName(r.tableName),
+		goose.WithAllowOutofOrder(true),
 	)
 	if err != nil {
 		return fmt.Errorf("创建 goose provider 失败: %w", err)

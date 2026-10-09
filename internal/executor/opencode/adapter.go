@@ -255,7 +255,7 @@ func (d *Decoder) decodeToolCall(event opencodeEvent, emit executor.EmitFunc) {
 			input = executor.RawText(event.Input)
 		}
 		callContent := strings.TrimSpace(name + " " + input)
-		if event.Part.State != nil && event.Part.State.Status == "completed" && event.Part.State.Output != "" {
+		if event.Part.State != nil && event.Part.State.Status == "completed" {
 			// 同一事件既携带调用也携带已完成的结果，两者都输出
 			if callContent != "" {
 				d.ToolCall(callID, callContent, "", emit)
@@ -263,10 +263,10 @@ func (d *Decoder) decodeToolCall(event opencodeEvent, emit executor.EmitFunc) {
 			d.ToolResult(callID, event.Part.State.Output, emit)
 			return
 		}
+		d.ToolCall(callID, callContent, "", emit)
 		if event.Part.State != nil && event.Part.State.Error != "" {
 			d.ToolResult(callID, "错误: "+event.Part.State.Error, emit)
 		}
-		d.ToolCall(callID, callContent, "", emit)
 		return
 	}
 

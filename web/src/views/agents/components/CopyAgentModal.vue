@@ -2,71 +2,89 @@
   <a-modal
     :open="open"
     class="copy-agent-modal"
-    :title="t('agents.chooseAgent')"
+    :title="multiple ? t('agents.chooseAgents') : t('agents.chooseAgent')"
     width="730px"
     centered
-    @update:open="emit('update:open', $event)"
+    :closable="!saving"
+    :mask-closable="!saving"
+    :keyboard="!saving"
+    @update:open="handleOpenChange"
   >
-
-	<a-spin :spinning="loading">
-	<div class="agent-list">
-      <div class="agent-list__scroll">
-        <button
-          v-for="(step, index) in sourceSteps"
-          :key="`${step.pipelineName}-${step.uuid}`"
-          type="button"
-          class="agent-list-item"
-          :class="{ active: selectedStepUuid === step.uuid }"
-          :aria-pressed="selectedStepUuid === step.uuid"
-          @click="selectedStepUuid = step.uuid"
-        >
-          <img
-            class="agent-list-item__avatar"
-            :src="resolveAgentAvatar(step, index)"
-            alt=""
-          />
-          <span class="agent-list-item__content">
-            <strong>{{ step.name }}</strong>
-            <span class="agent-list-item__description">
-              {{ step.description || step.prompt || step.prompt_snapshot || t('agents.agentNoDescription') }}
-            </span>
-            <span class="agent-list-item__tags">
-              <span>
-                <CodeOutlined />
-                {{ step.cli_type || t('agents.cliNotConfigured') }}
-              </span>
-              <span>
-                <DeploymentUnitOutlined />
-                {{ stepModel(step) || t('agents.modelNotConfigured') }}
-              </span>
-            </span>
-          </span>
-          <span
-            v-if="selectedStepUuid === step.uuid"
-            class="agent-list-item__selected"
-            aria-hidden="true"
+    <a-spin :spinning="loading">
+      <div class="agent-list">
+        <div class="agent-list__scroll">
+          <button
+            v-for="(step, index) in deduplicatedSourceSteps"
+            :key="`${step.pipelineName}-${step.uuid}`"
+            type="button"
+            class="agent-list-item"
+            :disabled="saving"
+            :class="{ active: selectedStepUuids.includes(step.uuid) }"
+            :aria-pressed="selectedStepUuids.includes(step.uuid)"
+            @click="toggleSelection(step.uuid)"
           >
-            <CheckOutlined />
-          </span>
-        </button>
+            <img
+              class="agent-list-item__avatar"
+              :src="resolveAgentAvatar(step, index)"
+              alt=""
+            />
+            <span class="agent-list-item__content">
+              <strong>{{ step.name }}</strong>
+              <span class="agent-list-item__description">
+                {{
+                  step.description ||
+                  step.prompt ||
+                  step.prompt_snapshot ||
+                  t('agents.agentNoDescription')
+                }}
+              </span>
+              <span class="agent-list-item__tags">
+                <span>
+                  <CodeOutlined />
+                  {{ step.cli_type || t('agents.cliNotConfigured') }}
+                </span>
+                <span>
+                  <DeploymentUnitOutlined />
+                  {{ stepModel(step) || t('agents.modelNotConfigured') }}
+                </span>
+              </span>
+            </span>
+            <span
+              v-if="selectedStepUuids.includes(step.uuid)"
+              class="agent-list-item__selected"
+              aria-hidden="true"
+            >
+              <CheckOutlined />
+            </span>
+          </button>
 
-        <a-empty
-          v-if="sourceSteps.length === 0"
-          :description="t('agents.noAgentsToChoose')"
-        />
+          <a-empty
+            v-if="deduplicatedSourceSteps.length === 0"
+            :description="t('agents.noAgentsToChoose')"
+          />
+        </div>
       </div>
-    </div>
-	</a-spin>
+    </a-spin>
 
     <template #footer>
       <div class="copy-agent-modal__footer-actions">
-        <a-button @click="emit('update:open', false)">{{ t('agents.cancel') }}</a-button>
+        <a-button
+          :disabled="saving"
+          @click="emit('update:open', false)"
+        >
+          {{ t('agents.cancel') }}
+        </a-button>
         <a-button
           type="primary"
           :loading="saving"
+          :disabled="!selectedStepUuids.length"
           @click="copy"
         >
-          {{ t('agents.confirm') }}
+          {{
+            multiple
+              ? t('agents.confirmSelected', { count: selectedStepUuids.length })
+              : t('agents.confirm')
+          }}
         </a-button>
       </div>
     </template>
@@ -74,12 +92,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { CheckOutlined, CodeOutlined, DeploymentUnitOutlined } from '@ant-design/icons-vue'
 import apiClient from '@/api/client'
 import type { ExpertMember, PipelineStep } from '@/types/pipeline'
 import {
+  deduplicateReusableSteps,
   resolveAgentAvatar,
   type ReusablePipelineStep,
   type StepInput,
@@ -91,11 +110,12 @@ const { t } = useAppI18n()
 
 const props = defineProps<{
   open: boolean
-	targetPipelineUuid?: string
-	targetExpertGroupUuid?: string
-	expertRole?: 'leader' | 'member'
+  targetPipelineUuid?: string
+  targetExpertGroupUuid?: string
+  expertRole?: 'leader' | 'member'
   sourceSteps: ReusablePipelineStep[]
-	loading?: boolean
+  loading?: boolean
+  multiple?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -104,47 +124,94 @@ const emit = defineEmits<{
 }>()
 
 const saving = ref(false)
-const selectedStepUuid = ref('')
+const selectedStepUuids = ref<string[]>([])
+const deduplicatedSourceSteps = computed(() => deduplicateReusableSteps(props.sourceSteps))
+
+interface CopyTarget {
+  pipelineUuid: string
+  expertGroupUuid: string
+  expertRole: 'leader' | 'member'
+}
 
 watch(
   () => props.open,
   (open) => {
-    if (open) selectedStepUuid.value = ''
+    if (open) selectedStepUuids.value = []
   },
 )
 
+function toggleSelection(stepUuid: string) {
+  if (saving.value) return
+  if (!props.multiple) {
+    selectedStepUuids.value = [stepUuid]
+    return
+  }
+  selectedStepUuids.value = selectedStepUuids.value.includes(stepUuid)
+    ? selectedStepUuids.value.filter((uuid) => uuid !== stepUuid)
+    : [...selectedStepUuids.value, stepUuid]
+}
+
+function handleOpenChange(open: boolean) {
+  if (saving.value && !open) return
+  emit('update:open', open)
+}
+
+async function copySource(source: ReusablePipelineStep, target: CopyTarget) {
+  const payload: StepInput = {
+    name: source.name,
+    description: source.description || '',
+    avatar: source.avatar || '',
+    prompt: source.prompt || source.prompt_snapshot || '',
+    cli_type: source.cli_type || '',
+    model_name: stepModel(source),
+  }
+  if (target.expertGroupUuid) {
+    await apiClient.post<ExpertMember>(
+      `/expert-groups/${encodeURIComponent(target.expertGroupUuid)}/members`,
+      { ...payload, member_role: target.expertRole },
+    )
+    return
+  }
+  await apiClient.post<PipelineStep>(
+    `/pipelines/${encodeURIComponent(target.pipelineUuid)}/steps`,
+    payload,
+  )
+}
+
 async function copy() {
-  const source = props.sourceSteps.find((step) => step.uuid === selectedStepUuid.value)
-	if (!source || (!props.targetPipelineUuid && !props.targetExpertGroupUuid)) {
-	  return message.warning(t('agents.chooseOneAgent'))
-	}
+  const sourceByUuid = new Map(deduplicatedSourceSteps.value.map((step) => [step.uuid, step]))
+  const sources = selectedStepUuids.value
+    .map((uuid) => sourceByUuid.get(uuid))
+    .filter((source): source is ReusablePipelineStep => Boolean(source))
+  const target: CopyTarget = {
+    pipelineUuid: props.targetPipelineUuid || '',
+    expertGroupUuid: props.targetExpertGroupUuid || '',
+    expertRole: props.expertRole || 'member',
+  }
+  if (!sources.length || (!target.pipelineUuid && !target.expertGroupUuid)) {
+    return message.warning(t('agents.chooseOneAgent'))
+  }
 
   saving.value = true
+  const copiedUuids: string[] = []
   try {
-    const payload: StepInput = {
-      name: source.name,
-      description: source.description || '',
-      avatar: source.avatar || '',
-      prompt: source.prompt || source.prompt_snapshot || '',
-      cli_type: source.cli_type || '',
-      model_name: stepModel(source),
+    for (const source of sources) {
+      await copySource(source, target)
+      copiedUuids.push(source.uuid)
     }
-	if (props.targetExpertGroupUuid) {
-	  await apiClient.post<ExpertMember>(
-		`/expert-groups/${encodeURIComponent(props.targetExpertGroupUuid)}/members`,
-		{ ...payload, member_role: props.expertRole || 'member' },
-	  )
-	} else {
-	  await apiClient.post<PipelineStep>(
-		`/pipelines/${encodeURIComponent(props.targetPipelineUuid || '')}/steps`,
-		payload,
-	  )
-	}
     emit('update:open', false)
     emit('saved')
-    message.success(t('agents.agentCopied'))
+    message.success(t('agents.agentsCopied', { count: copiedUuids.length }))
   } catch (error) {
-    message.error(error instanceof Error ? error.message : t('agents.agentCopyFailed'))
+    if (copiedUuids.length) {
+      selectedStepUuids.value = selectedStepUuids.value.filter(
+        (uuid) => !copiedUuids.includes(uuid),
+      )
+      emit('saved')
+      message.error(t('agents.agentCopyPartial', { count: copiedUuids.length }))
+    } else {
+      message.error(error instanceof Error ? error.message : t('agents.agentCopyFailed'))
+    }
   } finally {
     saving.value = false
   }
@@ -188,9 +255,13 @@ async function copy() {
   border-bottom: 0;
 }
 
-.agent-list-item:hover,
+.agent-list-item:hover:not(:disabled),
 .agent-list-item.active {
   background: #f7f9ff;
+}
+
+.agent-list-item:disabled {
+  cursor: not-allowed;
 }
 
 .agent-list-item:focus-visible {

@@ -58,6 +58,21 @@ export function stepModel(step: PipelineStep) {
   return step.model_name || step.model || ''
 }
 
+export function deduplicateReusableSteps(steps: ReusablePipelineStep[]) {
+  const seen = new Set<string>()
+  return steps.filter((step) => {
+    const fingerprint = JSON.stringify([
+      step.name,
+      step.prompt || step.prompt_snapshot || '',
+      step.cli_type || '',
+      stepModel(step),
+    ])
+    if (seen.has(fingerprint)) return false
+    seen.add(fingerprint)
+    return true
+  })
+}
+
 export function missingSteps(pipeline: Pipeline) {
   return (pipeline.steps || []).filter((step) => !step.cli_type || !stepModel(step))
 }

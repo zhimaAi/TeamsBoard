@@ -17,7 +17,21 @@ const LOGIN_SHELL_MAX_BUFFER = 64 * 1024
 const SHELL_PATH_MARKER = '__GOTEAMS_LOGIN_PATH__='
 const SUPPORTED_LOGIN_SHELLS = new Set(['bash', 'csh', 'fish', 'ksh', 'sh', 'tcsh', 'zsh'])
 const MAC_SYSTEM_PATH_DIRS = ['/usr/bin', '/bin', '/usr/sbin', '/sbin']
-const RUNTIME_JSON_PATH = path.join(os.homedir(), '.goteams', 'runtime', 'runtime.json')
+// 搬迁后真实数据根记在 ~/.goteams.mlink。运行时地址跟着指针走，
+// 不能继续读已被收成空壳的默认目录。
+function runtimeJsonPath() {
+  const home = os.homedir()
+  const fallback = path.join(home, '.goteams', 'runtime', 'runtime.json')
+  try {
+    const target = fs.readFileSync(path.join(home, '.goteams.mlink'), 'utf8').trim()
+    if (target) return path.join(target, 'runtime', 'runtime.json')
+  } catch {
+    // 还没搬迁过，使用默认数据根。
+  }
+  return fallback
+}
+
+const RUNTIME_JSON_PATH = runtimeJsonPath()
 
 function randomToken() {
   return crypto.randomBytes(32).toString('hex')
@@ -52,6 +66,73 @@ function readLastBackendPort() {
     // runtime.json 尚未写入（首次启动）或暂时不可读
   }
   return null
+}
+
+// 极简 INI 解析器：仅支持本项目 [section] key = value 形态；
+// 注释以 # 或 ; 起首；值两端成对引号会被剥离。仅解析需要读取的字段，避免引入额外依赖。
+function parseINI(content) {
+  const sections = {}
+  if (typeof content !== 'string' || content.length === 0) return sections
+  let currentSection = ''
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#') || line.startsWith(';')) continue
+    const sectionMatch = line.match(/^\[(.+)\]$/)
+    if (sectionMatch) {
+      currentSection = sectionMatch[1].trim()
+      continue
+    }
+    const kvIndex = line.indexOf('=')
+    if (kvIndex <= 0 || !currentSection) continue
+    const key = line.slice(0, kvIndex).trim()
+    let value = line.slice(kvIndex + 1).trim()
+    if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+      value = value.slice(1, -1)
+    }
+    if (!sections[currentSection]) sections[currentSection] = {}
+    sections[currentSection][key] = value
+  }
+  return sections
+}
+
+// 开发模式端口配置：仅当未打包（!app.isPackaged）且 GOTEAMS_CONFIG_NAME 已设置时，
+// 读取 configs/goteams-client/config_<name>.ini 的 [network] backend_port。
+// 让每个 dev 环境（dev1~4、cn、global）拥有独立固定端口，避免与正式产品或并行的
+// 其他 dev 实例在 runtime.json 上反复争抢同一端口。
+/**
+ * @param {object} [options]
+ * @param {string} [options.configName]
+ * @param {string} [options.repoRoot]
+ * @param {(path: string, encoding: 'utf8') => Promise<string>} [options.readFileImpl]
+ * @param {(content: string) => Record<string, Record<string, string>>} [options.parseImpl]
+ * @returns {Promise<number | null>}
+ */
+function readDevModeBackendPort({
+  configName = process.env.GOTEAMS_CONFIG_NAME,
+  repoRoot,
+  readFileImpl = fs.promises.readFile,
+  parseImpl = parseINI,
+} = {}) {
+  if (!configName || typeof configName !== 'string' || !repoRoot) return null
+  // 仅允许字母数字下划线短横线，避免被畸形 configName 越界到其他目录
+  if (!/^[A-Za-z0-9_-]+$/.test(configName)) return null
+  const configPath = path.join(
+    repoRoot,
+    'configs',
+    'goteams-client',
+    `config_${configName}.ini`,
+  )
+  return Promise.resolve()
+    .then(() => readFileImpl(configPath, 'utf8'))
+    .then(text => {
+      const sections = parseImpl(text)
+      const portValue = sections?.network?.backend_port
+      if (typeof portValue !== 'string' || portValue.length === 0) return null
+      const port = Number(portValue)
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return null
+      return port
+    })
+    .catch(() => null)
 }
 
 // 探测端口当前是否可绑定；探测后立即释放，供 sidecar 紧接着监听。
@@ -418,6 +499,10 @@ class BackendSupervisor extends EventEmitter {
     rendererURL,
     spawnImpl = spawn,
     resolveBackendEnvironmentImpl = resolveBackendEnvironment,
+    readDevModeBackendPortImpl = readDevModeBackendPort,
+    readLastBackendPortImpl = readLastBackendPort,
+    isPortAvailableImpl = isPortAvailable,
+    allocateLoopbackPortImpl = allocateLoopbackPort,
   }) {
     super()
     this.isPackaged = isPackaged
@@ -426,6 +511,10 @@ class BackendSupervisor extends EventEmitter {
     this.rendererURL = rendererURL
     this.spawnImpl = spawnImpl
     this.resolveBackendEnvironmentImpl = resolveBackendEnvironmentImpl
+    this.readDevModeBackendPortImpl = readDevModeBackendPortImpl
+    this.readLastBackendPortImpl = readLastBackendPortImpl
+    this.isPortAvailableImpl = isPortAvailableImpl
+    this.allocateLoopbackPortImpl = allocateLoopbackPortImpl
     this.child = null
     this.pathProbeController = null
     this.pathProbePromise = null
@@ -436,21 +525,31 @@ class BackendSupervisor extends EventEmitter {
     this.stopping = false
   }
 
+  async resolveListenPort() {
+    // 端口选择优先级：env 显式 > 开发模式配置文件 backend_port > 复用 runtime.json 上次端口 > 随机。
+    // 开发模式读配置文件是为了让每个 dev 环境拥有独立固定端口，避免与正式产品随机端口或
+    // 其他 dev 实例在 runtime.json 上反复争抢；正式产品（app.isPackaged=true）跳过该分支。
+    if (process.env.GOTEAMS_DESKTOP_BACKEND_PORT) {
+      return Number(process.env.GOTEAMS_DESKTOP_BACKEND_PORT)
+    }
+    if (!this.isPackaged && this.repoRoot) {
+      const configPort = await this.readDevModeBackendPortImpl({ repoRoot: this.repoRoot })
+      if (Number.isInteger(configPort) && configPort > 0 && configPort < 65536) {
+        return configPort
+      }
+    }
+    const lastPort = this.readLastBackendPortImpl()
+    if (lastPort && (await this.isPortAvailableImpl(lastPort))) {
+      return lastPort
+    }
+    return this.allocateLoopbackPortImpl()
+  }
+
   async start() {
     if (this.stopping) throw new Error('Backend start cancelled')
     if (this.child) return this.connectionInfo()
 
-    // 调试固定端口优先；否则优先复用上次端口（保持渲染器 origin 稳定，localStorage 不丢），
-    // 被外部占用时才回退随机端口；随机端口仅用于并发实例防碰撞。
-    let port
-    if (process.env.GOTEAMS_DESKTOP_BACKEND_PORT) {
-      port = Number(process.env.GOTEAMS_DESKTOP_BACKEND_PORT)
-    } else {
-      const lastPort = readLastBackendPort()
-      port = lastPort && (await isPortAvailable(lastPort))
-        ? lastPort
-        : await allocateLoopbackPort()
-    }
+    const port = await this.resolveListenPort()
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error(`Invalid backend port: ${port}`)
     }
@@ -568,7 +667,9 @@ module.exports = {
   loginShellProbeSpecs,
   macCliSearchDirs,
   normalizePathEntries,
+  parseINI,
   parseLoginShellPath,
+  readDevModeBackendPort,
   readLoginShellPath,
   resolveBackendEnvironment,
   resolveBackendLaunch,

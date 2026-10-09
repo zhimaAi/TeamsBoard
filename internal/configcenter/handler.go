@@ -25,6 +25,8 @@ type Handler struct {
 	cloudCfg    *config.CloudConfig
 	configPath  string // INI configuration file path
 	accountIDFn func() (string, error)
+	// workspaceMoved 为 true 表示本次进程已成功搬迁工作空间；重启前禁止再次搬迁。
+	workspaceMoved bool
 }
 
 // NewHandler creates a configuration central processor
@@ -77,6 +79,55 @@ func (h *Handler) RegisterRoutes(r *gin.RouterGroup) {
 	r.PUT("/model-profiles/:id", h.updateModelProfile)
 	r.DELETE("/model-profiles/:id", h.deleteConfig("gt_model_profiles"))
 
+	// 通用键值配置（落 gt_client_config），用于知识库根目录等自由键（IN-05）
+	r.GET("/key/:key", h.getKey)
+	r.PUT("/key/:key", h.putKey)
+}
+
+// getKey 读取通用配置键值（不存在返回空串），对应 IN-05。
+func (h *Handler) getKey(c *gin.Context) {
+	key := c.Param("key")
+	if key == "" {
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "config_key_required")
+		return
+	}
+	var v string
+	err := h.dbRef.Get().QueryRow(`SELECT config_value FROM gt_client_config WHERE config_key=?`, key).Scan(&v)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusOK, gin.H{"value": ""})
+		return
+	}
+	if err != nil {
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"value": v})
+}
+
+// putKey 写入通用配置键值（UPSERT），对应 IN-05。
+func (h *Handler) putKey(c *gin.Context) {
+	key := c.Param("key")
+	if key == "" {
+		i18n.Error(c, http.StatusBadRequest, "common_invalid_id", "config_key_required")
+		return
+	}
+	var input struct {
+		Value string `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		i18n.Error(c, http.StatusBadRequest, "common_request_invalid", "")
+		return
+	}
+	_, err := h.dbRef.Get().Exec(`
+		INSERT INTO gt_client_config (config_key, config_value, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(config_key) DO UPDATE SET config_value=excluded.config_value, updated_at=excluded.updated_at`,
+		key, input.Value, now())
+	if err != nil {
+		i18n.Error(c, http.StatusInternalServerError, "common_server_error", "")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"key": key, "value": input.Value})
 }
 
 // RegisterCloudRoutes register cloud connection configuration routing (no need to log in)

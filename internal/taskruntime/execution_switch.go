@@ -86,9 +86,9 @@ func (s *Service) ValidateExecutionSwitch(ctx context.Context, taskUUID string, 
 	return nil
 }
 
-// SwitchExecution atomically removes the old execution projection and writes a
-// fresh target. Task content, attachments, project links, work directories and
-// files produced by the old execution are intentionally preserved.
+// SwitchExecution atomically archives and removes the old execution projection,
+// then writes a fresh target. Task content, attachments, project links, work
+// directories and files produced by the old execution are intentionally preserved.
 func (s *Service) SwitchExecution(ctx context.Context, taskUUID string, input SwitchExecutionInput) (err error) {
 	input.Mode = NormalizeExecutionMode(input.Mode)
 	input.Tool = strings.ToLower(strings.TrimSpace(input.Tool))
@@ -132,6 +132,9 @@ func (s *Service) SwitchExecution(ctx context.Context, taskUUID string, input Sw
 	}
 	if !sameCurrentExecution(current, latest) {
 		return fmt.Errorf("任务执行配置已变化，请刷新后重试")
+	}
+	if err = archiveCurrentExecutionTx(ctx, tx, taskUUID); err != nil {
+		return fmt.Errorf("归档当前执行失败: %w", err)
 	}
 
 	for _, statement := range []string{
@@ -408,6 +411,8 @@ func (prepared preparedSwitchTarget) insert(ctx context.Context, tx *sql.Tx, tas
 		status = "active"
 	}
 
+	// execution_index 在清空本地执行投影之前由调用方把当前这一次封存到云端。
+	// 这里只递增序号并重置新一次执行的计数，云端按新序号另存一行，旧运行记录保持不变。
 	result, err := tx.ExecContext(ctx, `UPDATE gt_tasks SET
 		selected_pipeline_uuid=?, selected_pipeline_config_json=?, pipeline_snapshot_uuid=?,
 		selected_expert_group_uuid=?, expert_group_snapshot_uuid=?, execution_mode=?, execution_tool=?,
@@ -415,6 +420,7 @@ func (prepared preparedSwitchTarget) insert(ctx context.Context, tx *sql.Tx, tas
 		status=?, execution_status='idle', current_step_uuid=?, current_step_completed=0,
 		cli_type='', current_step_key='', execution_summary='', cloud_workflow_snapshot_hash='', model_name='',
 		input_tokens=0, output_tokens=0, total_tokens=0, conversation_rounds=0,
+		execution_index=execution_index+1,
 		started_at=0, finished_at=0, updated_at=? WHERE uuid=?`,
 		selectedPipelineUUID, selectedPipelineConfigJSON, pipelineSnapshotUUID, selectedExpertUUID, expertSnapshotUUID,
 		prepared.input.Mode, prepared.input.Tool, status, currentStepUUID, now, taskUUID)

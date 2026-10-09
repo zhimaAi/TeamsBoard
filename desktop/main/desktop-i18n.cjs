@@ -8,6 +8,34 @@ const DEFAULT_LOCALE = 'zh-CN'
 
 // one/other 与 go-i18n、vue-i18n 保持一致：中文只有 other，英文按数量选单复数。
 const MESSAGES = Object.freeze({
+  'update.assetMissing': {
+    'zh-CN': { other: '新版本没有适用于当前系统和架构的安装包' },
+    'en-US': { other: 'No installer is available for this system and architecture' },
+  },
+  'update.checkFailed': {
+    'zh-CN': { other: '检查更新失败' },
+    'en-US': { other: 'Failed to check for updates' },
+  },
+  'update.downloadFailed': {
+    'zh-CN': { other: '下载更新失败' },
+    'en-US': { other: 'Failed to download the update' },
+  },
+  'update.packageInvalid': {
+    'zh-CN': { other: '安装包校验失败' },
+    'en-US': { other: 'Installer verification failed' },
+  },
+  'update.installInvalid': {
+    'zh-CN': { other: '安装包不存在或校验失败，请重新下载' },
+    'en-US': { other: 'The installer is missing or invalid. Download it again.' },
+  },
+  'update.unavailable': {
+    'zh-CN': { other: '当前无法下载更新' },
+    'en-US': { other: 'The update cannot be downloaded now' },
+  },
+  'update.installFailedTitle': {
+    'zh-CN': { other: '安装更新失败' },
+    'en-US': { other: 'Failed to install the update' },
+  },
   'dialog.openTerminal.failed': {
     'zh-CN': { other: '无法打开终端，请检查系统终端是否可用' },
     'en-US': { other: 'Unable to open the system terminal' },
@@ -125,6 +153,10 @@ const MESSAGES = Object.freeze({
   'error.codex.openFailed': {
     'zh-CN': { other: '无法打开 Codex，请复制提示词后手动打开' },
     'en-US': { other: 'Could not open Codex. Copy the prompt and open it manually.' },
+  },
+  'error.vibeCli.openFailed': {
+    'zh-CN': { other: '无法打开 CLI，请复制提示词后手动打开' },
+    'en-US': { other: 'Could not open the CLI. Copy the prompt and open it manually.' },
   },
   'notification.action.openTask': {
     'zh-CN': { other: '打开任务' },

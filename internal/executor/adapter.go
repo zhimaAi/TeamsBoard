@@ -51,7 +51,9 @@ type ExecutorEvent struct {
 	// ToolUseID 是协议侧的工具调用 ID，用于把 tool_result 精确归属到对应的 tool_call。
 	// 并行工具调用的结果并不按调用顺序返回（实测 pi 会乱序回传），仅靠事件顺序无法配对。
 	// 协议未提供该字段时为空，此时不得按顺序猜测归属。
-	ToolUseID          string              `json:"tool_use_id,omitempty"`
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	// ToolResultPartial 表示增量输出；只有最终 tool_result 才结束工具执行计时。
+	ToolResultPartial  bool                `json:"tool_result_partial,omitempty"`
 	InputTokens        int                 `json:"input_tokens,omitempty"`
 	OutputTokens       int                 `json:"output_tokens,omitempty"`
 	Error              string              `json:"error,omitempty"`

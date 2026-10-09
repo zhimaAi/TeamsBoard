@@ -1,5 +1,8 @@
 <template>
-  <div class="message-list-card">
+  <div
+    class="message-list-card"
+    :class="{ embedded }"
+  >
     <a-spin :spinning="loading">
       <div class="message-list">
         <template
@@ -90,6 +93,8 @@
                 :input-tokens="item.input_tokens"
                 :output-tokens="item.output_tokens"
                 :total-tokens="item.total_tokens"
+                :read-only="readOnly"
+                :initial-events="sessionEvents[item.session_uuid] || []"
               />
               <div
                 v-if="isUserMessage(item)"
@@ -142,11 +147,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { CopyOutlined, DownOutlined, RightOutlined } from '@ant-design/icons-vue'
 import MarkdownPreview from '@/components/MarkdownPreview.vue'
 import ExecutionProcess from './ExecutionProcess.vue'
-import type { PipelineStep, TaskProgress } from '@/types/pipeline'
+import type { PipelineStep, SessionEventItem, TaskProgress } from '@/types/pipeline'
 import { initials, isUserMessage, resultText, userMessageText } from './utils'
 import { useAppI18n, type MessageKey } from '@/i18n'
 import { useLocale } from '@/composables/useLocale'
@@ -164,6 +169,10 @@ const props = withDefaults(
     fallbackActorName?: string
     fallbackActorLogo?: string
     taskUuid?: string
+    embedded?: boolean
+    defaultCollapsed?: boolean
+    readOnly?: boolean
+    sessionEvents?: Record<string, SessionEventItem[]>
   }>(),
   {
     highlightUuid: '',
@@ -172,6 +181,10 @@ const props = withDefaults(
     fallbackActorName: '',
     fallbackActorLogo: '',
     taskUuid: '',
+    embedded: false,
+    defaultCollapsed: false,
+    readOnly: false,
+    sessionEvents: () => ({}),
   },
 )
 
@@ -180,6 +193,20 @@ const emit = defineEmits<{
 }>()
 
 const collapsedUuids = ref(new Set<string>())
+const knownItemUuids = new Set<string>()
+watch(
+  () => props.items.map((item) => item.uuid),
+  (uuids) => {
+    if (!props.defaultCollapsed) return
+    const nextCollapsedUuids = new Set(collapsedUuids.value)
+    for (const uuid of uuids) {
+      if (!knownItemUuids.has(uuid)) nextCollapsedUuids.add(uuid)
+      knownItemUuids.add(uuid)
+    }
+    collapsedUuids.value = nextCollapsedUuids
+  },
+  { immediate: true },
+)
 const stepMap = computed(() => new Map(props.steps.map((step) => [step.uuid, step])))
 const dispatchMessageKeys: Record<string, MessageKey> = {
   'expert_routing.routing_pending': 'expertGroups.dispatch.routingPending',
@@ -281,6 +308,14 @@ defineExpose({ scrollToItem })
   border-radius: 16px;
   background: #fff;
   box-shadow: 0 2px 24px rgba(0, 0, 0, 0.08);
+}
+.message-list-card.embedded {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.message-list-card.embedded .message-list {
+  padding: 0;
 }
 .message-list {
   padding: 0 16px;

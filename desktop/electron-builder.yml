@@ -5,6 +5,13 @@ asar: true
 directories:
   output: ../dist/desktop
 
+# 浏览器登录的回调协议：GoTeams 登录确认页通过 teamsboard://auth/callback 唤起客户端。
+# 改动这里必须同步 desktop/main/deep-link.cjs 与 internal/cloud/browserlogin.go。
+protocols:
+  - name: TeamsBoard
+    schemes:
+      - teamsboard
+
 files:
   - main/**/*
   - preload/**/*
@@ -37,6 +44,7 @@ mac:
 
 nsis:
   oneClick: false
+  runAfterFinish: true
   allowToChangeInstallationDirectory: true
   # electron-builder 为开始菜单快捷方式写入与 Main 一致的 AppUserModelID，
   # Windows Toast 需要此安装身份；不要用复制出来的裸 exe 验收通知。

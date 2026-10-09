@@ -1,9 +1,23 @@
 {
   "title": "看板",
+  "localTasks": "本地任务",
   "viewSwitch": "看板视图切换",
+  "layoutSwitch": "看板与列表视图切换",
+  "boardView": "看板视图",
+  "listView": "列表视图",
   "teamWork": "团队工作",
   "comingSoon": "功能开发中，即将上线",
   "newTask": "新增任务",
+  "allStatuses": "全部",
+  "statusFilter": "按任务状态筛选",
+  "statusFilterCount": "{label} ({count})",
+  "columns": {
+    "task": "任务",
+    "status": "状态",
+    "executor": "执行方",
+    "time": "时间",
+    "actions": "操作"
+  },
   "listSettings": "列表设置",
   "changeBackground": "修改背景颜色",
   "setBackground": "设置为 {color} 背景色",
@@ -32,6 +46,19 @@
   "settingsSaved": "列表设置已保存",
   "updatedAt": "更新于 {time}",
   "blockedFallback": "执行异常导致任务阻塞",
+  "activityStatus": {
+    "running": "执行中",
+    "completed": "已完成",
+    "error": "异常"
+  },
+  "activityDefault": {
+    "thinking": "思考中...",
+    "message": "正在生成回复...",
+    "toolCall": "正在调用工具...",
+    "toolResult": "工具调用已完成",
+    "permissionRequest": "等待授权"
+  },
+  "activityAriaLabel": "{status}：{content}",
   "justNow": "刚刚",
   "minutesAgo": "{count}分钟前",
   "hoursAgo": "{count}小时前",

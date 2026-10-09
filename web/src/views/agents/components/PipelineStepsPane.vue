@@ -1,40 +1,35 @@
 <template>
   <section class="step-pane">
-    <header class="pane-header">
-      <div class="header-copy">
-        <span class="header-eyebrow">
-          <img
-            :src="agentOrchestrationIcon"
-            alt=""
-            aria-hidden="true"
-          />
-          {{ t('agents.title') }}
-        </span>
-        <h3>{{ pipeline?.name || t('agents.selectPipeline') }}</h3>
-      </div>
-      <div
+    <AgentDetailHeader :title="pipeline?.name || t('agents.selectPipeline')">
+      <template
         v-if="pipeline"
-        class="header-actions"
+        #actions
       >
         <a-button
           v-if="sortedSteps.length"
           size="small"
+          class="batch-config-button"
           :class="{ 'batch-cancel-button': batchMode }"
           :disabled="batchSaving"
           @click="toggleBatchMode"
         >
-          <template
-            v-if="batchMode"
-            #icon
-          >
+          <template #icon>
             <img
-              class="batch-cancel-icon"
-              :src="batchCancelIcon"
+              :class="batchMode ? 'batch-cancel-icon' : 'batch-config-icon'"
+              :src="batchMode ? batchCancelIcon : batchConfigIcon"
               alt=""
               aria-hidden="true"
             />
           </template>
           {{ batchMode ? t('agents.cancelBatch') : t('agents.batch') }}
+        </a-button>
+        <a-button
+          v-if="batchMode"
+          size="small"
+          :disabled="batchSaving || selectedStepUuids.length === sortedSteps.length"
+          @click="selectAllSteps"
+        >
+          {{ t('agents.selectAll') }}
         </a-button>
         <AgentAddDropdown
           v-if="!isCloudPipeline && !batchMode"
@@ -42,8 +37,8 @@
           @create="emit('create-agent')"
           @copy="emit('copy-agent')"
         />
-      </div>
-    </header>
+      </template>
+    </AgentDetailHeader>
     <div
       class="step-list"
       :class="{ 'step-list--batch': batchMode }"
@@ -74,73 +69,13 @@
         :description="t('agents.selectLeftPipeline')"
       />
     </div>
-    <div
+    <AgentBatchConfigBar
       v-if="pipeline && batchMode"
-      class="batch-bar"
-      role="toolbar"
-      :aria-label="t('agents.batchCli')"
-    >
-      <span class="batch-count">
-        <img
-          class="batch-count-icon"
-          :src="batchSelectedCountIcon"
-          alt=""
-          aria-hidden="true"
-        />
-        {{ t('agents.selectedCount', { count: selectedStepUuids.length }) }}
-      </span>
-      <a-select
-        v-model:value="batchCliType"
-        class="batch-select"
-        :loading="cliLoading"
-        :disabled="batchSaving"
-        :placeholder="t('agents.selectCli')"
-        @change="handleCliChange(String($event))"
-      >
-        <a-select-option
-          v-for="cli in cliOptions"
-          :key="cli.type"
-          :value="cli.type"
-          :disabled="!cli.installed"
-        >
-          {{ cli.name }}
-        </a-select-option>
-      </a-select>
-      <a-select
-        v-model:value="batchModelName"
-        class="batch-select"
-        :loading="modelLoading"
-        :disabled="!batchCliType || batchSaving"
-        show-search
-        :placeholder="batchCliType ? t('agents.selectModel') : t('agents.selectCliFirst')"
-      >
-        <a-select-option
-          v-for="model in modelOptions"
-          :key="model"
-          :value="model"
-        >
-          {{ model }}
-        </a-select-option>
-      </a-select>
-      <a-button
-        type="primary"
-        size="small"
-        class="batch-apply"
-        :loading="batchSaving"
-        :disabled="!canApplyBatch"
-        @click="applyBatchConfiguration"
-      >
-        {{ t('agents.apply') }}
-      </a-button>
-      <a-button
-        size="small"
-        class="batch-clear"
-        :disabled="batchSaving"
-        @click="clearBatchSelection"
-      >
-        {{ t('agents.cancel') }}
-      </a-button>
-    </div>
+      :selected-count="selectedStepUuids.length"
+      :saving="batchSaving"
+      @apply="applyBatchConfiguration"
+      @cancel="clearBatchSelection"
+    />
   </section>
 </template>
 
@@ -148,14 +83,14 @@
 import { computed, onDeactivated, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import apiClient from '@/api/client'
-import { useCliModelOptions } from '@/composables/useCliModelOptions'
 import type { Pipeline, PipelineStep } from '@/types/pipeline'
-import agentOrchestrationIcon from '@/assets/icons/agent-orchestration.svg'
 import batchCancelIcon from '@/assets/icons/batch-cancel.svg'
-import batchSelectedCountIcon from '@/assets/icons/batch-selected-count.svg'
+import batchConfigIcon from '@/assets/icons/batch-config.svg'
 import { isPipelineCloud as isCloudPipelineSource, sortPipelineSteps } from './agentPipeline'
+import AgentBatchConfigBar from './AgentBatchConfigBar.vue'
 import PipelineStepCard from './PipelineStepCard.vue'
 import AgentAddDropdown from './AgentAddDropdown.vue'
+import AgentDetailHeader from './AgentDetailHeader.vue'
 import { useAppI18n } from '@/i18n'
 
 const props = defineProps<{
@@ -178,24 +113,6 @@ const addDropdownRef = ref<InstanceType<typeof AgentAddDropdown>>()
 const batchMode = ref(false)
 const batchSaving = ref(false)
 const selectedStepUuids = ref<string[]>([])
-const batchCliType = ref('')
-const batchModelName = ref('')
-const {
-  cliLoading,
-  cliOptions,
-  loadCliOptions,
-  loadModelOptions,
-  modelLoading,
-  modelOptions,
-  resetModelOptions,
-} = useCliModelOptions()
-const canApplyBatch = computed(
-  () =>
-    selectedStepUuids.value.length > 0 &&
-    Boolean(batchCliType.value) &&
-    Boolean(batchModelName.value) &&
-    !batchSaving.value,
-)
 
 watch(
   () => props.pipeline?.uuid,
@@ -209,35 +126,29 @@ watch(
   },
 )
 
-async function toggleBatchMode() {
+function toggleBatchMode() {
   if (batchMode.value) {
     resetBatchState()
     return
   }
   addDropdownRef.value?.close()
   batchMode.value = true
-  try {
-    await loadCliOptions()
-  } catch (error) {
-    message.error(error instanceof Error ? error.message : t('agents.cliListLoadFailed'))
-  }
 }
 
 function resetBatchState() {
   batchMode.value = false
   batchSaving.value = false
   selectedStepUuids.value = []
-  batchCliType.value = ''
-  batchModelName.value = ''
-  resetModelOptions()
 }
 
 function clearBatchSelection() {
   if (batchSaving.value) return
   selectedStepUuids.value = []
-  batchCliType.value = ''
-  batchModelName.value = ''
-  resetModelOptions()
+}
+
+function selectAllSteps() {
+  if (batchSaving.value) return
+  selectedStepUuids.value = sortedSteps.value.map((step) => step.uuid)
 }
 
 function toggleStepSelection(stepUuid: string) {
@@ -247,25 +158,16 @@ function toggleStepSelection(stepUuid: string) {
     : [...selectedStepUuids.value, stepUuid]
 }
 
-async function handleCliChange(cliType: string) {
-  batchModelName.value = ''
-  try {
-    await loadModelOptions(cliType)
-  } catch (error) {
-    message.error(error instanceof Error ? error.message : t('agents.modelListLoadFailed'))
-  }
-}
-
-async function applyBatchConfiguration() {
-  if (!props.pipeline || !canApplyBatch.value) return
+async function applyBatchConfiguration(payload: { cliType: string; modelName: string }) {
+  if (!props.pipeline || !selectedStepUuids.value.length || batchSaving.value) return
   batchSaving.value = true
   try {
     const updated = await apiClient.put<Pipeline>(
       `/pipelines/${encodeURIComponent(props.pipeline.uuid)}/steps/execution-config`,
       {
         step_uuids: selectedStepUuids.value,
-        cli_type: batchCliType.value,
-        model_name: batchModelName.value,
+        cli_type: payload.cliType,
+        model_name: payload.modelName,
       },
     )
     emit('updated', updated)
@@ -296,149 +198,6 @@ onDeactivated(() => {
   background: #fff;
 }
 
-.pane-header {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  min-height: 84px;
-  flex: 0 0 84px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 24px;
-  background: #fff;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-}
-
-.header-copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.header-eyebrow {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: #86868b;
-  font-size: 12px;
-  line-height: 20px;
-}
-
-.header-eyebrow img {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 14px;
-}
-
-.pane-header h3 {
-  overflow: hidden;
-  margin: 0;
-  color: #262626;
-  font-size: 20px;
-  font-weight: 600;
-  line-height: 28px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pane-header :deep(.ant-btn) {
-  height: 32px;
-  padding-inline: 16px;
-  border-radius: 6px;
-  box-shadow: none;
-  font-size: 14px;
-}
-
-.pane-header :deep(.ant-btn-primary) {
-  border-color: #3157e2;
-  background: #3157e2;
-}
-
-.pane-header :deep(.ant-btn-primary:hover) {
-  border-color: #2475fc;
-  background: #2475fc;
-}
-
-.pane-header :deep(.ant-btn-primary:active) {
-  border-color: #3157e2;
-  background: #3157e2;
-}
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.pane-header :deep(.batch-cancel-button.ant-btn) {
-  display: inline-flex;
-  align-items: center;
-  color: #3157e2;
-  border-color: transparent;
-  background: #e5efff;
-}
-
-.pane-header :deep(.batch-cancel-button.ant-btn:hover:not(:disabled)) {
-  color: #2475fc;
-  border-color: transparent;
-  background: #dce8ff;
-}
-
-.batch-cancel-icon {
-  width: 16px;
-  height: 16px;
-}
-
-.batch-bar {
-  position: absolute;
-  z-index: 2;
-  right: 24px;
-  bottom: 24px;
-  left: 24px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 16px 12px;
-  border: 1px solid #abcafc;
-  border-radius: 16px;
-  background: #fff;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
-}
-
-.batch-count {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 4px;
-  color: #595959;
-  font-size: 14px;
-  line-height: 22px;
-  white-space: nowrap;
-}
-
-.batch-count-icon {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-}
-
-.batch-select {
-  min-width: 0;
-  flex: 1 1 180px;
-}
-
-.batch-apply,
-.batch-clear {
-  flex: 0 0 auto;
-}
-
-.batch-bar :deep(.batch-apply.ant-btn-primary:disabled) {
-  color: #fff;
-  border-color: #a7c8fe;
-  background: #a7c8fe;
-}
-
 .step-list {
   min-height: 0;
   flex: 1;
@@ -456,17 +215,6 @@ onDeactivated(() => {
   .step-pane {
     height: auto;
     min-height: 420px;
-  }
-
-  .batch-bar {
-    right: 16px;
-    bottom: 16px;
-    left: 16px;
-    flex-wrap: wrap;
-  }
-
-  .batch-select {
-    min-width: 160px;
   }
 }
 </style>

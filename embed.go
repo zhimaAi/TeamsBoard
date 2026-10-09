@@ -12,3 +12,6 @@ var SkillsFS embed.FS
 
 //go:embed configs
 var ConfigsFS embed.FS
+
+//go:embed desktop/package.json
+var DesktopPackageJSON []byte

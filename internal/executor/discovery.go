@@ -9,6 +9,7 @@ import (
 	osexec "os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -221,16 +222,68 @@ var knownExecutableSearchDirs = func() []string {
 // platform's script extensions (e.g. %LOCALAPPDATA%\cursor-agent\agent.cmd), so
 // CLIs installed without being added to PATH (such as the Cursor agent wrapper)
 // still work. Returns a user-friendly error when the CLI cannot be found.
+// ResolveVibeCodingExecutable locates the interactive CLI for a Vibe Coding
+// tool. Codex the desktop app is not resolved here; it opens through its URL
+// scheme. Codex CLI reuses the codex executable.
+func ResolveVibeCodingExecutable(tool string) (string, error) {
+	var names []string
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case "codex_cli":
+		names = cliExecutableNames(CLITypeCodex)
+	case CLITypeClaude, CLITypeCodeBuddy, CLITypeQoder, CLITypePi:
+		names = cliExecutableNames(tool)
+	default:
+		return "", fmt.Errorf("Vibe Coding 工具无效")
+	}
+	execPath := lookupExecutable(names)
+	if execPath == "" {
+		return "", fmt.Errorf("未找到 %s，请先安装并加入 PATH", tool)
+	}
+	return execPath, nil
+}
+
 func ResolveCLIExecutable(cliType string) (string, error) {
 	names := cliExecutableNames(cliType)
 	if len(names) == 0 {
 		return "", fmt.Errorf("CLI 类型无效: %q", cliType)
 	}
 	execPath := lookupExecutable(names)
+	if execPath == "" && cliType == CLITypeCodex {
+		execPath = findCodexDesktopExecutable(os.Getenv("LOCALAPPDATA"))
+	}
 	if execPath == "" {
 		return "", fmt.Errorf("未找到 %s CLI，请先安装并加入 PATH", cliType)
 	}
 	return execPath, nil
+}
+
+// Codex Desktop keeps its bundled CLI under a versioned directory that is
+// often present only in the desktop process PATH, not the backend's PATH.
+func findCodexDesktopExecutable(localAppData string) string {
+	if runtime.GOOS != "windows" || localAppData == "" {
+		return ""
+	}
+	root := filepath.Join(localAppData, "OpenAI", "Codex", "bin")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return ""
+	}
+	var newestPath string
+	var newestTime time.Time
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		candidate := filepath.Join(root, entry.Name(), "codex.exe")
+		info, err := os.Stat(candidate)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if newestPath == "" || info.ModTime().After(newestTime) {
+			newestPath, newestTime = candidate, info.ModTime()
+		}
+	}
+	return newestPath
 }
 
 // cliExecutableNames returns the candidate executable names for a CLI type

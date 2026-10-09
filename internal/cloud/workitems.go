@@ -41,12 +41,72 @@ type PipelineSummary struct {
 	Icon    string `json:"icon"` // Cloud avatar, a relative path like /uploads/...
 }
 
+// ExpertGroupSummary one cloud expert group returned by /api/client/expert-groups
+// (需求 1896 优化点1/2). Agents carry the complete orchestration snapshot; the
+// client treats these groups read-only and tags them as 团队资源.
+type ExpertGroupSummary struct {
+	ID          int64              `json:"id"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	Avatar      string             `json:"avatar"`
+	Scope       string             `json:"scope"`
+	Agents      []ExpertGroupAgent `json:"agents"`
+	UpdatedAt   int64              `json:"updated_at"`
+}
+
+// ExpertGroupAgent one orchestration member of a cloud expert group.
+type ExpertGroupAgent struct {
+	Name      string `json:"name"`
+	Role      string `json:"role"` // leader | member
+	Avatar    string `json:"avatar"`
+	Prompt    string `json:"prompt"`
+	SortOrder int    `json:"sort_order"`
+}
+
+// GetExpertGroups fetches the cloud expert groups the current member may use
+// (scope-filtered by the cloud, status=1). Mirrors GetPipelines' tolerant decode.
+func (c *Client) GetExpertGroups(ctx context.Context) ([]ExpertGroupSummary, error) {
+	var raw json.RawMessage
+	if err := c.do(ctx, http.MethodGet, "/api/client/expert-groups", nil, &raw); err != nil {
+		return nil, err
+	}
+	var direct []ExpertGroupSummary
+	if err := json.Unmarshal(raw, &direct); err == nil {
+		c.normalizeExpertGroupAvatars(direct)
+		return direct, nil
+	}
+	var result struct {
+		Items []ExpertGroupSummary `json:"items"`
+		List  []ExpertGroupSummary `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, fmt.Errorf("解析专家团列表失败: %w", err)
+	}
+	c.normalizeExpertGroupAvatars(result.Items)
+	c.normalizeExpertGroupAvatars(result.List)
+	if result.Items != nil {
+		return result.Items, nil
+	}
+	return result.List, nil
+}
+
+// normalizeExpertGroupAvatars absolutizes relative avatar paths of a group and its agents.
+func (c *Client) normalizeExpertGroupAvatars(groups []ExpertGroupSummary) {
+	for i := range groups {
+		groups[i].Avatar = c.normalizeAssetURL(groups[i].Avatar)
+		for j := range groups[i].Agents {
+			groups[i].Agents[j].Avatar = c.normalizeAssetURL(groups[i].Agents[j].Avatar)
+		}
+	}
+}
+
 // PipelineStep Pipeline workflow step
 type PipelineStep struct {
 	StepKey   string `json:"step_key"`
 	Name      string `json:"name"`
 	SortOrder int    `json:"sort_order"`
 	CLIType   string `json:"cli_type"`
+	Avatar    string `json:"avatar"`
 	Prompt    string `json:"prompt"`
 }
 
@@ -168,13 +228,111 @@ func (c *Client) GetMyWork(ctx context.Context) (*MyWorkResult, error) {
 // absolute http/https URLs, mirroring the normalization applied to GetWorkItems.
 func (c *Client) normalizeMyWork(list []map[string]interface{}) {
 	for _, item := range list {
+		c.normalizeWorkItemMap(item)
+	}
+}
+
+func (c *Client) normalizeWorkItemMap(item map[string]interface{}) {
+	if item == nil {
+		return
+	}
+	if desc, ok := item["description"].(string); ok && desc != "" {
+		item["description"] = c.normalizeWorkItemContent(desc)
+	}
+	if content, ok := item["content"].(string); ok && content != "" {
+		item["content"] = c.normalizeWorkItemContent(content)
+	}
+}
+
+// WorkItemDetail is the original-requirement payload shown in the team board modal.
+type WorkItemDetail struct {
+	Item        map[string]interface{}   `json:"item"`
+	Comments    []map[string]interface{} `json:"comments"`
+	Attachments []map[string]interface{} `json:"attachments"`
+}
+
+// CustomFieldOption is one selectable option of a custom field.
+type CustomFieldOption struct {
+	Key  string `json:"key"`
+	Name string `json:"name"`
+}
+
+// CustomFieldDefinition describes one custom field of a workspace work-item type.
+type CustomFieldDefinition struct {
+	ID        int64               `json:"id"`
+	Key       string              `json:"key"`
+	Name      string              `json:"name"`
+	FieldType string              `json:"field_type"`
+	IsEnabled int                 `json:"is_enabled"`
+	Options   []CustomFieldOption `json:"options"`
+}
+
+// ListWorkItemCustomFields loads the custom field definitions of one work-item type.
+// Values alone are not enough: option fields store the option key, so the label comes from here.
+func (c *Client) ListWorkItemCustomFields(ctx context.Context, workspaceID int64, typeKey string) ([]CustomFieldDefinition, error) {
+	if strings.TrimSpace(typeKey) == "" {
+		typeKey = "requirement"
+	}
+	path := fmt.Sprintf("/api/workspaces/%d/custom-fields?type=%s", workspaceID, url.QueryEscape(typeKey))
+	var list []CustomFieldDefinition
+	if err := c.do(ctx, http.MethodGet, path, nil, &list); err != nil {
+		return nil, err
+	}
+	if list == nil {
+		list = []CustomFieldDefinition{}
+	}
+	return list, nil
+}
+
+// GetWorkItem loads one requirement/defect from the cloud workspace API.
+func (c *Client) GetWorkItem(ctx context.Context, workspaceID, workItemID int64) (map[string]interface{}, error) {
+	var item map[string]interface{}
+	path := fmt.Sprintf("/api/workspaces/%d/requirements/%d", workspaceID, workItemID)
+	if err := c.do(ctx, http.MethodGet, path, nil, &item); err != nil {
+		return nil, err
+	}
+	c.normalizeWorkItemMap(item)
+	return item, nil
+}
+
+// ListWorkItemComments loads comments of a cloud work item.
+func (c *Client) ListWorkItemComments(ctx context.Context, workspaceID, workItemID int64) ([]map[string]interface{}, error) {
+	var list []map[string]interface{}
+	path := fmt.Sprintf("/api/workspaces/%d/requirements/%d/comments", workspaceID, workItemID)
+	if err := c.do(ctx, http.MethodGet, path, nil, &list); err != nil {
+		return nil, err
+	}
+	if list == nil {
+		list = []map[string]interface{}{}
+	}
+	for _, item := range list {
+		c.normalizeWorkItemMap(item)
+	}
+	return list, nil
+}
+
+// ListWorkItemAttachments loads attachments of a cloud work item.
+func (c *Client) ListWorkItemAttachments(ctx context.Context, workspaceID, workItemID int64) ([]map[string]interface{}, error) {
+	var list []map[string]interface{}
+	path := fmt.Sprintf("/api/workspaces/%d/requirements/%d/attachments", workspaceID, workItemID)
+	if err := c.do(ctx, http.MethodGet, path, nil, &list); err != nil {
+		return nil, err
+	}
+	if list == nil {
+		list = []map[string]interface{}{}
+	}
+	for _, item := range list {
 		if item == nil {
 			continue
 		}
-		if desc, ok := item["description"].(string); ok && desc != "" {
-			item["description"] = c.normalizeWorkItemContent(desc)
+		if url, ok := item["url"].(string); ok {
+			item["url"] = c.normalizeAssetURL(url)
+		}
+		if stored, ok := item["stored_path"].(string); ok && item["url"] == nil {
+			item["url"] = c.normalizeAssetURL(stored)
 		}
 	}
+	return list, nil
 }
 
 // GetPipelines gets the list of pipelines available to the current user from the cloud
@@ -215,6 +373,7 @@ func (c *Client) GetPipelineSnapshot(ctx context.Context, pipelineID int64) (*Pi
 			Name          string `json:"name"`
 			SortOrder     int    `json:"sort_order"`
 			CLIType       string `json:"cli_type"`
+			Avatar        string `json:"avatar"`
 			Prompt        string `json:"prompt"`
 			PromptContent string `json:"prompt_content"`
 		} `json:"steps"`
@@ -250,6 +409,7 @@ func (c *Client) GetPipelineSnapshot(ctx context.Context, pipelineID int64) (*Pi
 			Name:      step.Name,
 			SortOrder: step.SortOrder,
 			CLIType:   cliType,
+			Avatar:    c.normalizeAssetURL(step.Avatar),
 			Prompt:    prompt,
 		})
 	}

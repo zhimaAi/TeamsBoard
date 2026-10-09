@@ -38,6 +38,8 @@ export function setApiFeedbackHandler(handler?: ApiFeedbackHandler) {
 export class ApiError extends Error {
   status: number
   code?: number | string
+  /** 错误响应原样体：供 conflicts / rollback 等结构化错误字段渲染（S-IN-07） */
+  payload?: unknown
   requestLocale?: AppLocale
   responseLocale?: AppLocale
   staleLocale: boolean
@@ -51,11 +53,13 @@ export class ApiError extends Error {
       responseLocale?: AppLocale
       staleLocale: boolean
     },
+    payload?: unknown,
   ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
+    this.payload = payload
     this.requestLocale = language?.requestLocale
     this.responseLocale = language?.responseLocale
     this.staleLocale = language?.staleLocale ?? false
@@ -114,11 +118,13 @@ async function createApiError(response: Response, requestLocale: AppLocale): Pro
   const language = getLanguageContext(response, requestLocale)
   let errorMessage = `HTTP ${response.status}: ${response.statusText}`
   let errorCode: number | string | undefined
+  let errorPayload: Record<string, unknown> | undefined
 
   try {
     const errorBody = readRecord(await response.json())
     errorMessage = readMessage(errorBody?.error) || readMessage(errorBody?.message) || errorMessage
     errorCode = readCode(errorBody?.code)
+    errorPayload = errorBody
   } catch {
     // 非 JSON 错误响应沿用 HTTP 状态文案。
   }
@@ -127,7 +133,7 @@ async function createApiError(response: Response, requestLocale: AppLocale): Pro
     errorMessage = t('common.feedback.languageChangedRetry')
   }
 
-  return new ApiError(errorMessage, response.status, errorCode, language)
+  return new ApiError(errorMessage, response.status, errorCode, language, errorPayload)
 }
 
 function buildUrl(path: string, params?: RequestOptions['params']): string {
@@ -256,8 +262,8 @@ export const apiClient = {
   put: <T = unknown>(path: string, body?: unknown) =>
     request<T>(path, { method: 'PUT', body }),
 
-  delete: <T = unknown>(path: string) =>
-    request<T>(path, { method: 'DELETE' }),
+  delete: <T = unknown>(path: string, body?: unknown) =>
+    request<T>(path, { method: 'DELETE', body }),
 }
 
 export default apiClient

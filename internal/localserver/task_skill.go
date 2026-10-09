@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"goteams-client/internal/executor"
 	"goteams-client/internal/i18n"
 	builtinskills "goteams-client/internal/skills"
 	"goteams-client/internal/taskruntime"
@@ -59,6 +60,29 @@ func (h *TasksHandler) getCodexCapability(c *gin.Context) {
 		}
 		response["message"] = i18n.T(c, codexCapabilityMessageKey(reasonCode))
 	}
+	tools := gin.H{}
+	for _, tool := range taskruntime.VibeCodingTools() {
+		_, ready, reason := h.vibeSkill(tool)
+		item := gin.H{"available": ready, "reason_code": reason, "launch": vibeLaunchKind(tool)}
+		if !ready {
+			if reason == "" {
+				reason = builtinskills.CapabilityReasonInstallationFail
+				item["reason_code"] = reason
+			}
+			item["message"] = i18n.T(c, codexCapabilityMessageKey(reason))
+		}
+		if tool != taskruntime.ExecutionToolCodex {
+			execPath, err := executor.ResolveVibeCodingExecutable(tool)
+			item["installed"] = err == nil && execPath != ""
+			if err == nil {
+				item["exec_path"] = execPath
+			}
+		} else {
+			item["installed"] = true
+		}
+		tools[tool] = item
+	}
+	response["tools"] = tools
 	c.JSON(http.StatusOK, response)
 }
 
@@ -88,7 +112,7 @@ func (h *TasksHandler) getTaskForSkill(c *gin.Context) {
 		i18n.LocalServerError(c, http.StatusInternalServerError, err)
 		return
 	}
-	if !isCodexTask(executionMode, executionTool) {
+	if !isVibeCodingTask(executionMode, executionTool) {
 		i18n.Error(c, http.StatusConflict, "localserver_task_not_codex", "task_not_codex")
 		return
 	}
@@ -113,14 +137,6 @@ func (h *TasksHandler) getTaskForSkill(c *gin.Context) {
 }
 
 func (h *TasksHandler) getCodexContext(c *gin.Context) {
-	if !h.codexSkillReady {
-		reasonCode := h.codexSkillReason
-		if reasonCode == "" {
-			reasonCode = builtinskills.CapabilityReasonInstallationFail
-		}
-		i18n.Error(c, http.StatusConflict, codexCapabilityMessageKey(reasonCode), reasonCode)
-		return
-	}
 	taskUUID, ok := validateTaskSkillUUID(c)
 	if !ok {
 		return
@@ -137,8 +153,16 @@ func (h *TasksHandler) getCodexContext(c *gin.Context) {
 		i18n.LocalServerError(c, http.StatusInternalServerError, err)
 		return
 	}
-	if !isCodexTask(executionMode, executionTool) {
+	if !isVibeCodingTask(executionMode, executionTool) {
 		i18n.Error(c, http.StatusConflict, "localserver_task_not_codex", "task_not_codex")
+		return
+	}
+	skillRoot, skillReady, skillReason := h.vibeSkill(executionTool)
+	if !skillReady {
+		if skillReason == "" {
+			skillReason = builtinskills.CapabilityReasonInstallationFail
+		}
+		i18n.Error(c, http.StatusConflict, codexCapabilityMessageKey(skillReason), skillReason)
 		return
 	}
 	workDirs, err := h.loadTaskWorkDirs(taskUUID, legacyWorkDir)
@@ -150,10 +174,23 @@ func (h *TasksHandler) getCodexContext(c *gin.Context) {
 		i18n.Error(c, http.StatusConflict, "localserver_task_work_dir_required", "task_work_dir_required")
 		return
 	}
-	skillPath := filepath.Join(h.skillsRoot, builtinskills.TaskSkillName, "SKILL.md")
+	skillPath := filepath.Join(skillRoot, builtinskills.TaskSkillName, "SKILL.md")
 	linkPath := encodeMarkdownLocalPath(skillPath)
-	prompt := i18n.Format(c, "localserver_codex_task_prompt", i18n.Params{"SkillPath": linkPath, "TaskUUID": taskUUID})
-	response := gin.H{"task_uuid": taskUUID, "work_dir": workDirs[0], "prompt": prompt}
+	prompt := i18n.Format(c, "localserver_codex_task_prompt", i18n.Params{
+		"SkillPath": linkPath, "TaskUUID": taskUUID, "Tool": executionTool,
+	})
+	response := gin.H{
+		"task_uuid": taskUUID, "work_dir": workDirs[0], "prompt": prompt,
+		"tool": executionTool, "launch": vibeLaunchKind(executionTool),
+	}
+	if executionTool != taskruntime.ExecutionToolCodex {
+		execPath, err := executor.ResolveVibeCodingExecutable(executionTool)
+		if err != nil || execPath == "" {
+			i18n.Error(c, http.StatusConflict, "localserver_vibe_cli_not_found", "vibe_cli_not_found")
+			return
+		}
+		response["exec_path"] = execPath
+	}
 	if session, ok := validVibeCodingSession(sessionJSON, executionTool); ok {
 		response["thread_id"] = session.ThreadID
 	}
@@ -173,6 +210,17 @@ func (h *TasksHandler) updateVibeCodingSessionFromSkill(c *gin.Context) {
 	body.ThreadID = strings.TrimSpace(body.ThreadID)
 	if body.Type == "" {
 		i18n.Error(c, http.StatusBadRequest, "localserver_vibe_session_type_invalid", "vibe_session_type_invalid")
+		return
+	}
+	if orchestrator := h.orchestrator(); orchestrator != nil {
+		lease, err := orchestrator.BeginTaskExecutionSwitch(taskUUID)
+		if err != nil {
+			i18n.LocalServerError(c, http.StatusInternalServerError, err)
+			return
+		}
+		defer lease.Close()
+	}
+	if !guardRemoteExecutionMutation(c, h.taskDB(), taskUUID) {
 		return
 	}
 
@@ -199,11 +247,11 @@ func (h *TasksHandler) updateVibeCodingSessionFromSkill(c *gin.Context) {
 		i18n.Error(c, http.StatusConflict, "localserver_vibe_session_type_mismatch", "vibe_session_type_mismatch")
 		return
 	}
-	if body.Type != taskruntime.ExecutionToolCodex {
+	if !taskruntime.IsVibeCodingTool(body.Type) {
 		i18n.Error(c, http.StatusBadRequest, "localserver_vibe_session_type_invalid", "vibe_session_type_invalid")
 		return
 	}
-	normalizedThreadID, valid := normalizeCodexThreadID(body.ThreadID)
+	normalizedThreadID, valid := normalizeVibeThreadID(body.Type, body.ThreadID)
 	if !valid {
 		i18n.Error(c, http.StatusBadRequest, "localserver_vibe_session_thread_id_invalid", "vibe_session_thread_id_invalid")
 		return
@@ -247,10 +295,10 @@ func validVibeCodingSession(raw, expectedType string) (vibeCodingSession, bool) 
 	if session.Type == "" || session.Type != strings.ToLower(strings.TrimSpace(expectedType)) {
 		return vibeCodingSession{}, false
 	}
-	if session.Type != taskruntime.ExecutionToolCodex {
+	if !taskruntime.IsVibeCodingTool(session.Type) {
 		return vibeCodingSession{}, false
 	}
-	threadID, ok := normalizeCodexThreadID(session.ThreadID)
+	threadID, ok := normalizeVibeThreadID(session.Type, session.ThreadID)
 	if !ok {
 		return vibeCodingSession{}, false
 	}
@@ -265,6 +313,30 @@ func normalizeCodexThreadID(value string) (string, bool) {
 		return "", false
 	}
 	return id.String(), true
+}
+
+func normalizeVibeThreadID(tool, value string) (string, bool) {
+	tool = strings.ToLower(strings.TrimSpace(tool))
+	if tool == taskruntime.ExecutionToolCodex || tool == taskruntime.ExecutionToolCodexCLI {
+		return normalizeCodexThreadID(value)
+	}
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > maxActivityThreadID || strings.ContainsAny(value, "/\\ \t\r\n") {
+		return "", false
+	}
+	for _, r := range value {
+		if r > 127 || !(r == '.' || r == '_' || r == '-' || (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')) {
+			return "", false
+		}
+	}
+	first, last := value[0], value[len(value)-1]
+	isAlphaNum := func(b byte) bool {
+		return (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+	}
+	if !isAlphaNum(first) || !isAlphaNum(last) {
+		return "", false
+	}
+	return value, true
 }
 
 func encodeMarkdownLocalPath(path string) string {
@@ -319,9 +391,24 @@ func (h *TasksHandler) updateTaskStatusFromSkill(c *gin.Context) {
 		i18n.Error(c, http.StatusBadRequest, "localserver_skill_status_invalid", "skill_status_invalid")
 		return
 	}
+	var executionMode, executionTool string
+	err := h.taskDB().QueryRowContext(c.Request.Context(), `SELECT execution_mode, execution_tool FROM gt_tasks WHERE uuid=?`, taskUUID).
+		Scan(&executionMode, &executionTool)
+	if err == sql.ErrNoRows {
+		i18n.Error(c, http.StatusNotFound, "localserver_task_not_found", "task_not_found")
+		return
+	}
+	if err != nil {
+		i18n.LocalServerError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if !isVibeCodingTask(executionMode, executionTool) {
+		i18n.Error(c, http.StatusConflict, "localserver_task_not_codex", "task_not_codex")
+		return
+	}
 	now := time.Now().UnixMilli()
 	result, err := h.taskDB().ExecContext(c.Request.Context(), `UPDATE gt_tasks SET status=?, updated_at=?
-		WHERE uuid=? AND execution_mode='vibe_coding' AND execution_tool='codex'`, storedStatus, now, taskUUID)
+		WHERE uuid=? AND execution_mode=? AND execution_tool=?`, storedStatus, now, taskUUID, executionMode, executionTool)
 	if err != nil {
 		i18n.LocalServerError(c, http.StatusInternalServerError, err)
 		return
@@ -378,13 +465,6 @@ func (h *TasksHandler) createSkillActivity(c *gin.Context) {
 		return
 	}
 	body.Tool = strings.ToLower(strings.TrimSpace(body.Tool))
-	if body.Tool == "" {
-		body.Tool = taskruntime.ExecutionToolCodex
-	}
-	if body.Tool != taskruntime.ExecutionToolCodex {
-		i18n.Error(c, http.StatusBadRequest, "localserver_skill_tool_invalid", "skill_tool_invalid")
-		return
-	}
 	body.ThreadID = strings.TrimSpace(body.ThreadID)
 	if utf8.RuneCountInString(body.ThreadID) > maxActivityThreadID {
 		i18n.Error(c, http.StatusBadRequest, "localserver_skill_thread_id_invalid", "skill_thread_id_invalid")
@@ -393,8 +473,10 @@ func (h *TasksHandler) createSkillActivity(c *gin.Context) {
 	now := time.Now().UnixMilli()
 	progressUUID := uuid.NewString()
 	recordType, prompt, result := "initial_run", "", body.Content
+	activityActor, activityKind := activityActorTool, activityKindFinalResponse
 	if body.Type == "question" {
 		recordType, prompt, result = "user_question", body.Content, ""
+		activityActor, activityKind = activityActorUser, activityKindUserMessage
 	}
 	tx, err := h.taskDB().BeginTx(c.Request.Context(), nil)
 	if err != nil {
@@ -411,15 +493,33 @@ func (h *TasksHandler) createSkillActivity(c *gin.Context) {
 		i18n.LocalServerError(c, http.StatusInternalServerError, err)
 		return
 	}
-	if !isCodexTask(executionMode, executionTool) {
+	if !isVibeCodingTask(executionMode, executionTool) {
 		i18n.Error(c, http.StatusConflict, "localserver_task_not_codex", "task_not_codex")
 		return
 	}
+	executionTool = strings.ToLower(strings.TrimSpace(executionTool))
+	if body.Tool == "" {
+		body.Tool = executionTool
+	}
+	if body.Tool != executionTool {
+		i18n.Error(c, http.StatusBadRequest, "localserver_skill_tool_invalid", "skill_tool_invalid")
+		return
+	}
+	if body.ThreadID != "" {
+		if normalized, valid := normalizeVibeThreadID(body.Tool, body.ThreadID); valid {
+			body.ThreadID = normalized
+		} else {
+			i18n.Error(c, http.StatusBadRequest, "localserver_skill_thread_id_invalid", "skill_thread_id_invalid")
+			return
+		}
+	}
 	if _, err := tx.ExecContext(c.Request.Context(), `INSERT INTO gt_task_progress
 		(uuid, task_uuid, task_pipeline_snapshot_uuid, task_step_uuid, session_uuid, record_type, user_prompt,
-		 cli_type, model_name, status, final_result, execution_mode, external_session_id, created_at, started_at, finished_at)
-		VALUES (?, ?, '', '', '', ?, ?, 'codex', '', 'success', ?, 'vibe_coding', ?, ?, ?, ?)`,
-		progressUUID, taskUUID, recordType, prompt, result, body.ThreadID, now, now, now); err != nil {
+		 cli_type, model_name, status, final_result, execution_mode, external_session_id,
+		 activity_actor, activity_kind, created_at, started_at, finished_at)
+		VALUES (?, ?, '', '', '', ?, ?, ?, '', 'success', ?, 'vibe_coding', ?, ?, ?, ?, ?, ?)`,
+		progressUUID, taskUUID, recordType, prompt, body.Tool, result, body.ThreadID,
+		activityActor, activityKind, now, now, now); err != nil {
 		i18n.LocalServerError(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -480,8 +580,29 @@ func validateTaskSkillUUID(c *gin.Context) (string, bool) {
 	return taskUUID, true
 }
 
-func isCodexTask(mode, tool string) bool {
-	return mode == taskruntime.ExecutionModeVibeCoding && tool == taskruntime.ExecutionToolCodex
+func isVibeCodingTask(mode, tool string) bool {
+	return mode == taskruntime.ExecutionModeVibeCoding && taskruntime.IsVibeCodingTool(tool)
+}
+
+func vibeLaunchKind(tool string) string {
+	if strings.ToLower(strings.TrimSpace(tool)) == taskruntime.ExecutionToolCodex {
+		return "app"
+	}
+	return "terminal"
+}
+
+func (h *TasksHandler) vibeSkill(tool string) (root string, ready bool, reason string) {
+	lookup := strings.ToLower(strings.TrimSpace(tool))
+	if lookup == taskruntime.ExecutionToolCodexCLI {
+		lookup = taskruntime.ExecutionToolCodex
+	}
+	if status, ok := h.vibeSkills[lookup]; ok {
+		return status.Root, status.Ready, status.Reason
+	}
+	if lookup == taskruntime.ExecutionToolCodex {
+		return h.skillsRoot, h.codexSkillReady, h.codexSkillReason
+	}
+	return "", false, builtinskills.CapabilityReasonInstallationFail
 }
 
 func (h *TasksHandler) writeSkillTaskAccessError(c *gin.Context, taskUUID string) {
@@ -545,13 +666,17 @@ func (h *TasksHandler) ensureVibeCodingConversation(ctx context.Context, taskUUI
 	}
 
 	now := time.Now().UnixMilli()
-	progressUUID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("vibe-coding-assignment:"+taskUUID)).String()
+	assignmentProgressUUID := vibeCodingAssignmentProgressUUID(taskUUID)
+	progressUUID := assignmentProgressUUID
 	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO gt_task_progress
 		(uuid, task_uuid, task_pipeline_snapshot_uuid, task_step_uuid, session_uuid, record_type, user_prompt,
-		 cli_type, model_name, status, final_result, execution_mode, external_session_id, created_at, started_at, finished_at)
-		SELECT ?, ?, '', '', '', 'initial_run', '', ?, '', 'success', ?, 'vibe_coding', '', ?, ?, ?
+		 cli_type, model_name, status, final_result, execution_mode, external_session_id,
+		 activity_actor, activity_kind, created_at, started_at, finished_at)
+		SELECT ?, ?, '', '', '', 'initial_run', '', ?, '', 'success', ?, 'vibe_coding', '',
+		       ?, ?, ?, ?, ?
 		WHERE NOT EXISTS (SELECT 1 FROM gt_task_progress WHERE task_uuid=?)`,
-		progressUUID, taskUUID, executionTool, activityContent, now, now, now, taskUUID)
+		progressUUID, taskUUID, executionTool, activityContent,
+		activityActorSystem, activityKindAssignment, now, now, now, taskUUID)
 	if err != nil {
 		return err
 	}
@@ -560,6 +685,12 @@ func (h *TasksHandler) ensureVibeCodingConversation(ctx context.Context, taskUUI
 	} else if inserted == 0 {
 		if err = tx.QueryRowContext(ctx, `SELECT uuid FROM gt_task_progress WHERE task_uuid=? ORDER BY created_at DESC, rowid DESC LIMIT 1`, taskUUID).
 			Scan(&progressUUID); err != nil {
+			return err
+		}
+	}
+	if progressUUID == assignmentProgressUUID {
+		if _, err = tx.ExecContext(ctx, `UPDATE gt_task_progress SET activity_actor=?, activity_kind=? WHERE uuid=?`,
+			activityActorSystem, activityKindAssignment, progressUUID); err != nil {
 			return err
 		}
 	}

@@ -1,6 +1,7 @@
 export type PipelineSource = 'local' | 'cloud'
 export type StepBusinessStatus = 'pending' | 'active' | 'completed'
-export type ExecutionStatus = 'idle' | 'created' | 'running' | 'success' | 'failed' | 'stopped' | 'interrupted' | ''
+export type ExecutionStatus =
+  'idle' | 'created' | 'running' | 'success' | 'failed' | 'stopped' | 'interrupted' | ''
 
 export interface ConversationRuntimeConfig {
   cli_type: string
@@ -49,6 +50,8 @@ export interface ExpertGroup {
   description?: string
   avatar?: string
   ready: boolean
+  /** 云端团队资源标记；未传视为本地私有资源。 */
+  source_type?: 'cloud' | 'local'
   leader?: ExpertMember
   members: ExpertMember[]
   created_at?: number
@@ -155,6 +158,7 @@ export interface LocalTask {
   source_type?: PipelineSource
   work_item_type?: string
   work_item_id?: string | number
+  workspace_id?: number | string
   task_dir?: string
   work_dir?: string
   work_dirs?: string[]
@@ -187,5 +191,8 @@ export interface TaskNotification {
   execution_tool?: string
   summary?: string
   is_read?: boolean | number
+  is_archived?: boolean
+  work_dir?: string
+  project_uuid?: string
   created_at: number
 }

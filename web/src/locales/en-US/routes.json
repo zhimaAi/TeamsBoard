@@ -4,9 +4,10 @@
   "workflowImport": "Import task",
   "taskDetail": "Task details",
   "tasks": "Chat",
-  "agents": "Agent pipelines",
+  "agents": "Agent staff",
   "projects": "Projects",
   "knowledge": "Knowledge base",
+  "remoteChannels": "Remote channels",
   "apis": "API management",
   "settings": "Settings",
   "tools": "Tools"

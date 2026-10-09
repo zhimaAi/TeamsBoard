@@ -64,8 +64,8 @@ func NewLocalRuntime(ctx context.Context, dataDir string, cloudClient *cloud.Cli
 	orchestrator.SetStateBroadcaster(func(taskUUID, stepKey, sessionUUID, status string) {
 		wsHub.BroadcastStateChanged(taskUUID, stepKey, sessionUUID, status)
 	})
-	orchestrator.SetActivityBroadcaster(func(taskUUID, sessionUUID, eventType, content string, at int64) {
-		wsHub.BroadcastActivity(taskUUID, sessionUUID, eventType, content, at)
+	orchestrator.SetActivityBroadcaster(func(taskUUID, sessionUUID string, sequence int, eventType, content string, at int64) {
+		wsHub.BroadcastActivity(taskUUID, sessionUUID, sequence, eventType, content, at)
 	})
 	wsHub.RegisterPushFunc(func() (string, interface{}) {
 		count, err := orchestrator.GlobalRunningSessionCount()

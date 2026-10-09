@@ -1,16 +1,24 @@
 'use strict'
 
 const path = require('node:path')
-const { app, dialog, Menu, session, Tray } = require('electron')
+const { spawn } = require('node:child_process')
+const { app, dialog, Menu, session, shell, Tray } = require('electron')
 const { APP_ICON_PATH, configureAppIdentity } = require('./app-identity.cjs')
 const { BackendSupervisor } = require('./backend-supervisor.cjs')
 const { DesktopPreferences } = require('./desktop-preferences.cjs')
 const { setLocale, t } = require('./desktop-i18n.cjs')
+const { createBrowserLoginDeepLink, registerProtocolClient } = require('./deep-link.cjs')
 const { registerDialogIPC } = require('./ipc/dialog.cjs')
 const { registerApiTokenIPC } = require('./ipc/api-token.cjs')
+const { registerBrowserLoginIPC, notifyBrowserLoginResult } = require('./ipc/browser-login.cjs')
 const { registerCodexIPC } = require('./ipc/codex.cjs')
+const { registerVibeCliIPC } = require('./ipc/vibe-cli.cjs')
 const { registerTaskNotificationIPC } = require('./ipc/notification.cjs')
 const { registerTrayIPC } = require('./ipc/tray.cjs')
+const { registerUpdateIPC } = require('./ipc/update.cjs')
+const { UpdateManager } = require('./update-manager.cjs')
+const { installOnWindows } = require('./update-installer.cjs')
+const { registerRelaunchIPC } = require('./ipc/relaunch.cjs')
 const { installApplicationMenu } = require('./application-menu.cjs')
 const { TrayManager } = require('./tray-manager.cjs')
 const { createMainWindow } = require('./window-manager.cjs')
@@ -22,6 +30,12 @@ const rendererURL = process.env.GOTEAMS_DESKTOP_RENDERER_URL || ''
 // 图片、文件等静态资源恢复走 Chromium 磁盘缓存。
 configureAppIdentity(app)
 installApplicationMenu(Menu)
+// teamsboard:// 必须在 app ready 之前注册，否则协议唤起的新进程拿不到入口参数。
+registerProtocolClient({
+  isPackaged: app.isPackaged,
+  execPath: process.execPath,
+  argv: process.argv,
+})
 const singleInstance = app.requestSingleInstanceLock()
 
 let mainWindow = null
@@ -29,15 +43,21 @@ let backend = null
 let backendConnection = null
 let removeIPC = null
 let removeApiTokenIPC = null
+let removeBrowserLoginIPC = null
 let removeCodexIPC = null
+let removeVibeCliIPC = null
 let removeTaskNotificationIPC = null
 let removeTrayIPC = null
+let removeUpdateIPC = null
+let updateManager = null
+let removeRelaunchIPC = null
 let desktopPreferences = null
 let trayManager = null
 let quitting = false
 let exitCode = 0
 let closeDecisionPending = false
 let quitConfirmationPending = false
+const UPDATE_CANCEL_TIMEOUT_MS = 3_000
 
 function failAndQuit(title, error) {
   if (quitting) return
@@ -46,12 +66,28 @@ function failAndQuit(title, error) {
   app.quit()
 }
 
+// 浏览器登录深链接：sidecar 未就绪时先入队，ready 后补处理。
+const browserLoginDeepLink = createBrowserLoginDeepLink({
+  getConnection: () => backendConnection,
+  notifyRenderer: result => notifyBrowserLoginResult(() => mainWindow, result),
+})
+
 function isMainWindowVisible() {
   return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())
 }
 
 function refreshTray() {
   trayManager?.refresh()
+}
+
+function cancelUpdateForQuit() {
+  const cancellation = updateManager?.cancelDownload()
+  if (!cancellation) return Promise.resolve()
+  let timer
+  const deadline = new Promise(resolve => {
+    timer = setTimeout(resolve, UPDATE_CANCEL_TIMEOUT_MS)
+  })
+  return Promise.race([cancellation, deadline]).finally(() => clearTimeout(timer))
 }
 
 function trackMainWindow(win) {
@@ -100,6 +136,12 @@ function showNativeDialog(options) {
 async function requestQuit() {
   if (quitting || quitConfirmationPending) return
 
+  if (await confirmQuit()) app.quit()
+}
+
+async function confirmQuit() {
+  if (quitting || quitConfirmationPending) return false
+
   const taskStatus = trayManager?.getTaskStatus()
   let dialogOptions = null
   if (!taskStatus?.known) {
@@ -125,17 +167,43 @@ async function requestQuit() {
   }
 
   if (!dialogOptions) {
-    app.quit()
-    return
+    return true
   }
 
   quitConfirmationPending = true
   try {
     const result = await showNativeDialog(dialogOptions)
-    if (result.response === 1) app.quit()
+    return result.response === 1
   } finally {
     quitConfirmationPending = false
   }
+}
+
+async function installUpdate() {
+  const installerPath = await updateManager.verifiedInstallerPath()
+  if (process.platform === 'darwin') {
+    const error = await shell.openPath(installerPath)
+    if (error) throw new Error(error)
+    return { started: true, manual: true }
+  }
+  if (process.platform !== 'win32') throw new Error('当前系统不支持安装更新')
+  return installOnWindows({
+    confirmQuit,
+    onStart: () => { updateManager.status = 'installing'; updateManager.emitState() },
+    stopBackend: () => backend?.stop(),
+    spawnInstaller: () => new Promise((resolve, reject) => {
+        const child = spawn(installerPath, [], { detached: true, stdio: 'ignore', windowsHide: false })
+        child.once('spawn', () => { child.unref(); resolve(undefined) })
+        child.once('error', reject)
+      }),
+    quit: () => app.quit(),
+    onFailure: error => {
+      dialog.showErrorBox(t('update.installFailedTitle'), error instanceof Error ? error.message : String(error))
+      // sidecar 已经停止；重新启动客户端以恢复正常运行。
+      app.relaunch()
+      app.quit()
+    },
+  })
 }
 
 async function handleMainWindowClose(win) {
@@ -184,6 +252,11 @@ async function handleMainWindowClose(win) {
 
 function createTray() {
   desktopPreferences = new DesktopPreferences(app.getPath('userData'))
+  updateManager = new UpdateManager({
+    userDataPath: app.getPath('userData'),
+    currentVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+  })
   // 托盘在渲染层加载之前就要创建，先用上次持久化的语言渲染；
   // 渲染层就绪后会通过 desktop:set-locale 把当前语言同步回来。
   setLocale(desktopPreferences.get().locale)
@@ -231,13 +304,21 @@ async function startApplication() {
   trackMainWindow(created.win)
   removeIPC = registerDialogIPC(created.allowedOrigins)
   removeApiTokenIPC = registerApiTokenIPC(created.allowedOrigins, backendConnection.apiToken)
+  removeBrowserLoginIPC = registerBrowserLoginIPC(created.allowedOrigins, () => backendConnection)
   removeCodexIPC = registerCodexIPC(created.allowedOrigins)
+  removeVibeCliIPC = registerVibeCliIPC(created.allowedOrigins)
   removeTaskNotificationIPC = registerTaskNotificationIPC(created.allowedOrigins, {
     getMainWindow: () => mainWindow,
     showOrCreateMainWindow,
   })
   removeTrayIPC = registerTrayIPC(created.allowedOrigins, desktopPreferences, trayManager)
+  removeUpdateIPC = registerUpdateIPC(created.allowedOrigins, updateManager, installUpdate)
+  removeRelaunchIPC = registerRelaunchIPC(created.allowedOrigins)
   trayManager.setReady()
+
+  // 首次启动就可能由 teamsboard:// 唤起（协议唤起会新开进程），此时 sidecar 才刚就绪。
+  browserLoginDeepLink.handleArgv(process.argv)
+  browserLoginDeepLink.flush()
 }
 
 if (!singleInstance) {
@@ -252,8 +333,17 @@ if (!singleInstance) {
     failAndQuit(t('error.appStartFailed.title'), error)
   })
 
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    // Windows/Linux 的协议唤起会把 URL 作为参数交给已有实例。
+    browserLoginDeepLink.handleArgv(argv)
     showOrCreateMainWindow()
+  })
+
+  // macOS 的协议唤起不会新建进程，URL 通过 open-url 事件送达；该事件可能早于 ready，
+  // 此时深链接处理器会把回调入队，sidecar 就绪后再补处理。
+  app.on('open-url', (event, url) => {
+    event.preventDefault()
+    if (browserLoginDeepLink.handleURL(url)) showOrCreateMainWindow()
   })
 
   app.on('activate', () => {
@@ -266,10 +356,15 @@ if (!singleInstance) {
     quitting = true
     removeIPC?.()
     removeApiTokenIPC?.()
+    removeBrowserLoginIPC?.()
     removeCodexIPC?.()
+    removeVibeCliIPC?.()
     removeTaskNotificationIPC?.()
     removeTrayIPC?.()
+    removeUpdateIPC?.()
+    const updateCleanup = cancelUpdateForQuit()
+    removeRelaunchIPC?.()
     trayManager?.destroy()
-    void Promise.resolve(backend?.stop()).finally(() => app.exit(exitCode))
+    void Promise.allSettled([backend?.stop(), updateCleanup]).finally(() => app.exit(exitCode))
   })
 }
